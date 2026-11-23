@@ -39,6 +39,7 @@ pub fn render_desktop_widget(
     kind: WidgetKind,
     tier: u8,
     hovered_window: bool,
+    magnetic_locked: bool,
     hits: &mut Vec<HitRegion>,
 ) {
     hits.clear();
@@ -54,6 +55,15 @@ pub fn render_desktop_widget(
         WidgetKind::Music => render_music_widget(ctx, state, bw, bh, hits),
         WidgetKind::Weather => render_weather_widget(ctx, state, bw, bh),
         WidgetKind::Monitor => render_monitor_widget(ctx, state, bw, bh),
+    }
+
+    // Visual magnetic grid lock glow when snapped cleanly next to or above another widget!
+    if magnetic_locked {
+        let card = Rect::new(4.0, 4.0, bw - 8.0, bh - 8.0);
+        ctx.stroke_rrect(card, 22.0, theme::VIOLET_LIGHT, 2.4);
+        let badge = Rect::new(bw - 104.0, 10.0, 90.0, 18.0);
+        ctx.fill_rrect(badge, 9.0, theme::VIOLET);
+        ctx.draw_text_center("Acoplado", badge, TextStyle::Small9Reg, theme::TEXT_PRIMARY);
     }
 
     // Unified macOS Traffic Lights in top-left of EVERY desktop widget (× hide, − shrink, + grow)!

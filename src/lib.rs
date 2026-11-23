@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod audio;
+pub mod aura_window;
 pub mod disk_analyzer;
 pub mod models;
 pub mod motion;

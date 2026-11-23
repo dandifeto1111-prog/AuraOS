@@ -1,5 +1,10 @@
 # Historial de Versiones — AuraOS
 
+## v4.4.0 (2026-11-23)
+- **Gestión completa de ventanas estilo Windows 11 en toda la suite (`AuraFiles`, `AuraPhotos`, `AuraPlayer`, `AuraNotes`, `AuraSettings`):** Nuevo módulo compartido `aura_window` con `WS_THICKFRAME` + `WM_NCCALCSIZE=0` + `DWMWA_COLOR_NONE`: redimensionado fluido desde los 4 bordes y 4 esquinas, cursores nativos, Aero Snap nativo (mitad izquierda/derecha, 4 esquinas 25%, maximizado arriba, `Win + Flechas`, `Alt + Flechas` y ciclo de zonas con clic derecho en `+`).
+- **Cuadrícula magnética inteligente para Widgets de escritorio:** Al arrastrar un widget cerca de otro (26 px), se acopla automáticamente encima, debajo o al lado con espacio uniforme de 12 px, alinea bordes/centros, muestra brillo violeta `"Acoplado"`, evita superposiciones al soltar y se despega libremente al arrastrarlo más allá del imán; incluye botón **Ordenar widgets en cuadrícula**.
+- **Imágenes y fondos sin deformación (0% estiramiento):** `AuraFiles` ahora renderiza la vista previa con relación de aspecto original exacta (`Contain`, perfecto para imágenes verticales 9:16), y todos los fondos de pantalla (estáticos, video y miniaturas Workshop/AuraLock/AuraSettings) usan `Cover` centrado sin estirar ningún píxel.
+
 ## v4.3.0 (2026-11-23)
 - **Fix pantalla completa / maximizado en toda la suite:** Corregido el bug re-entrante de `RefCell` en `AuraPhotos`, `AuraPlayer` y `AuraNotes` que bloqueaba `WM_SIZE` al maximizar (antes renderizaba en 1/4 de pantalla). Ahora el maximizado y restaurado son instantáneos y fluidos a resolución completa.
 - **Coherencia visual total con botones semáforo macOS (`×`, `−`, `+`):** Integrados de forma uniforme en los 4 widgets de escritorio (`Reloj`, `Música`, `Clima`, `Monitor`), `Centro de Control`, `Menú de Energía`, modales, `AuraShell-Setup`, `AuraSettings`, `AuraLock` y todas las apps nativas.

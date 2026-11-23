@@ -62,6 +62,7 @@ pub enum Action {
     AddCustomWallpaperFile,
     ToggleWidget(WidgetKind),
     ResizeWidget(WidgetKind, i8), // -1 or +1
+    ArrangeWidgetsGrid,
     ResetWidgetsLayout,
     CloseExternalWallpaperEngine,
 

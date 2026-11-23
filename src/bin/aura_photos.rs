@@ -6,6 +6,7 @@
 #![windows_subsystem = "windows"]
 
 use aura_os::models::{load_settings, save_settings};
+use aura_os::aura_window::{self, SnapZone};
 use aura_os::renderer::{DecodedAsset, DrawCtx, GpuEngine, Rect, TextStyle, WindowSurface};
 use aura_os::theme::{self, VectorIcon};
 use aura_os::win32_shell;
@@ -19,13 +20,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, VK_DELETE, VK_ESCAPE, VK_LEFT, VK_OEM_MINUS, VK_OEM_PLUS, VK_RIGHT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetMessageW, GetWindowRect,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetMessageW,
     IsZoomed, LoadCursorW, PostQuitMessage, RegisterClassW, SendMessageW, SetTimer, ShowWindow,
-    TranslateMessage, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTCLIENT, HTLEFT, HTRIGHT,
-    HTTOP, HTTOPLEFT, HTTOPRIGHT, IDC_ARROW, MSG, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
-    SW_SHOW, WM_CLOSE, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_SIZE, WM_TIMER, WNDCLASSW,
-    WS_EX_NOREDIRECTIONBITMAP, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
+    TranslateMessage, HTCAPTION, IDC_ARROW, MSG, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
+    SW_SHOW, WM_CLOSE, WM_DESTROY, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDOWN,
+    WM_RBUTTONDOWN, WM_SIZE, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP,
 };
 
 const TIMER_ASYNC: usize = 20;
@@ -198,7 +198,7 @@ fn main() {
             WS_EX_NOREDIRECTIONBITMAP,
             PCWSTR(cls.as_ptr()),
             PCWSTR(title.as_ptr()),
-            WS_POPUP | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU,
+            aura_window::AURA_APP_STYLE,
             x,
             y,
             w,
@@ -213,6 +213,7 @@ fn main() {
     if hwnd.is_invalid() {
         return;
     }
+    aura_window::configure_frameless_dwm(hwnd);
 
     let Ok(surf) = WindowSurface::new(&gpu, hwnd, w as u32, h as u32) else {
         return;
@@ -798,34 +799,36 @@ unsafe extern "system" fn photos_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         PostQuitMessage(0);
         return LRESULT(0);
     }
-    if msg == WM_NCHITTEST {
-        let is_max = PHOTO_RT.with(|c| c.try_borrow().ok().and_then(|g| g.as_ref().map(|r| r.maximized)).unwrap_or(false));
-        if !is_max {
-            let mut wr = RECT::default();
-            if GetWindowRect(hwnd, &mut wr).is_ok() {
-                let sx = (lparam.0 & 0xFFFF) as i16 as i32;
-                let sy = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
-                let b = 7;
-                let l = sx < wr.left + b;
-                let r = sx >= wr.right - b;
-                let t = sy < wr.top + b;
-                let bt = sy >= wr.bottom - b;
-                if t && l { return LRESULT(HTTOPLEFT as isize); }
-                if t && r { return LRESULT(HTTOPRIGHT as isize); }
-                if bt && l { return LRESULT(HTBOTTOMLEFT as isize); }
-                if bt && r { return LRESULT(HTBOTTOMRIGHT as isize); }
-                if l { return LRESULT(HTLEFT as isize); }
-                if r { return LRESULT(HTRIGHT as isize); }
-                if t { return LRESULT(HTTOP as isize); }
-                if bt { return LRESULT(HTBOTTOM as isize); }
-            }
+    if msg == WM_NCCALCSIZE {
+        if let Some(res) = aura_window::handle_nccalcsize(hwnd, wparam, lparam) {
+            return res;
         }
-        return LRESULT(HTCLIENT as isize);
+    }
+    if msg == WM_GETMINMAXINFO {
+        return aura_window::handle_getminmaxinfo(hwnd, lparam, 500, 360);
+    }
+    if msg == WM_NCHITTEST {
+        return aura_window::handle_nchittest(hwnd, lparam, TOP_BAR_H, |lx, ly| {
+            PHOTO_RT.with(|c| {
+                c.try_borrow()
+                    .ok()
+                    .and_then(|g| g.as_ref().map(|r| r.hits.iter().any(|h| h.rect.contains(lx, ly))))
+                    .unwrap_or(false)
+            })
+        });
+    }
+    if msg == WM_SYSKEYDOWN {
+        let vk = wparam.0 as u16;
+        if vk == VK_LEFT.0 { aura_window::snap_window(hwnd, SnapZone::LeftHalf); return LRESULT(0); }
+        if vk == VK_RIGHT.0 { aura_window::snap_window(hwnd, SnapZone::RightHalf); return LRESULT(0); }
+        if vk == windows::Win32::UI::Input::KeyboardAndMouse::VK_UP.0 { aura_window::snap_window(hwnd, SnapZone::Maximize); return LRESULT(0); }
+        if vk == windows::Win32::UI::Input::KeyboardAndMouse::VK_DOWN.0 { aura_window::snap_window(hwnd, SnapZone::Center); return LRESULT(0); }
     }
 
     let mut start_title_drag = false;
     let mut deferred_max: Option<bool> = None;
     let mut deferred_min = false;
+    let mut deferred_snap: Option<SnapZone> = None;
 
     let handled = PHOTO_RT.with(|cell| {
         let Ok(mut opt) = cell.try_borrow_mut() else { return false };
@@ -899,6 +902,16 @@ unsafe extern "system" fn photos_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 }
                 true
             }
+            WM_RBUTTONDOWN => {
+                let px = (lparam.0 & 0xFFFF) as i16 as f32;
+                let py = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+                if let Some(hit) = rt.hits.iter().rev().find(|h| h.rect.contains(px, py)) {
+                    if matches!(hit.act, PhotoAct::WinMax) {
+                        deferred_snap = Some(SnapZone::LeftHalf);
+                    }
+                }
+                true
+            }
             WM_LBUTTONUP => {
                 if rt.dragging {
                     rt.dragging = false;
@@ -961,6 +974,8 @@ unsafe extern "system" fn photos_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         let _ = SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
     } else if deferred_min {
         let _ = ShowWindow(hwnd, SW_MINIMIZE);
+    } else if deferred_snap.is_some() {
+        aura_window::cycle_snap_window(hwnd);
     } else if let Some(max) = deferred_max {
         let _ = ShowWindow(hwnd, if max { SW_MAXIMIZE } else { SW_RESTORE });
     }

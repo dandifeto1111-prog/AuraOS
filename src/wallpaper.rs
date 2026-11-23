@@ -919,16 +919,40 @@ pub fn draw_wallpaper_frame(ctx: &mut DrawCtx<'_>, kind: WallpaperKind, key_or_p
     let full = Rect::new(0.0, 0.0, w, h);
     if kind == WallpaperKind::Image {
         ctx.fill_rrect(full, 0.0, theme::CANVAS);
-        // Load full-resolution image directly from WIC for static desktop wallpaper!
+        // Load full-resolution image directly from WIC with aspect-fill center-crop (ZERO stretching!)
         if let Some(wic_src) = ctx.gpu.load_wic_image_file(key_or_path) {
             unsafe {
                 if let Ok(bmp) = ctx.rt.CreateBitmapFromWicBitmap(&wic_src, None) {
+                    let sz = bmp.GetSize();
+                    let bw = sz.width.max(1.0);
+                    let bh = sz.height.max(1.0);
+                    let bmp_ar = bw / bh;
+                    let dst_ar = w.max(1.0) / h.max(1.0);
+                    let src = if bmp_ar > dst_ar {
+                        let sw = bh * dst_ar;
+                        let sx = (bw - sw) * 0.5;
+                        windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                            left: sx,
+                            top: 0.0,
+                            right: sx + sw,
+                            bottom: bh,
+                        }
+                    } else {
+                        let sh = bw / dst_ar;
+                        let sy = (bh - sh) * 0.5;
+                        windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                            left: 0.0,
+                            top: sy,
+                            right: bw,
+                            bottom: sy + sh,
+                        }
+                    };
                     ctx.rt.DrawBitmap(
                         &bmp,
                         Some(&full.to_d2d()),
                         1.0,
                         windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                        None,
+                        Some(&src),
                     );
                 }
             }

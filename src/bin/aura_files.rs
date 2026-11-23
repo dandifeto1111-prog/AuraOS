@@ -8,6 +8,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![allow(dead_code)]
 
+use aura_os::aura_window::{self, SnapZone};
 use aura_os::disk_analyzer::{
     self, DiskTree, ScanHandle, ScanUpdate, TreemapRender, EXT_PALETTE,
 };
@@ -36,13 +37,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::Shell::{SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetMessageW,
-    GetSystemMetrics, GetWindowRect, LoadCursorW, PostQuitMessage, RegisterClassW, SendMessageW,
-    SetTimer, ShowWindow, TranslateMessage, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION,
-    HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, IDC_ARROW, MSG, SM_CXSCREEN,
+    GetSystemMetrics, IsZoomed, LoadCursorW, PostQuitMessage, RegisterClassW, SendMessageW,
+    SetTimer, ShowWindow, TranslateMessage, HTCAPTION, IDC_ARROW, MSG, SM_CXSCREEN,
     SM_CYSCREEN, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, WM_CHAR, WM_CLOSE,
-    WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP,
-    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
+    WM_DESTROY, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_RBUTTONDOWN, WM_SIZE,
+    WM_SYSKEYDOWN, WM_TIMER, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP,
 };
 
 const TIMER_POLL: usize = 10;
@@ -287,14 +287,13 @@ fn run_aurafiles(start_dir: PathBuf) -> windows::core::Result<()> {
     let y = ((sh - h) / 2).max(40);
     let wtitle = to_wide("AuraFiles");
 
-    // Pure frameless DirectComposition window (NO WS_THICKFRAME!) ->
-    // ZERO Windows white top border line, ZERO transparent corner artifact, crisp 18px rounded corners!
+    // Native Windows 11 resizable + Aero-Snappable frameless DirectComposition window!
     let hwnd = unsafe {
         CreateWindowExW(
             WS_EX_NOREDIRECTIONBITMAP,
             PCWSTR(cls.as_ptr()),
             PCWSTR(wtitle.as_ptr()),
-            WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX,
+            aura_window::AURA_APP_STYLE,
             x,
             y,
             w,
@@ -305,6 +304,7 @@ fn run_aurafiles(start_dir: PathBuf) -> windows::core::Result<()> {
             None,
         )?
     };
+    aura_window::configure_frameless_dwm(hwnd);
 
     let surf = WindowSurface::new(&gpu, hwnd, w as u32, h as u32)?;
     let (bg_tx, bg_rx) = mpsc::channel();
@@ -1393,9 +1393,9 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
 
     // Status bar
     let status_txt = if !s.search.trim().is_empty() {
-        format!("{} coincidencias (incl. subcarpetas) · AuraFiles v4.2 Rust", total_rows)
+        format!("{} coincidencias (incl. subcarpetas) · AuraFiles v4.4 Rust", total_rows)
     } else {
-        format!("{} elementos · AuraFiles v4.2 Rust", total_rows)
+        format!("{} elementos · AuraFiles v4.4 Rust", total_rows)
     };
     ctx.draw_text(&status_txt, Rect::new(main_x + 14.0, h - 24.0, 380.0, 18.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
     } // end normal explorer mode
@@ -1421,7 +1421,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
             let mut drew_img = false;
             if is_img {
                 ctx.push_clip(pv.inset(8.0, 8.0));
-                drew_img = ctx.draw_image_file(&e.path, pv.inset(10.0, 10.0), 1.0);
+                drew_img = ctx.draw_image_file_contain(&e.path, pv.inset(10.0, 10.0), 1.0);
                 ctx.pop_clip();
             }
             if !drew_img {
@@ -2018,39 +2018,44 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
         PostQuitMessage(0);
         return LRESULT(0);
     }
-    if msg == WM_NCHITTEST {
-        let is_max = FILES_RT.with(|c| c.try_borrow().ok().and_then(|g| g.as_ref().map(|r| r.maximized)).unwrap_or(false));
-        if !is_max {
-            let mut wr = windows::Win32::Foundation::RECT::default();
-            if GetWindowRect(hwnd, &mut wr).is_ok() {
-                let gx = (lparam.0 & 0xFFFF) as i16 as i32;
-                let gy = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
-                let b = 7;
-                let left = gx < wr.left + b;
-                let right = gx >= wr.right - b;
-                let top = gy < wr.top + b;
-                let bottom = gy >= wr.bottom - b;
-                let hit = match (left, right, top, bottom) {
-                    (true, _, true, _) => HTTOPLEFT,
-                    (_, true, true, _) => HTTOPRIGHT,
-                    (true, _, _, true) => HTBOTTOMLEFT,
-                    (_, true, _, true) => HTBOTTOMRIGHT,
-                    (true, _, _, _) => HTLEFT,
-                    (_, true, _, _) => HTRIGHT,
-                    (_, _, true, _) => HTTOP,
-                    (_, _, _, true) => HTBOTTOM,
-                    _ => HTCLIENT,
-                };
-                if hit != HTCLIENT {
-                    return LRESULT(hit as isize);
-                }
-            }
+    if msg == WM_NCCALCSIZE {
+        if let Some(res) = aura_window::handle_nccalcsize(hwnd, wparam, lparam) {
+            return res;
         }
-        return LRESULT(HTCLIENT as isize);
+    }
+    if msg == WM_GETMINMAXINFO {
+        return aura_window::handle_getminmaxinfo(hwnd, lparam, 680, 440);
+    }
+    if msg == WM_NCHITTEST {
+        return aura_window::handle_nchittest(hwnd, lparam, 43.0, |lx, ly| {
+            FILES_RT.with(|c| {
+                c.try_borrow()
+                    .ok()
+                    .and_then(|g| g.as_ref().map(|r| r.hits.iter().any(|h| h.rect.contains(lx, ly))))
+                    .unwrap_or(false)
+            })
+        });
+    }
+    if msg == WM_SYSKEYDOWN {
+        let vk = wparam.0 as u16;
+        if vk == windows::Win32::UI::Input::KeyboardAndMouse::VK_LEFT.0 {
+            aura_window::snap_window(hwnd, SnapZone::LeftHalf);
+            return LRESULT(0);
+        } else if vk == windows::Win32::UI::Input::KeyboardAndMouse::VK_RIGHT.0 {
+            aura_window::snap_window(hwnd, SnapZone::RightHalf);
+            return LRESULT(0);
+        } else if vk == VK_UP.0 {
+            aura_window::snap_window(hwnd, SnapZone::Maximize);
+            return LRESULT(0);
+        } else if vk == VK_DOWN.0 {
+            aura_window::snap_window(hwnd, SnapZone::Center);
+            return LRESULT(0);
+        }
     }
 
     let mut start_title_drag = false;
     let mut deferred_max: Option<bool> = None;
+    let mut deferred_snap: Option<SnapZone> = None;
 
     let handled = FILES_RT.with(|cell| {
         // Re-entrant safe borrow so nested Win32 WM_SIZE / HTCAPTION messages NEVER panic!
@@ -2066,15 +2071,30 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
             WM_SIZE => {
                 let mut rc = windows::Win32::Foundation::RECT::default();
                 if GetClientRect(hwnd, &mut rc).is_ok() {
-                    let nw = (rc.right - rc.left).max(1) as u32;
-                    let nh = (rc.bottom - rc.top).max(1) as u32;
-                    rt.width = nw as f32;
-                    rt.height = nh as f32;
-                    rt.surf.resize(&rt.gpu, nw, nh);
-                    if rt.analyzer.open && rt.analyzer.tree.is_some() {
-                        rt.rebuild_treemap();
+                    let raw_w = rc.right - rc.left;
+                    let raw_h = rc.bottom - rc.top;
+                    if raw_w > 0 && raw_h > 0 {
+                        let nw = raw_w.max(1) as u32;
+                        let nh = raw_h.max(1) as u32;
+                        rt.maximized = IsZoomed(hwnd).as_bool();
+                        rt.width = nw as f32;
+                        rt.height = nh as f32;
+                        rt.surf.resize(&rt.gpu, nw, nh);
+                        if rt.analyzer.open && rt.analyzer.tree.is_some() {
+                            rt.rebuild_treemap();
+                        }
+                        rt.redraw();
                     }
-                    rt.redraw();
+                }
+                true
+            }
+            WM_RBUTTONDOWN => {
+                let px = (lparam.0 & 0xFFFF) as i16 as f32;
+                let py = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+                if let Some(h) = rt.hits.iter().rev().find(|h| h.rect.contains(px, py)) {
+                    if matches!(h.action, FileAction::WindowMaxRestore) {
+                        deferred_snap = Some(SnapZone::LeftHalf);
+                    }
                 }
                 true
             }
@@ -2224,6 +2244,8 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
     if start_title_drag {
         let _ = ReleaseCapture();
         SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
+    } else if deferred_snap.is_some() {
+        aura_window::cycle_snap_window(hwnd);
     } else if let Some(max) = deferred_max {
         let _ = ShowWindow(hwnd, if max { SW_MAXIMIZE } else { SW_RESTORE });
     }

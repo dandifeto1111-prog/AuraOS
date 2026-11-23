@@ -705,9 +705,11 @@ fn decode_image_to_bgra(wic: &IWICImagingFactory, path: &str, max_w: u32) -> Opt
         if ow == 0 || oh == 0 {
             return None;
         }
-        let src: IWICBitmapSource = if ow > max_w {
-            let nw = max_w;
-            let nh = ((oh as f64 * (max_w as f64 / ow as f64)).round() as u32).max(1);
+        let longest = ow.max(oh);
+        let src: IWICBitmapSource = if longest > max_w {
+            let ratio = max_w as f64 / longest as f64;
+            let nw = ((ow as f64 * ratio).round() as u32).max(1);
+            let nh = ((oh as f64 * ratio).round() as u32).max(1);
             let scaler = wic.CreateBitmapScaler().ok()?;
             scaler.Initialize(&frame, nw, nh, WICBitmapInterpolationModeFant).ok()?;
             scaler.cast().ok()?
@@ -902,7 +904,21 @@ impl WindowSurface {
                     right: self.width as f32,
                     bottom: self.height as f32,
                 };
-                rt.DrawBitmap(bmp, Some(&dst), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
+                // Aspect-fill (cover) center-crop so video wallpapers NEVER stretch on any aspect ratio!
+                let bw = frame_w.max(1) as f32;
+                let bh = frame_h.max(1) as f32;
+                let src_ar = bw / bh;
+                let dst_ar = (self.width.max(1) as f32) / (self.height.max(1) as f32);
+                let src = if src_ar > dst_ar {
+                    let sw = bh * dst_ar;
+                    let sx = (bw - sw) * 0.5;
+                    D2D_RECT_F { left: sx, top: 0.0, right: sx + sw, bottom: bh }
+                } else {
+                    let sh = bw / dst_ar;
+                    let sy = (bh - sh) * 0.5;
+                    D2D_RECT_F { left: 0.0, top: sy, right: bw, bottom: sy + sh }
+                };
+                rt.DrawBitmap(bmp, Some(&dst), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, Some(&src));
                 let _ = rt.EndDraw(None, None);
                 let _ = self.swap_chain.Present(0, DXGI_PRESENT(0));
             }
@@ -1433,9 +1449,18 @@ impl<'a> DrawCtx<'a> {
         }
     }
 
-    /// Draws a PNG/JPG cover art or Workshop preview thumbnail (non-blocking async when live!)
+    /// Draws a PNG/JPG cover art, wallpaper, or thumbnail with ZERO aspect-ratio distortion (Cover / Aspect-Fill)!
     pub fn draw_image_file(&mut self, path: &str, r: Rect, opacity: f32) -> bool {
-        if path.trim().is_empty() {
+        self.draw_image_file_mode(path, r, opacity, true)
+    }
+
+    /// Draws an image preserving 100% of its exact original proportions centered inside `r` (Contain / Letterbox, ZERO crop or stretch)!
+    pub fn draw_image_file_contain(&mut self, path: &str, r: Rect, opacity: f32) -> bool {
+        self.draw_image_file_mode(path, r, opacity, false)
+    }
+
+    fn draw_image_file_mode(&mut self, path: &str, r: Rect, opacity: f32, cover: bool) -> bool {
+        if path.trim().is_empty() || r.w <= 1.0 || r.h <= 1.0 {
             return false;
         }
         let key = format!("img:{}", path.to_lowercase());
@@ -1448,7 +1473,8 @@ impl<'a> DrawCtx<'a> {
                     let bmp_opt = decoded_opt.as_ref().and_then(|a| self.upload_decoded_to_gpu(a));
                     self.bmp_cache.insert(key.clone(), bmp_opt);
                 } else {
-                    self.gpu.request_image_async(path, 360);
+                    let req_max = if r.w > 640.0 || r.h > 640.0 { 1920 } else { 512 };
+                    self.gpu.request_image_async(path, req_max);
                     return false;
                 }
             } else {
@@ -1461,13 +1487,43 @@ impl<'a> DrawCtx<'a> {
         }
         if let Some(Some(bmp)) = self.bmp_cache.get(&key) {
             unsafe {
-                self.rt.DrawBitmap(
-                    bmp,
-                    Some(&r.to_d2d()),
-                    opacity,
-                    D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                    None,
-                );
+                let sz = bmp.GetSize();
+                let bw = sz.width.max(1.0);
+                let bh = sz.height.max(1.0);
+                if cover {
+                    // Aspect-fill center-crop -> fills target cleanly with ZERO stretching!
+                    let bmp_ar = bw / bh;
+                    let dst_ar = r.w / r.h;
+                    let src = if bmp_ar > dst_ar {
+                        let sw = bh * dst_ar;
+                        let sx = (bw - sw) * 0.5;
+                        D2D_RECT_F { left: sx, top: 0.0, right: sx + sw, bottom: bh }
+                    } else {
+                        let sh = bw / dst_ar;
+                        let sy = (bh - sh) * 0.5;
+                        D2D_RECT_F { left: 0.0, top: sy, right: bw, bottom: sy + sh }
+                    };
+                    self.rt.DrawBitmap(
+                        bmp,
+                        Some(&r.to_d2d()),
+                        opacity,
+                        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                        Some(&src),
+                    );
+                } else {
+                    // Aspect-fit (Contain) -> exact original proportions centered, ZERO distortion & ZERO crop!
+                    let scale = (r.w / bw).min(r.h / bh);
+                    let dw = bw * scale;
+                    let dh = bh * scale;
+                    let dst = Rect::new(r.x + (r.w - dw) * 0.5, r.y + (r.h - dh) * 0.5, dw, dh);
+                    self.rt.DrawBitmap(
+                        bmp,
+                        Some(&dst.to_d2d()),
+                        opacity,
+                        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                        None,
+                    );
+                }
             }
             true
         } else {

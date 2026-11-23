@@ -131,6 +131,7 @@ struct ShellRuntime {
 
     widget_wins: Vec<DesktopWidgetWin>,
     dragging_widget: Option<(WidgetKind, i32, i32)>, // (kind, grab_offset_x, grab_offset_y)
+    snapped_widget: Option<WidgetKind>,              // Currently magnetically docked widget during drag!
 
     hits_topbar: Vec<HitRegion>,
     hits_dock: Vec<HitRegion>,
@@ -383,6 +384,7 @@ fn run_shell() -> windows::core::Result<()> {
         surf_overview,
         widget_wins,
         dragging_widget: None,
+        snapped_widget: None,
         hits_topbar: Vec::new(),
         hits_dock: Vec::new(),
         hits_cc: Vec::new(),
@@ -669,14 +671,237 @@ impl ShellRuntime {
             return;
         }
         let tier = cfg.size_tier;
+        let mag = self.snapped_widget == Some(kind);
         let state = &self.state;
         if let Some(w) = self.widget_wins.iter_mut().find(|w| w.kind == kind) {
             let hov = w.hovered;
             let hits = &mut w.hits;
             w.surf.draw(&mut self.gpu, |ctx| {
-                ui_widgets::render_desktop_widget(ctx, state, kind, tier, hov, hits);
+                ui_widgets::render_desktop_widget(ctx, state, kind, tier, hov, mag, hits);
             });
         }
+    }
+
+    /// Magnetic Widget Grid Engine:
+    /// - Snaps dragged widget cleanly above/below (stacking) or left/right (row) of nearby widgets with uniform 12px gap
+    /// - Auto-aligns edges & centers when docked so widgets form a crisp automatic grid
+    /// - Releases smoothly when dragged >26px away for completely free positioning!
+    fn compute_magnetic_widget_pos(&self, kind: WidgetKind, raw_x: i32, raw_y: i32) -> (i32, i32, bool) {
+        const SNAP_DIST: i32 = 26;
+        const ALIGN_DIST: i32 = 28;
+        const GRID_GAP: i32 = 12;
+        const EDGE_PAD: i32 = 18;
+
+        let tier = self.state.widgets.get(kind).map(|w| w.size_tier).unwrap_or(1);
+        let (aw, ah) = widget_window_dims(kind, tier);
+        let min_x = EDGE_PAD;
+        let max_x = (self.screen_w - aw - EDGE_PAD).max(min_x);
+        let min_y = TOPBAR_HEIGHT as i32 + 12;
+        let max_y = (self.screen_h - ah - EDGE_PAD).max(min_y);
+
+        let mut nx = raw_x.clamp(min_x, max_x);
+        let mut ny = raw_y.clamp(min_y, max_y);
+        let mut snapped_x = false;
+        let mut snapped_y = false;
+        let mut docked_to_widget = false;
+
+        for other in &self.state.widgets.widgets {
+            if other.kind == kind || !other.enabled {
+                continue;
+            }
+            let (bw, bh) = widget_window_dims(other.kind, other.size_tier);
+            let bx = other.x;
+            let by = other.y;
+
+            let horiz_near = nx < bx + bw + 48 && nx + aw > bx - 48;
+            let vert_near = ny < by + bh + 48 && ny + ah > by - 48;
+
+            // 1. Vertical stack docking (uno encima o debajo de otro!)
+            if horiz_near && !snapped_y {
+                let below_y = by + bh + GRID_GAP;
+                let above_y = by - GRID_GAP - ah;
+                if (ny - below_y).abs() <= SNAP_DIST {
+                    ny = below_y;
+                    snapped_y = true;
+                    docked_to_widget = true;
+                } else if (ny - above_y).abs() <= SNAP_DIST {
+                    ny = above_y;
+                    snapped_y = true;
+                    docked_to_widget = true;
+                }
+            }
+
+            // 2. Horizontal row docking (uno al lado de otro!)
+            if vert_near && !snapped_x {
+                let right_x = bx + bw + GRID_GAP;
+                let left_x = bx - GRID_GAP - aw;
+                if (nx - right_x).abs() <= SNAP_DIST {
+                    nx = right_x;
+                    snapped_x = true;
+                    docked_to_widget = true;
+                } else if (nx - left_x).abs() <= SNAP_DIST {
+                    nx = left_x;
+                    snapped_x = true;
+                    docked_to_widget = true;
+                }
+            }
+
+            // 3. Column & row edge/center alignment when near another widget!
+            if horiz_near && !snapped_x {
+                let left_align = bx;
+                let right_align = bx + bw - aw;
+                let center_align = bx + (bw - aw) / 2;
+                if (nx - left_align).abs() <= ALIGN_DIST {
+                    nx = left_align;
+                    snapped_x = true;
+                    docked_to_widget = true;
+                } else if (nx - right_align).abs() <= ALIGN_DIST {
+                    nx = right_align;
+                    snapped_x = true;
+                    docked_to_widget = true;
+                } else if (nx - center_align).abs() <= ALIGN_DIST {
+                    nx = center_align;
+                    snapped_x = true;
+                    docked_to_widget = true;
+                }
+            }
+            if vert_near && !snapped_y {
+                let top_align = by;
+                let bot_align = by + bh - ah;
+                let mid_align = by + (bh - ah) / 2;
+                if (ny - top_align).abs() <= ALIGN_DIST {
+                    ny = top_align;
+                    snapped_y = true;
+                    docked_to_widget = true;
+                } else if (ny - bot_align).abs() <= ALIGN_DIST {
+                    ny = bot_align;
+                    snapped_y = true;
+                    docked_to_widget = true;
+                } else if (ny - mid_align).abs() <= ALIGN_DIST {
+                    ny = mid_align;
+                    snapped_y = true;
+                    docked_to_widget = true;
+                }
+            }
+        }
+
+        // 4. Soft screen edge margin snap when floating freely near screen edges
+        if !snapped_x {
+            if (nx - min_x).abs() <= 20 {
+                nx = min_x;
+            } else if (nx - max_x).abs() <= 20 {
+                nx = max_x;
+            }
+        }
+        if !snapped_y {
+            if (ny - min_y).abs() <= 20 {
+                ny = min_y;
+            } else if (ny - max_y).abs() <= 20 {
+                ny = max_y;
+            }
+        }
+
+        (nx.clamp(min_x, max_x), ny.clamp(min_y, max_y), docked_to_widget)
+    }
+
+    /// Prevents widgets from ending up overlapping on drop by cleanly settling into the closest grid slot!
+    fn resolve_widget_overlap_on_drop(&mut self, kind: WidgetKind) {
+        const GRID_GAP: i32 = 12;
+        const EDGE_PAD: i32 = 18;
+        let Some(me) = self.state.widgets.get(kind).cloned() else { return };
+        let (aw, ah) = widget_window_dims(kind, me.size_tier);
+        let min_x = EDGE_PAD;
+        let max_x = (self.screen_w - aw - EDGE_PAD).max(min_x);
+        let min_y = TOPBAR_HEIGHT as i32 + 12;
+        let max_y = (self.screen_h - ah - EDGE_PAD).max(min_y);
+
+        let mut nx = me.x;
+        let mut ny = me.y;
+        let mut moved = false;
+
+        for other in &self.state.widgets.widgets {
+            if other.kind == kind || !other.enabled {
+                continue;
+            }
+            let (bw, bh) = widget_window_dims(other.kind, other.size_tier);
+            let ox1 = nx.max(other.x);
+            let oy1 = ny.max(other.y);
+            let ox2 = (nx + aw).min(other.x + bw);
+            let oy2 = (ny + ah).min(other.y + bh);
+            if ox2 - ox1 > 8 && oy2 - oy1 > 8 {
+                let candidates = [
+                    (other.x, other.y + bh + GRID_GAP),
+                    (other.x, other.y - ah - GRID_GAP),
+                    (other.x + bw + GRID_GAP, other.y),
+                    (other.x - aw - GRID_GAP, other.y),
+                ];
+                if let Some(&(cx, cy)) = candidates
+                    .iter()
+                    .filter(|&&(cx, cy)| cx >= min_x && cx <= max_x && cy >= min_y && cy <= max_y)
+                    .min_by_key(|&&(cx, cy)| (cx - nx).abs() + (cy - ny).abs())
+                {
+                    nx = cx;
+                    ny = cy;
+                    moved = true;
+                }
+            }
+        }
+        if moved {
+            if let Some(cfg) = self.state.widgets.get_mut(kind) {
+                cfg.x = nx;
+                cfg.y = ny;
+            }
+            if let Some(ww) = self.widget_wins.iter().find(|w| w.kind == kind) {
+                unsafe {
+                    let _ = SetWindowPos(ww.hwnd, HWND_BOTTOM, nx, ny, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+                }
+            }
+        }
+    }
+
+    /// 1-click Smart Grid Auto-Arrange: lines up all active widgets cleanly with uniform 12px spacing!
+    fn arrange_widgets_in_grid(&mut self) {
+        const GRID_GAP: i32 = 12;
+        const EDGE_PAD: i32 = 24;
+        let top_start = TOPBAR_HEIGHT as i32 + 24;
+        let mut enabled: Vec<(WidgetKind, i32, i32)> = self
+            .state
+            .widgets
+            .widgets
+            .iter()
+            .filter(|w| w.enabled)
+            .map(|w| {
+                let (ww, wh) = widget_window_dims(w.kind, w.size_tier);
+                (w.kind, ww, wh)
+            })
+            .collect();
+        if enabled.is_empty() {
+            return;
+        }
+        let max_col_w = enabled.iter().map(|(_, w, _)| *w).max().unwrap_or(420);
+        let col_x = (self.screen_w - max_col_w - EDGE_PAD).max(EDGE_PAD);
+        let mut cy = top_start;
+        let mut col_idx = 0;
+
+        for (kind, ww, wh) in enabled.drain(..) {
+            if cy + wh > self.screen_h - EDGE_PAD && col_idx == 0 {
+                col_idx = 1;
+                cy = top_start;
+            }
+            let x = if col_idx == 0 {
+                col_x + (max_col_w - ww) // flush right column alignment!
+            } else {
+                (col_x - ww - GRID_GAP).max(EDGE_PAD)
+            };
+            if let Some(cfg) = self.state.widgets.get_mut(kind) {
+                cfg.x = x;
+                cfg.y = cy;
+            }
+            cy += wh + GRID_GAP;
+        }
+        save_widgets(&self.state.widgets);
+        self.sync_widget_windows_visibility();
+        self.redraw_all_widgets();
     }
 
     fn redraw_all_widgets(&mut self) {
@@ -1127,6 +1352,10 @@ impl ShellRuntime {
                 save_widgets(&self.state.widgets);
                 self.sync_widget_windows_visibility();
                 self.redraw_widget(kind);
+                if self.state.overview_open { self.redraw_overview(); }
+            }
+            Action::ArrangeWidgetsGrid => {
+                self.arrange_widgets_in_grid();
                 if self.state.overview_open { self.redraw_overview(); }
             }
             Action::ResetWidgetsLayout => {
@@ -1930,17 +2159,21 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 };
                 let _ = TrackMouseEvent(&mut tme);
 
-                // Live Desktop Widget Dragging!
+                // Live Magnetic Desktop Widget Dragging & Grid Docking!
                 if let Some((dwk, off_x, off_y)) = rt.dragging_widget {
                     let (cx, cy) = win32_shell::cursor_pos();
-                    let nx = (cx - off_x).clamp(8, rt.screen_w - 80);
-                    let ny = (cy - off_y).clamp(TOPBAR_HEIGHT as i32 + 6, rt.screen_h - 60);
+                    let (nx, ny, snapped) = rt.compute_magnetic_widget_pos(dwk, cx - off_x, cy - off_y);
+                    let prev_snap = rt.snapped_widget;
+                    rt.snapped_widget = if snapped { Some(dwk) } else { None };
                     if let Some(cfg) = rt.state.widgets.get_mut(dwk) {
                         cfg.x = nx;
                         cfg.y = ny;
                     }
                     if let Some(ww) = rt.widget_wins.iter().find(|w| w.kind == dwk) {
                         let _ = SetWindowPos(ww.hwnd, HWND_BOTTOM, nx, ny, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+                    }
+                    if prev_snap != rt.snapped_widget {
+                        rt.redraw_widget(dwk);
                     }
                     return true;
                 }
@@ -2038,10 +2271,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 true
             }
             WM_LBUTTONUP => {
-                if rt.dragging_widget.is_some() {
-                    rt.dragging_widget = None;
+                if let Some((dwk, _, _)) = rt.dragging_widget.take() {
+                    let had_snap = rt.snapped_widget.take().is_some();
                     let _ = ReleaseCapture();
+                    rt.resolve_widget_overlap_on_drop(dwk);
                     save_widgets(&rt.state.widgets);
+                    if had_snap {
+                        rt.redraw_widget(dwk);
+                    }
                 }
                 if rt.state.active_slider.is_some() {
                     rt.state.active_slider = None;
@@ -2275,9 +2512,9 @@ fn run_visual_capture(out_dir: &PathBuf) {
         let mut h4 = Vec::new();
         wallpaper::draw_wallpaper_frame(ctx, WallpaperKind::Preset, "aura_obsidian_flow", 1600.0, 900.0, 2.4);
         ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 590.0, 180.0);
-        ui_widgets::render_desktop_widget(ctx, &state, WidgetKind::Clock, 1, false, &mut h1);
+        ui_widgets::render_desktop_widget(ctx, &state, WidgetKind::Clock, 1, false, false, &mut h1);
         ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 602.0, 390.0);
-        ui_widgets::render_desktop_widget(ctx, &state, WidgetKind::Music, 1, true, &mut h2);
+        ui_widgets::render_desktop_widget(ctx, &state, WidgetKind::Music, 1, true, false, &mut h2);
         ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 0.0, TOPBAR_HEIGHT);
         ui_dock::render_dock(ctx, &state, DOCK_THICKNESS, 900.0 - TOPBAR_HEIGHT, true, &mut h3);
         ctx.reset_transform();

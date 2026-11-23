@@ -5,7 +5,7 @@
   <p>Conserva toda la compatibilidad de juegos, DirectX, drivers y anti-cheats de Windows (Riot Vanguard, Steam, Epic), mientras reemplaza la interfaz pesada por una suite ultrarrápida estilo <em>Drool Dark Mode</em>.</p>
 
   <p>
-    <a href="https://github.com/dandifeto1111-prog/AuraOS/releases/latest"><img src="https://img.shields.io/badge/Release-v4.3.0-7C5CFF?style=for-the-badge&logo=github" alt="Release v4.3.0" /></a>
+    <a href="https://github.com/dandifeto1111-prog/AuraOS/releases/latest"><img src="https://img.shields.io/badge/Release-v4.4.0-7C5CFF?style=for-the-badge&logo=github" alt="Release v4.4.0" /></a>
     <img src="https://img.shields.io/badge/100%25_Rust-Direct2D_%2B_DirectComposition-F4727F?style=for-the-badge&logo=rust" alt="100% Rust" />
     <img src="https://img.shields.io/badge/OS-Windows_11_x64-34D399?style=for-the-badge&logo=windows11" alt="Windows 11" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-FBBF24?style=for-the-badge" alt="MIT License" /></a>
@@ -18,14 +18,14 @@
 
 **AuraOS** nace con una idea clara: combinar la base sólida y compatibilidad total de **Windows 11** con una experiencia visual completamente nueva, fluida y ligera escrita en **Rust puro** (sin Electron, sin Chromium y sin procesos WebView pesados).
 
-Cada aplicación del sistema está acelerada por hardware con **Direct2D y DirectComposition**, comparte el mismo lenguaje visual con **botones semáforo unificados (`×`, `−`, `+`)** y respeta 100% la estabilidad de tu equipo (reversible al instante con `Ctrl + Alt + W` o desde el desinstalador).
+Cada aplicación del sistema está acelerada por hardware con **Direct2D y DirectComposition**, ofrece **gestión completa de ventanas estilo Windows 11** (redimensionado libre por bordes/esquinas, Aero Snap al arrastrar a bordes, `Win + Flechas` y `Alt + Flechas`), **botones semáforo unificados (`×`, `−`, `+`)**, **widgets de escritorio con cuadrícula magnética**, **imágenes y fondos siempre en su proporción real sin estirarse** y respeto total por la estabilidad de tu equipo (reversible al instante con `Ctrl + Alt + W` o desde el desinstalador).
 
 ---
 
-## 🖼️ Galería del Sistema (Capturas Reales v4.3.0)
+## 🖼️ Galería del Sistema (Capturas Reales v4.4.0)
 
-### 🌌 Escritorio, Barra Superior, Dock y Widgets Flotantes
-Barra superior de 34 px con controles activos, telemetría en vivo (CPU, RAM, clima, Ethernet/Wi-Fi dinámico), Dock inteligente con muesquita estilo móvil y widgets arrastrables (`Reloj`, `Música SMTC con onda 60 FPS`, `Clima`, `Monitor PC`) con semáforo macOS integrado.
+### 🌌 Escritorio, Barra Superior, Dock y Widgets con Cuadrícula Magnética
+Barra superior de 34 px con controles activos, telemetría en vivo (CPU, RAM, clima, Ethernet/Wi-Fi dinámico), Dock inteligente con muesquita estilo móvil y widgets arrastrables (`Reloj`, `Música SMTC con onda 60 FPS`, `Clima`, `Monitor PC`) con semáforo macOS integrado, **acoplamiento magnético automático en cuadrícula** y botón de ordenamiento en 1 clic.
 
 <p align="center">
   <img src="docs/screenshots/desktop_widgets.png" alt="Escritorio y Widgets de AuraOS" width="100%" />
@@ -62,7 +62,7 @@ Control de audio maestro, cambio de salida/micrófono en 1 clic, mezclador por a
   </tr>
   <tr>
     <td align="center"><sub><strong>Centro de Control:</strong> Reproductor SMTC, mezclador Core Audio por app y controles rápidos</sub></td>
-    <td align="center"><sub><strong>AuraFiles v4.3:</strong> Escaneo paralelo (26,000+ archivos en 0.4 s) + contorno dorado exacto por carpeta</sub></td>
+    <td align="center"><sub><strong>AuraFiles v4.4:</strong> Escaneo paralelo (26,000+ archivos en 0.4 s), contorno dorado por carpeta y vista previa 1:1 sin estiramiento</sub></td>
   </tr>
 </table>
 
@@ -99,7 +99,7 @@ Control de audio maestro, cambio de salida/micrófono en 1 clic, mezclador por a
 ## 📖 Cómo Instalar y Usar AuraOS
 
 ### 1. Instalación rápida (Recomendada)
-1. Ve a la pestaña **[Releases](https://github.com/dandifeto1111-prog/AuraOS/releases/latest)** y descarga **`AuraOS-v4.3.0-Windows-x64.zip`**.
+1. Ve a la pestaña **[Releases](https://github.com/dandifeto1111-prog/AuraOS/releases/latest)** y descarga **`AuraOS-v4.4.0-Windows-x64.zip`**.
 2. Extrae el archivo ZIP y ejecuta **`AuraShell-Setup.exe`**.
 3. Elige tus opciones (inicio directo con Windows, ocultar barra clásica, posición del Dock, optimización opcional con `APBOptimizer`) y haz clic en **Instalar / Aplicar ajustes**.
 4. ¡Listo! AuraOS iniciará automáticamente en tu escritorio y recibirá futuras actualizaciones desde GitHub Releases.
@@ -109,6 +109,8 @@ Control de audio maestro, cambio de salida/micrófono en 1 clic, mezclador por a
 |---|---|
 | **`Alt + Space`** | Abre el **Overview y Buscador instantáneo** (apps, juegos y acciones) |
 | **`Alt + E`** | Abre **AuraFiles** (gestor de archivos + analizador de espacio) |
+| **`Win + Flechas` / `Alt + Flechas`** | Acopla cualquier ventana Aura a izquierda/derecha (50%), maximizar o restaurar |
+| **Clic derecho en semáforo verde `+`** | Cicla zonas de acople rápido (izquierda, derecha, maximizar, centrar) |
 | **`Ctrl + Alt + L`** | Bloquea la pantalla con **AuraLock** |
 | **`Ctrl + Alt + W`** | **Recuperación de emergencia:** restaura la barra clásica de Windows inmediatamente |
 

@@ -713,7 +713,20 @@ fn render_studio_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits
         wy += row_h + 10.0;
     }
 
-    // Reset positions button at bottom of Widgets column
+    // Smart Grid Arrange + Reset positions buttons at bottom of Widgets column
+    let grid_r = Rect::new(wg_card.x + 14.0, wg_card.y + wg_card.h - 84.0, left_w - 28.0, 32.0);
+    let grid_hov = state.hovered_id.as_deref() == Some("st_wg_grid");
+    ctx.fill_card(grid_r, 11.0, if grid_hov { theme::VIOLET_LIGHT } else { theme::VIOLET }, theme::VIOLET_BORDER);
+    ctx.draw_text_center("Ordenar widgets en cuadrícula", grid_r, TextStyle::Body11Med, theme::TEXT_PRIMARY);
+    hits.push(HitRegion {
+        id: "st_wg_grid".into(),
+        rect: grid_r,
+        action: Action::ArrangeWidgetsGrid,
+        right_action: None,
+        tooltip: Some("Alinea todos los widgets activos en cuadrícula uniforme".into()),
+        slider: None,
+    });
+
     let rst_r = Rect::new(wg_card.x + 14.0, wg_card.y + wg_card.h - 46.0, left_w - 28.0, 32.0);
     let rst_hov = state.hovered_id.as_deref() == Some("st_wg_reset");
     ctx.fill_rrect(rst_r, 11.0, if rst_hov { theme::ELEVATED_HOVER } else { theme::ELEVATED });

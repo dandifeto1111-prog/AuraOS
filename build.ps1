@@ -1,6 +1,6 @@
 ﻿param(
-    [string]$Version = "4.3.0",
-    [string]$Changelog = "v4.3.0: Fix definitivo pantalla completa/maximizado en AuraPhotos, AuraPlayer y AuraNotes, botones semaforo macOS unificados en widgets/paneles/instalador, nueva app AuraSettings (reemplazo nativo ligero de Configuracion de Windows), nueva pantalla de bloqueo GPU AuraLock con fondos personalizados y pipeline completo de GitHub Releases."
+    [string]$Version = "4.4.0",
+    [string]$Changelog = "v4.4.0: Redimensionado nativo en bordes/esquinas + Aero Snap Windows 11 (mitad izquierda/derecha, 4 esquinas 25%, Win+Flechas, Alt+Flechas, clic derecho en +) en todas las apps AuraOS, cuadricula magnetica inteligente con auto-acoplamiento para widgets de escritorio, y renderizado sin estiramiento (proporcion original exacta) para imagenes verticales 9:16 en AuraFiles y todos los fondos de pantalla."
 )
 
 $ErrorActionPreference = "Stop"
