@@ -1,0 +1,95 @@
+[package]
+name = "aura_os"
+version = "4.3.0"
+edition = "2021"
+
+[[bin]]
+name = "AuraShell"
+path = "src/main.rs"
+
+[[bin]]
+name = "AuraFiles"
+path = "src/bin/aura_files.rs"
+
+[[bin]]
+name = "AuraPhotos"
+path = "src/bin/aura_photos.rs"
+
+[[bin]]
+name = "AuraPlayer"
+path = "src/bin/aura_player.rs"
+
+[[bin]]
+name = "AuraNotes"
+path = "src/bin/aura_notes.rs"
+
+[[bin]]
+name = "AuraLock"
+path = "src/bin/aura_lock.rs"
+
+[[bin]]
+name = "AuraSettings"
+path = "src/bin/aura_settings.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+windows-core = "0.58"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "implement",
+    "Foundation",
+    "Foundation_Collections",
+    "Foundation_Numerics",
+    "Devices_Radios",
+    "Media_Control",
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Controls",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_DirectComposition",
+    "Win32_Graphics_Imaging",
+    "Win32_Graphics_Imaging_D2D",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_System_Threading",
+    "Win32_System_SystemInformation",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Registry",
+    "Win32_System_LibraryLoader",
+    "Win32_System_DataExchange",
+    "Win32_System_Shutdown",
+    "Win32_Networking_WinHttp",
+    "Win32_Networking_WinSock",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+strip = false

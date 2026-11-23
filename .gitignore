@@ -1,0 +1,16 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Compiled binaries & installers (published via GitHub Releases, not tracked in git)
+/*.exe
+/*.old
+/*.pdb
+/*.log
+/dist/
+/version.json
+
+# User local state & temporary captures
+*.tmp
+.DS_Store
+Thumbs.db

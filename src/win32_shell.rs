@@ -1,0 +1,1141 @@
+//! Native Win32 OS Shell Layer for AuraOS v3
+//! - Real Windows AppBar (34px Top Bar) + SPI_SETWORKAREA (zero 48px bottom gap)
+//! - 100% Reversible Windows Taskbar suppression (never kills explorer.exe)
+//! - Bulletproof Fullscreen detector (zero QUNS=2 / Wallpaper Engine false positives)
+//! - Open Windows tracker, native File Picker, .lnk resolver, Power actions
+
+use crate::models::{KeyboardLayoutEntry, RunningWindow};
+use std::ffi::OsStr;
+use std::os::windows::ffi::OsStrExt;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use windows::core::{PCWSTR, PWSTR};
+use windows::Win32::Foundation::{BOOL, HWND, LPARAM, MAX_PATH, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_ALL, CLSCTX_INPROC_SERVER,
+    COINIT_APARTMENTTHREADED, STGM,
+};
+use windows::Win32::System::ProcessStatus::GetModuleFileNameExW;
+use windows::Win32::System::Threading::{
+    CreateMutexW, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    ActivateKeyboardLayout, EnableWindow, GetKeyboardLayout, GetKeyboardLayoutList, keybd_event,
+    HKL, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, KLF_ACTIVATE,
+};
+use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+use windows::Win32::UI::Shell::{
+    FileOpenDialog, IFileOpenDialog, IShellLinkW, SHAppBarMessage, ShellExecuteW, ShellLink,
+    ABM_GETSTATE, ABM_NEW, ABM_QUERYPOS, ABM_REMOVE, ABM_SETPOS, ABM_SETSTATE, ABS_AUTOHIDE,
+    ABE_TOP, APPBARDATA, FOS_FILEMUSTEXIST, FOS_NOCHANGEDIR, SIGDN_FILESYSPATH,
+};
+use windows::Win32::System::Shutdown::LockWorkStation;
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetCursorPos, GetForegroundWindow,
+    GetSystemMetrics, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, PostMessageW,
+    RegisterWindowMessageW, SetForegroundWindow, SetWindowLongW, SetWindowPos, ShowWindow,
+    SystemParametersInfoW, GWL_EXSTYLE, HWND_BOTTOM, HWND_TOPMOST, SM_CXSCREEN, SM_CYSCREEN,
+    SPIF_SENDCHANGE, SPI_SETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SW_HIDE, SW_MAXIMIZE, SW_RESTORE, SW_SHOW, SW_SHOWNORMAL, WM_INPUTLANGCHANGEREQUEST,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+};
+
+static REGISTERED_APPBAR: AtomicIsize = AtomicIsize::new(0);
+static TASKBAR_HIDDEN_BY_US: AtomicBool = AtomicBool::new(false);
+static SAVED_TASKBAR_STATE: AtomicIsize = AtomicIsize::new(-1);
+
+pub fn to_wide(s: &str) -> Vec<u16> {
+    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+}
+
+pub fn from_wide(buf: &[u16]) -> String {
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..end])
+}
+
+pub fn screen_size() -> (i32, i32) {
+    unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) }
+}
+
+pub fn cursor_pos() -> (i32, i32) {
+    unsafe {
+        let mut pt = POINT::default();
+        if GetCursorPos(&mut pt).is_ok() {
+            (pt.x, pt.y)
+        } else {
+            (0, 0)
+        }
+    }
+}
+
+pub fn acquire_single_instance_mutex(name: &str) -> bool {
+    unsafe {
+        let w = to_wide(name);
+        let h = CreateMutexW(None, true, PCWSTR(w.as_ptr()));
+        if h.is_err() {
+            return false;
+        }
+        let last_err = windows::Win32::Foundation::GetLastError();
+        if last_err == windows::Win32::Foundation::ERROR_ALREADY_EXISTS {
+            // Try activating existing AuraShell instance
+            let msg_name = to_wide("WM_AURASHELL_V3_ACTIVATE");
+            let msg = RegisterWindowMessageW(PCWSTR(msg_name.as_ptr()));
+            let top_title = to_wide("AuraTopBar");
+            if let Ok(existing) = FindWindowW(None, PCWSTR(top_title.as_ptr())) {
+                if !existing.is_invalid() {
+                    let _ = PostMessageW(existing, msg, WPARAM(0), LPARAM(0));
+                    return false;
+                }
+            }
+            return false;
+        }
+        true
+    }
+}
+
+pub fn make_tool_window(hwnd: HWND, no_activate: bool) {
+    unsafe {
+        let mut ex = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        ex |= WS_EX_TOOLWINDOW.0 as i32;
+        if no_activate {
+            ex |= WS_EX_NOACTIVATE.0 as i32;
+        }
+        SetWindowLongW(hwnd, GWL_EXSTYLE, ex);
+    }
+}
+
+pub fn ensure_topmost(hwnd: HWND) {
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
+pub fn send_to_desktop_bottom(hwnd: HWND) {
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_BOTTOM,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
+pub fn bring_to_front(hwnd: HWND) {
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+    use windows::Win32::UI::WindowsAndMessaging::BringWindowToTop;
+    unsafe {
+        let fg = GetForegroundWindow();
+        let fg_tid = if !fg.is_invalid() {
+            GetWindowThreadProcessId(fg, None)
+        } else {
+            0
+        };
+        let cur_tid = GetCurrentThreadId();
+        let attached = fg_tid != 0 && fg_tid != cur_tid && AttachThreadInput(cur_tid, fg_tid, true).as_bool();
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetForegroundWindow(hwnd);
+        let _ = SetFocus(hwnd);
+        if attached {
+            let _ = AttachThreadInput(cur_tid, fg_tid, false);
+        }
+    }
+}
+
+pub fn toggle_or_focus_window(hwnd_raw: isize) {
+    let hwnd = HWND(hwnd_raw as *mut _);
+    if hwnd.is_invalid() {
+        return;
+    }
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+            let _ = SetForegroundWindow(hwnd);
+        } else if GetForegroundWindow() == hwnd {
+            let _ = ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_MINIMIZE);
+        } else {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
+}
+
+// ==================== APPBAR & WORKAREA ====================
+
+pub fn register_top_appbar(hwnd: HWND, screen_w: i32, bar_h: i32) -> RECT {
+    unsafe {
+        let mut abd = APPBARDATA {
+            cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+            hWnd: hwnd,
+            uEdge: ABE_TOP,
+            rc: RECT { left: 0, top: 0, right: screen_w, bottom: bar_h },
+            ..Default::default()
+        };
+        if REGISTERED_APPBAR.load(Ordering::Relaxed) != hwnd.0 as isize {
+            SHAppBarMessage(ABM_NEW, &mut abd);
+            REGISTERED_APPBAR.store(hwnd.0 as isize, Ordering::Relaxed);
+        }
+        SHAppBarMessage(ABM_QUERYPOS, &mut abd);
+        abd.rc.bottom = abd.rc.top + bar_h;
+        SHAppBarMessage(ABM_SETPOS, &mut abd);
+        abd.rc
+    }
+}
+
+pub fn unregister_top_appbar() {
+    let raw = REGISTERED_APPBAR.swap(0, Ordering::Relaxed);
+    if raw == 0 {
+        return;
+    }
+    unsafe {
+        let mut abd = APPBARDATA {
+            cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+            hWnd: HWND(raw as *mut _),
+            ..Default::default()
+        };
+        SHAppBarMessage(ABM_REMOVE, &mut abd);
+    }
+}
+
+pub fn set_work_area(left: i32, top: i32, right: i32, bottom: i32) {
+    unsafe {
+        let mut rc = RECT { left, top, right, bottom };
+        let _ = SystemParametersInfoW(
+            SPI_SETWORKAREA,
+            0,
+            Some(&mut rc as *mut RECT as *mut _),
+            SPIF_SENDCHANGE,
+        );
+    }
+}
+
+pub fn apply_full_work_area(top_bar_px: i32, taskbar_hidden: bool) {
+    let (sw, sh) = screen_size();
+    let bottom = if taskbar_hidden { sh } else { sh - 48 };
+    set_work_area(0, top_bar_px, sw, bottom);
+}
+
+pub fn refresh_maximized_windows() {
+    let open = get_open_user_windows();
+    unsafe {
+        for w in open {
+            let hwnd = HWND(w.hwnd as *mut _);
+            if IsZoomed(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+                let _ = ShowWindow(hwnd, SW_MAXIMIZE);
+            }
+        }
+    }
+}
+
+// ==================== REVERSIBLE WINDOWS TASKBAR SUPPRESSION ====================
+
+fn set_windows_taskbar_autohide(enable: bool) {
+    unsafe {
+        let cls = to_wide("Shell_TrayWnd");
+        let Ok(tray) = FindWindowW(PCWSTR(cls.as_ptr()), None) else { return };
+        if tray.is_invalid() {
+            return;
+        }
+        let mut abd = APPBARDATA {
+            cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+            hWnd: tray,
+            ..Default::default()
+        };
+        if enable && SAVED_TASKBAR_STATE.load(Ordering::Relaxed) < 0 {
+            let st = SHAppBarMessage(ABM_GETSTATE, &mut abd) as isize;
+            SAVED_TASKBAR_STATE.store(st, Ordering::Relaxed);
+        }
+        if enable {
+            abd.lParam = LPARAM(ABS_AUTOHIDE as isize);
+            SHAppBarMessage(ABM_SETSTATE, &mut abd);
+        } else {
+            let saved = SAVED_TASKBAR_STATE.swap(-1, Ordering::Relaxed);
+            let restore = if saved >= 0 { saved & !(ABS_AUTOHIDE as isize) } else { 0 };
+            abd.lParam = LPARAM(restore);
+            SHAppBarMessage(ABM_SETSTATE, &mut abd);
+        }
+    }
+}
+
+pub fn set_taskbar_visibility(visible: bool) {
+    unsafe {
+        let (sw, sh) = screen_size();
+        if !visible {
+            set_windows_taskbar_autohide(true);
+        }
+
+        let cls = to_wide("Shell_TrayWnd");
+        if let Ok(primary) = FindWindowW(PCWSTR(cls.as_ptr()), None) {
+            if !primary.is_invalid() {
+                if !visible {
+                    let _ = EnableWindow(primary, false);
+                    let _ = ShowWindow(primary, SW_HIDE);
+                    let _ = SetWindowPos(primary, HWND::default(), 0, sh + 240, sw, 48, SWP_NOACTIVATE | SWP_NOZORDER);
+                } else {
+                    let _ = EnableWindow(primary, true);
+                    let _ = SetWindowPos(primary, HWND::default(), 0, sh - 48, sw, 48, SWP_NOACTIVATE | SWP_NOZORDER);
+                    let _ = ShowWindow(primary, SW_SHOW);
+                }
+            }
+        }
+
+        let sec_cls = to_wide("Shell_SecondaryTrayWnd");
+        let mut sec = HWND::default();
+        while let Ok(next) = FindWindowExW(HWND::default(), sec, PCWSTR(sec_cls.as_ptr()), None) {
+            if next.is_invalid() {
+                break;
+            }
+            let _ = EnableWindow(next, visible);
+            let _ = ShowWindow(next, if visible { SW_SHOW } else { SW_HIDE });
+            sec = next;
+        }
+
+        if visible {
+            set_windows_taskbar_autohide(false);
+        }
+        TASKBAR_HIDDEN_BY_US.store(!visible, Ordering::Relaxed);
+    }
+}
+
+pub fn enforce_taskbar_suppressed() {
+    unsafe {
+        let cls = to_wide("Shell_TrayWnd");
+        let Ok(primary) = FindWindowW(PCWSTR(cls.as_ptr()), None) else { return };
+        if primary.is_invalid() {
+            return;
+        }
+        let (sw, sh) = screen_size();
+        let mut r = RECT::default();
+        let vis = IsWindowVisible(primary).as_bool();
+        let on_screen = GetWindowRect(primary, &mut r).is_ok() && r.top < sh + 50;
+        if vis || on_screen {
+            let _ = EnableWindow(primary, false);
+            let _ = ShowWindow(primary, SW_HIDE);
+            let _ = SetWindowPos(primary, HWND::default(), 0, sh + 240, sw, 48, SWP_NOACTIVATE | SWP_NOZORDER);
+        }
+    }
+}
+
+pub fn restore_windows_safely() {
+    crate::window_styler::restore_all_styled_windows();
+    unregister_top_appbar();
+    if TASKBAR_HIDDEN_BY_US.load(Ordering::Relaxed) {
+        set_taskbar_visibility(true);
+        let (sw, sh) = screen_size();
+        set_work_area(0, 0, sw, sh - 48);
+    }
+}
+
+// ==================== FULLSCREEN & DESKTOP DETECTION (ZERO QUNS=2 BUG!) ====================
+
+pub fn get_process_info(pid: u32) -> (String, String) {
+    if pid == 0 {
+        return (String::new(), String::new());
+    }
+    unsafe {
+        // Primary: PROCESS_QUERY_LIMITED_INFORMATION + QueryFullProcessImageNameW works on sandboxed
+        // Edge/Chrome audio processes, Store UWP apps (Spotify/WhatsApp), and anti-cheat games!
+        if let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            let mut buf = [0u16; MAX_PATH as usize * 2];
+            let mut len = buf.len() as u32;
+            let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
+            let _ = windows::Win32::Foundation::CloseHandle(h);
+            if ok && len > 0 {
+                let path = String::from_utf16_lossy(&buf[..len as usize]);
+                let name = Path::new(&path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                return (name, path);
+            }
+        }
+        // Fallback: GetModuleFileNameExW
+        if let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, false, pid) {
+            let mut buf = [0u16; MAX_PATH as usize * 2];
+            let len = GetModuleFileNameExW(h, None, &mut buf);
+            let _ = windows::Win32::Foundation::CloseHandle(h);
+            if len > 0 {
+                let path = String::from_utf16_lossy(&buf[..len as usize]);
+                let name = Path::new(&path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                return (name, path);
+            }
+        }
+    }
+    (String::new(), String::new())
+}
+
+pub fn is_desktop_or_shell_window(hwnd: HWND) -> bool {
+    if hwnd.is_invalid() {
+        return true;
+    }
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+            return true;
+        }
+        let mut cls_buf = [0u16; 128];
+        let clen = GetClassNameW(hwnd, &mut cls_buf);
+        let cls = String::from_utf16_lossy(&cls_buf[..clen as usize]);
+        if matches!(
+            cls.as_str(),
+            "Progman"
+                | "WorkerW"
+                | "SHELLDLL_DefView"
+                | "SysListView32"
+                | "Shell_TrayWnd"
+                | "Shell_SecondaryTrayWnd"
+                | "ForegroundStaging"
+                | "ApplicationManager_DesktopShellWindow"
+                | "MultitaskingViewFrame"
+                | "Windows.UI.Core.CoreWindow"
+        ) {
+            return true;
+        }
+
+        let tlen = GetWindowTextLengthW(hwnd);
+        if tlen > 0 {
+            let mut tbuf = vec![0u16; (tlen + 1) as usize];
+            let got = GetWindowTextW(hwnd, &mut tbuf);
+            let title = String::from_utf16_lossy(&tbuf[..got as usize]);
+            if title.contains("AURA_WEB_WP_HOST")
+                || matches!(
+                    title.trim(),
+                    "Program Manager"
+                        | "WorkerW"
+                        | "AuraTopBar"
+                        | "AuraDock"
+                        | "AuraDockNotch"
+                        | "AuraOverview"
+                        | "AuraControlCenter"
+                        | "AuraPowerMenu"
+                        | "AuraLaunchpad"
+                        | "AuraDesktopClock"
+                        | "AuraWallpaperLayer"
+                        | "AuraWallpaperVideo"
+                        | "AuraWidgetClock"
+                        | "AuraWidgetMusic"
+                        | "AuraWidgetWeather"
+                        | "AuraWidgetMonitor"
+                )
+            {
+                return true;
+            }
+        }
+
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid != 0 {
+            if pid == std::process::id() {
+                return true;
+            }
+            let (pn, _) = get_process_info(pid);
+            let low = pn.to_lowercase();
+            if matches!(
+                low.as_str(),
+                "aurashell"
+                    | "wallpaper64"
+                    | "wallpaper32"
+                    | "webwallpaper32"
+                    | "ui32"
+                    | "searchhost"
+                    | "startmenuexperiencehost"
+                    | "shellexperiencehost"
+                    | "shellhost"
+                    | "lockapp"
+            ) {
+                return true;
+            }
+            if low == "explorer" && cls != "CabinetWClass" && cls != "ExploreWClass" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn is_fullscreen_app_active() -> bool {
+    unsafe {
+        let fg = GetForegroundWindow();
+        if is_desktop_or_shell_window(fg) {
+            return false;
+        }
+        let mut cloaked: i32 = 0;
+        let _ = DwmGetWindowAttribute(
+            fg,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut i32 as *mut _,
+            std::mem::size_of::<i32>() as u32,
+        );
+        if cloaked != 0 {
+            return false;
+        }
+        let ex = GetWindowLongW(fg, GWL_EXSTYLE);
+        if (ex & WS_EX_TOOLWINDOW.0 as i32) != 0 {
+            return false;
+        }
+        let mut r = RECT::default();
+        if GetWindowRect(fg, &mut r).is_err() {
+            return false;
+        }
+        let mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+        let mut mi = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(mon, &mut mi).as_bool() {
+            return false;
+        }
+        let m = mi.rcMonitor;
+        r.left <= m.left + 1 && r.top <= m.top + 1 && r.right >= m.right - 1 && r.bottom >= m.bottom - 1
+    }
+}
+
+pub fn is_foreground_overlapping(dock_rect: RECT) -> bool {
+    unsafe {
+        let fg = GetForegroundWindow();
+        if is_desktop_or_shell_window(fg) {
+            return false;
+        }
+        if IsZoomed(fg).as_bool() {
+            return true;
+        }
+        let mut r = RECT::default();
+        if GetWindowRect(fg, &mut r).is_err() {
+            return false;
+        }
+        !(r.right <= dock_rect.left - 14
+            || r.left >= dock_rect.right + 14
+            || r.bottom <= dock_rect.top - 14
+            || r.top >= dock_rect.bottom + 14)
+    }
+}
+
+// ==================== OPEN USER WINDOWS TRACKER ====================
+
+struct EnumState {
+    fg: HWND,
+    my_pid: u32,
+    out: Vec<RunningWindow>,
+}
+
+unsafe extern "system" fn enum_windows_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let state = &mut *(lparam.0 as *mut EnumState);
+    if !IsWindowVisible(hwnd).as_bool() {
+        return BOOL(1);
+    }
+    let tlen = GetWindowTextLengthW(hwnd);
+    if tlen <= 0 {
+        return BOOL(1);
+    }
+    let ex = GetWindowLongW(hwnd, GWL_EXSTYLE);
+    if (ex & WS_EX_TOOLWINDOW.0 as i32) != 0 {
+        return BOOL(1);
+    }
+    let mut cloaked: i32 = 0;
+    let _ = DwmGetWindowAttribute(
+        hwnd,
+        DWMWA_CLOAKED,
+        &mut cloaked as *mut i32 as *mut _,
+        std::mem::size_of::<i32>() as u32,
+    );
+    if cloaked != 0 {
+        return BOOL(1);
+    }
+
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid == 0 || pid == state.my_pid {
+        return BOOL(1);
+    }
+
+    let mut tbuf = vec![0u16; (tlen + 1) as usize];
+    let got = GetWindowTextW(hwnd, &mut tbuf);
+    let title = String::from_utf16_lossy(&tbuf[..got as usize]).trim().to_string();
+    if title.is_empty()
+        || title == "Program Manager"
+        || title.contains("AURA_WEB_WP_HOST")
+        || (title == "Settings" && cloaked != 0)
+    {
+        return BOOL(1);
+    }
+
+    let (proc_name, exe_path) = get_process_info(pid);
+    let low = proc_name.to_lowercase();
+    if matches!(
+        low.as_str(),
+        "aurashell"
+            | "wallpaper64"
+            | "wallpaper32"
+            | "textinputhost"
+            | "searchhost"
+            | "startmenuexperiencehost"
+            | "shellexperiencehost"
+            | "applicationframehost"
+    ) && title == "Program Manager"
+    {
+        return BOOL(1);
+    }
+    if matches!(
+        low.as_str(),
+        "aurashell" | "wallpaper64" | "wallpaper32" | "textinputhost" | "searchhost" | "startmenuexperiencehost"
+    ) {
+        return BOOL(1);
+    }
+
+    state.out.push(RunningWindow {
+        hwnd: hwnd.0 as isize,
+        pid,
+        title,
+        process_name: if proc_name.is_empty() { "App".to_string() } else { proc_name },
+        exe_path,
+        is_active: hwnd == state.fg,
+        is_minimized: IsIconic(hwnd).as_bool(),
+    });
+    BOOL(1)
+}
+
+pub fn get_open_user_windows() -> Vec<RunningWindow> {
+    unsafe {
+        let mut state = EnumState {
+            fg: GetForegroundWindow(),
+            my_pid: std::process::id(),
+            out: Vec::with_capacity(16),
+        };
+        let _ = EnumWindows(Some(enum_windows_cb), LPARAM(&mut state as *mut EnumState as isize));
+        state.out
+    }
+}
+
+pub fn get_active_window_label() -> String {
+    unsafe {
+        let fg = GetForegroundWindow();
+        if is_desktop_or_shell_window(fg) {
+            return "Escritorio".to_string();
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        let (pn, _) = get_process_info(pid);
+        match pn.to_lowercase().as_str() {
+            "msedge" => "Microsoft Edge".to_string(),
+            "chrome" => "Google Chrome".to_string(),
+            "discord" => "Discord".to_string(),
+            "spotify" => "Spotify".to_string(),
+            "antigravity" => "Antigravity".to_string(),
+            "aurafiles" => "AuraFiles".to_string(),
+            "code" => "VS Code".to_string(),
+            "windowsterminal" => "Terminal".to_string(),
+            "" => "Escritorio".to_string(),
+            _ => pn,
+        }
+    }
+}
+
+// ==================== SYSTEM CONTROLS, POWER & LAUNCHING ====================
+
+pub fn is_any_maximized_window_visible() -> bool {
+    unsafe {
+        let fg = GetForegroundWindow();
+        if !is_desktop_or_shell_window(fg) && IsZoomed(fg).as_bool() {
+            return true;
+        }
+    }
+    is_fullscreen_app_active()
+}
+
+pub fn get_active_user_hwnd() -> isize {
+    unsafe {
+        let fg = GetForegroundWindow();
+        if is_desktop_or_shell_window(fg) {
+            0
+        } else {
+            fg.0 as isize
+        }
+    }
+}
+
+pub fn get_active_keyboard_hkl() -> isize {
+    unsafe {
+        let fg = GetForegroundWindow();
+        let tid = if !fg.is_invalid() { GetWindowThreadProcessId(fg, None) } else { 0 };
+        GetKeyboardLayout(tid).0 as isize
+    }
+}
+
+pub fn get_installed_keyboard_layouts() -> Vec<KeyboardLayoutEntry> {
+    unsafe {
+        let mut list = [HKL::default(); 16];
+        let count = GetKeyboardLayoutList(Some(&mut list)) as usize;
+        let mut out = Vec::new();
+        for hkl in list.into_iter().take(count) {
+            let lang_id = (hkl.0 as usize) & 0xFFFF;
+            let primary = lang_id & 0x3FF;
+            let (short_code, label) = match lang_id {
+                0x240A => ("ES-CO", "Español (Colombia)"),
+                0x080A => ("ES-LA", "Español (Latinoamérica)"),
+                0x0C0A => ("ES-ES", "Español (España)"),
+                0x0409 => ("EN-US", "English (United States)"),
+                0x0809 => ("EN-UK", "English (UK)"),
+                0x0416 => ("PT-BR", "Português (Brasil)"),
+                0x040C => ("FR", "Français"),
+                0x0407 => ("DE", "Deutsch"),
+                _ => match primary {
+                    0x0A => ("ESP", "Español"),
+                    0x09 => ("ENG", "English"),
+                    0x16 => ("POR", "Português"),
+                    0x0C => ("FRA", "Français"),
+                    0x07 => ("DEU", "Deutsch"),
+                    _ => ("KBD", "Teclado"),
+                },
+            };
+            out.push(KeyboardLayoutEntry {
+                hkl: hkl.0 as isize,
+                short_code: short_code.to_string(),
+                label: label.to_string(),
+            });
+        }
+        out
+    }
+}
+
+pub fn select_keyboard_layout(hkl_raw: isize) {
+    unsafe {
+        let hkl = HKL(hkl_raw as *mut _);
+        let _ = ActivateKeyboardLayout(hkl, KLF_ACTIVATE);
+        let fg = GetForegroundWindow();
+        if !fg.is_invalid() {
+            let _ = PostMessageW(fg, WM_INPUTLANGCHANGEREQUEST, WPARAM(0), LPARAM(hkl_raw));
+        }
+    }
+}
+
+pub fn get_keyboard_layout_short() -> String {
+    unsafe {
+        let fg = GetForegroundWindow();
+        let tid = if !fg.is_invalid() {
+            GetWindowThreadProcessId(fg, None)
+        } else {
+            0
+        };
+        let hkl = GetKeyboardLayout(tid);
+        let lang_id = (hkl.0 as usize) & 0x3FF;
+        match lang_id {
+            0x0A => "ESP".to_string(),
+            0x09 => "ENG".to_string(),
+            0x16 => "POR".to_string(),
+            0x0C => "FRA".to_string(),
+            0x07 => "DEU".to_string(),
+            _ => "ESP".to_string(),
+        }
+    }
+}
+
+pub fn cycle_keyboard_layout() {
+    let layouts = get_installed_keyboard_layouts();
+    if layouts.len() >= 2 {
+        unsafe {
+            let fg = GetForegroundWindow();
+            let tid = if !fg.is_invalid() { GetWindowThreadProcessId(fg, None) } else { 0 };
+            let cur = GetKeyboardLayout(tid).0 as isize;
+            let idx = layouts.iter().position(|l| l.hkl == cur).unwrap_or(0);
+            let next = &layouts[(idx + 1) % layouts.len()];
+            select_keyboard_layout(next.hkl);
+            return;
+        }
+    }
+    unsafe {
+        keybd_event(0x12, 0, KEYBD_EVENT_FLAGS(0), 0);
+        keybd_event(0x10, 0, KEYBD_EVENT_FLAGS(0), 0);
+        keybd_event(0x10, 0, KEYEVENTF_KEYUP, 0);
+        keybd_event(0x12, 0, KEYEVENTF_KEYUP, 0);
+    }
+}
+
+pub fn get_network_status() -> String {
+    // Fast native check using Windows IP Helper / Tcp check fallback
+    use windows::Win32::NetworkManagement::IpHelper::{
+        GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH,
+    };
+    use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+    unsafe {
+        let mut size = 16384u32;
+        let mut buf = vec![0u8; size as usize];
+        let ret = GetAdaptersAddresses(
+            0,
+            GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST,
+            None,
+            Some(buf.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH),
+            &mut size,
+        );
+        if ret == 0 {
+            let mut ptr = buf.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
+            let mut has_eth = false;
+            while !ptr.is_null() {
+                let a = &*ptr;
+                if a.OperStatus == IfOperStatusUp {
+                    if a.IfType == 71 {
+                        return "Wi-Fi".to_string();
+                    }
+                    if a.IfType == 6 {
+                        has_eth = true;
+                    }
+                }
+                ptr = a.Next;
+            }
+            if has_eth {
+                return "Ethernet".to_string();
+            }
+        }
+    }
+    "Red".to_string()
+}
+
+pub fn launch_target(target: &str, args: &str) {
+    if target.trim().is_empty() {
+        return;
+    }
+    unsafe {
+        let op = to_wide("open");
+        let file = to_wide(target);
+        let params = to_wide(args);
+        let dir_str = Path::new(target)
+            .parent()
+            .and_then(|p| p.to_str())
+            .filter(|_| Path::new(target).is_file())
+            .unwrap_or("");
+        let dir = to_wide(dir_str);
+        ShellExecuteW(
+            HWND::default(),
+            PCWSTR(op.as_ptr()),
+            PCWSTR(file.as_ptr()),
+            if args.is_empty() { PCWSTR::null() } else { PCWSTR(params.as_ptr()) },
+            if dir_str.is_empty() { PCWSTR::null() } else { PCWSTR(dir.as_ptr()) },
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+pub fn launch_aurafiles(folder: Option<&str>) {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let candidates = [
+        exe_dir.as_ref().map(|d| d.join("AuraFiles.exe")),
+        Some(crate::models::app_data_dir().join("AuraFiles.exe")),
+    ];
+    for c in candidates.iter().flatten() {
+        if c.exists() {
+            let arg = folder.map(|f| format!("\"{}\"", f)).unwrap_or_default();
+            launch_target(&c.to_string_lossy(), &arg);
+            return;
+        }
+    }
+    let arg = folder.map(|f| format!("\"{}\"", f)).unwrap_or_default();
+    launch_target("explorer.exe", &arg);
+}
+
+pub fn launch_aura_settings(tab: Option<&str>) {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let candidates = [
+        exe_dir.as_ref().map(|d| d.join("AuraSettings.exe")),
+        Some(crate::models::app_data_dir().join("AuraSettings.exe")),
+    ];
+    for c in candidates.iter().flatten() {
+        if c.exists() {
+            let arg = tab.map(|t| format!("--tab {}", t)).unwrap_or_default();
+            launch_target(&c.to_string_lossy(), &arg);
+            return;
+        }
+    }
+    launch_target("ms-settings:", "");
+}
+
+pub fn launch_aura_lock() {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let candidates = [
+        exe_dir.as_ref().map(|d| d.join("AuraLock.exe")),
+        Some(crate::models::app_data_dir().join("AuraLock.exe")),
+    ];
+    for c in candidates.iter().flatten() {
+        if c.exists() {
+            launch_target(&c.to_string_lossy(), "");
+            return;
+        }
+    }
+    power_lock();
+}
+
+/// Broadcasts live settings reload signal to running AuraShell.exe (zero restart!)
+pub fn notify_shell_settings_changed() {
+    use windows::Win32::UI::WindowsAndMessaging::{RegisterWindowMessageW, SendNotifyMessageW, HWND_BROADCAST};
+    unsafe {
+        let m = to_wide("WM_AURAOS_SETTINGS_CHANGED");
+        let msg = RegisterWindowMessageW(PCWSTR(m.as_ptr()));
+        if msg != 0 {
+            let _ = SendNotifyMessageW(HWND_BROADCAST, msg, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+// Native Windows Power Actions
+pub fn power_lock() {
+    unsafe {
+        let _ = LockWorkStation();
+    }
+}
+
+pub fn power_sleep() {
+    let _ = std::process::Command::new("rundll32.exe")
+        .args(["powrprof.dll,SetSuspendState", "0,1,0"])
+        .spawn();
+}
+
+pub fn power_restart() {
+    restore_windows_safely();
+    let _ = std::process::Command::new("shutdown.exe")
+        .args(["/r", "/t", "0"])
+        .spawn();
+}
+
+pub fn power_shutdown() {
+    restore_windows_safely();
+    let _ = std::process::Command::new("shutdown.exe")
+        .args(["/s", "/t", "0"])
+        .spawn();
+}
+
+// Resolve Windows .lnk shortcut target cleanly via COM IShellLinkW
+pub fn resolve_shortcut_target(lnk_path: &str) -> Option<String> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+        let persist: IPersistFile = windows::core::Interface::cast(&link).ok()?;
+        let w = to_wide(lnk_path);
+        persist.Load(PCWSTR(w.as_ptr()), STGM(0)).ok()?;
+        let mut target = [0u16; MAX_PATH as usize * 2];
+        link.GetPath(&mut target, std::ptr::null_mut(), 0).ok()?;
+        let out = from_wide(&target);
+        if !out.is_empty() && Path::new(&out).exists() {
+            Some(out)
+        } else {
+            None
+        }
+    }
+}
+
+// Native Windows 11 File Open Dialog (for "+ Agregar IA / App" and "+ Agregar juego")
+pub fn pick_file_dialog(title: &str, filter_label: &str, filter_spec: &str) -> Option<String> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_ALL).ok()?;
+        let w_title = to_wide(title);
+        let _ = dialog.SetTitle(PCWSTR(w_title.as_ptr()));
+        let w_label = to_wide(filter_label);
+        let w_spec = to_wide(filter_spec);
+        let specs = [COMDLG_FILTERSPEC {
+            pszName: PCWSTR(w_label.as_ptr()),
+            pszSpec: PCWSTR(w_spec.as_ptr()),
+        }];
+        let _ = dialog.SetFileTypes(&specs);
+        if let Ok(opts) = dialog.GetOptions() {
+            let _ = dialog.SetOptions(opts | FOS_FILEMUSTEXIST | FOS_NOCHANGEDIR);
+        }
+        dialog.Show(HWND::default()).ok()?;
+        let item = dialog.GetResult().ok()?;
+        let pwstr: PWSTR = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = pwstr.to_string().ok();
+        windows::Win32::System::Com::CoTaskMemFree(Some(pwstr.0 as *const _));
+        path
+    }
+}
+
+// ==================== AURAOS v4.0 NATIVE SUITE ROUTER ====================
+
+pub fn is_image_ext(ext: &str) -> bool {
+    matches!(
+        ext.to_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "ico" | "tif" | "tiff"
+    )
+}
+
+pub fn is_video_ext(ext: &str) -> bool {
+    matches!(
+        ext.to_lowercase().as_str(),
+        "mp4" | "mkv" | "webm" | "mov" | "avi" | "wmv" | "flv" | "m4v"
+    )
+}
+
+pub fn is_audio_ext(ext: &str) -> bool {
+    matches!(
+        ext.to_lowercase().as_str(),
+        "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac"
+    )
+}
+
+pub fn is_text_code_ext(ext: &str) -> bool {
+    matches!(
+        ext.to_lowercase().as_str(),
+        "txt" | "md" | "json" | "log" | "ini" | "cfg" | "toml" | "yaml" | "yml" | "xml"
+            | "csv" | "ps1" | "bat" | "cmd" | "sh" | "rs" | "py" | "js" | "ts" | "jsx"
+            | "tsx" | "cs" | "c" | "cpp" | "h" | "hpp" | "html" | "css" | "sql" | "env"
+    )
+}
+
+pub fn resolve_aura_app_path(exe_name: &str) -> Option<std::path::PathBuf> {
+    if let Ok(cur) = std::env::current_exe() {
+        if let Some(dir) = cur.parent() {
+            let p = dir.join(exe_name);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    let p = crate::models::app_data_dir().join(exe_name);
+    if p.exists() {
+        return Some(p);
+    }
+    None
+}
+
+pub fn launch_aura_app(exe_name: &str, file_arg: Option<&str>) -> bool {
+    let Some(exe) = resolve_aura_app_path(exe_name) else {
+        return false;
+    };
+    let mut cmd = std::process::Command::new(&exe);
+    if let Some(a) = file_arg {
+        if !a.trim().is_empty() {
+            cmd.arg(a);
+        }
+    }
+    cmd.spawn().is_ok()
+}
+
+/// Smart AuraOS File Router: opens Images in AuraPhotos, Videos/Audio in AuraPlayer,
+/// Text/Code in AuraNotes, and everything else via Windows ShellExecuteW!
+pub fn open_path_with_aura_suite(path: &Path) {
+    let path_str = path.to_string_lossy().to_string();
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if is_image_ext(ext) && launch_aura_app("AuraPhotos.exe", Some(&path_str)) {
+        return;
+    }
+    if (is_video_ext(ext) || is_audio_ext(ext)) && launch_aura_app("AuraPlayer.exe", Some(&path_str)) {
+        return;
+    }
+    if is_text_code_ext(ext) && launch_aura_app("AuraNotes.exe", Some(&path_str)) {
+        return;
+    }
+    launch_target(&path_str, "");
+}
+
+pub fn find_ffmpeg_tool(name: &str) -> Option<std::path::PathBuf> {
+    if let Ok(cur) = std::env::current_exe() {
+        if let Some(d) = cur.parent() {
+            let p = d.join(name);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    if let Ok(path_env) = std::env::var("PATH") {
+        for dir in path_env.split(';') {
+            let p = Path::new(dir).join(name);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let winget_links = Path::new(&local).join(r"Microsoft\WinGet\Links").join(name);
+        if winget_links.exists() {
+            return Some(winget_links);
+        }
+        let pkgs = Path::new(&local).join(r"Microsoft\WinGet\Packages");
+        if let Ok(entries) = std::fs::read_dir(pkgs) {
+            for e in entries.flatten() {
+                let n = e.file_name().to_string_lossy().to_lowercase();
+                if n.contains("ffmpeg") {
+                    for sub in walk_find_exe(&e.path(), name, 3) {
+                        return Some(sub);
+                    }
+                }
+            }
+        }
+    }
+    for cand in [
+        format!(r"C:\ffmpeg\bin\{}", name),
+        format!(r"C:\Program Files\ffmpeg\bin\{}", name),
+    ] {
+        let p = std::path::PathBuf::from(cand);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn walk_find_exe(dir: &Path, name: &str, depth: usize) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    if depth == 0 {
+        return found;
+    }
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_file() && p.file_name().map(|f| f.to_string_lossy().eq_ignore_ascii_case(name)).unwrap_or(false) {
+                found.push(p);
+                return found;
+            } else if p.is_dir() {
+                found.extend(walk_find_exe(&p, name, depth - 1));
+                if !found.is_empty() {
+                    return found;
+                }
+            }
+        }
+    }
+    found
+}
+
+pub fn move_to_recycle_bin(path: &str) -> bool {
+    use windows::Win32::UI::Shell::{SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW};
+    let mut wide: Vec<u16> = path.encode_utf16().collect();
+    wide.push(0);
+    wide.push(0); // double-null terminated required by SHFileOperationW
+    let mut op = SHFILEOPSTRUCTW {
+        hwnd: HWND::default(),
+        wFunc: FO_DELETE,
+        pFrom: PCWSTR(wide.as_ptr()),
+        pTo: PCWSTR::null(),
+        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT).0 as u16,
+        fAnyOperationsAborted: BOOL(0),
+        hNameMappings: std::ptr::null_mut(),
+        lpszProgressTitle: PCWSTR::null(),
+    };
+    unsafe { SHFileOperationW(&mut op) == 0 && !op.fAnyOperationsAborted.as_bool() }
+}
