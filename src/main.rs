@@ -4,6 +4,7 @@
 mod agent_bridge;
 mod audio;
 mod aura_window;
+mod dev_hub;
 mod dock_preview;
 mod genie;
 mod hotkey_hook;
@@ -15,6 +16,7 @@ mod renderer;
 mod system;
 mod telemetry_worker;
 mod theme;
+mod traffic_lights;
 mod ui_calendar;
 mod ui_clipboard;
 mod ui_control_center;
@@ -125,9 +127,11 @@ struct ShellRuntime {
     wallpaper: wallpaper::WallpaperEngine,
     dock_preview: dock_preview::DockPreviewPopup,
     genie: genie::GenieAnimator,
+    traffic_lights: traffic_lights::TrafficLightOverlay,
     startup_rx: Option<Receiver<StartupCatalog>>,
     weather_rx: Option<Receiver<WeatherInfo>>,
     radio_rx: Option<Receiver<RadioStates>>,
+    dev_hub_rx: Option<Receiver<dev_hub::DevHubSnapshot>>,
     file_pick_rx: Option<Receiver<(FilePickKind, Option<String>)>>,
 
     hwnd_topbar: HWND,
@@ -294,6 +298,20 @@ fn run_shell() -> windows::core::Result<()> {
         let _ = r_tx.send(radios::query_radio_states());
     });
 
+    // Apply v5.1 Material You 3 palette, display brightness/night-light & keep-awake immediately!
+    let _ = theme::load_active_palette();
+    if state.settings.brightness_pct < 100 || state.settings.night_light {
+        win32_shell::apply_display_gamma(state.settings.brightness_pct, state.settings.night_light);
+    }
+    if state.settings.keep_awake {
+        win32_shell::set_keep_awake(true);
+    }
+    let dh_cfg = state.dev_hub_cfg.clone();
+    let (dh_tx, dh_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = dh_tx.send(dev_hub::fetch_dev_hub_snapshot(&dh_cfg));
+    });
+
     // Initialize integrated lightweight Wallpaper Engine (behind desktop icons!)
     let mut wp_engine = wallpaper::WallpaperEngine::new(&gpu, sw, sh);
     wp_engine.set_performance_mode(state.settings.performance_mode);
@@ -356,7 +374,12 @@ fn run_shell() -> windows::core::Result<()> {
         });
         let (ww, wh) = widget_window_dims(wk, cfg.size_tier);
         let hw = create_layered_window(&cls_name, title, cfg.x, cfg.y, ww, wh, false, true)?;
-        let surf = WindowSurface::new(&gpu, hw, ww as u32, wh as u32)?;
+        let (init_w, init_h) = if state.settings.show_desktop_widgets && cfg.enabled {
+            (ww as u32, wh as u32)
+        } else {
+            (2, 2)
+        };
+        let surf = WindowSurface::new(&gpu, hw, init_w, init_h)?;
         widget_wins.push(DesktopWidgetWin {
             kind: wk,
             hwnd: hw,
@@ -385,16 +408,17 @@ fn run_shell() -> windows::core::Result<()> {
         let _ = RegisterHotKey(hwnd_topbar, HK_TASKS, MOD_CONTROL | MOD_ALT, 'T' as u32);
     }
 
+    // v5.1 LAZY SWAPCHAIN TRIMMING: Hidden overlays start at 2x2 (~0 MB GPU RAM!) and expand on demand!
     let surf_topbar = WindowSurface::new(&gpu, hwnd_topbar, sw as u32, top_h as u32)?;
     let surf_dock = WindowSurface::new(&gpu, hwnd_dock, dw as u32, dh as u32)?;
     let surf_notch = WindowSurface::new(&gpu, hwnd_notch, nw as u32, nh as u32)?;
-    let surf_cc = WindowSurface::new(&gpu, hwnd_cc, CC_WIDTH as u32, cc_h as u32)?;
-    let surf_power = WindowSurface::new(&gpu, hwnd_power, POWER_MENU_W as u32, POWER_MENU_H as u32)?;
-    let surf_calendar = WindowSurface::new(&gpu, hwnd_calendar, CAL_WIDTH as u32, CAL_HEIGHT as u32)?;
-    let surf_clipboard = WindowSurface::new(&gpu, hwnd_clipboard, CLIP_WIDTH as u32, CLIP_HEIGHT as u32)?;
-    let surf_osd = WindowSurface::new(&gpu, hwnd_osd, OSD_WIDTH as u32, OSD_HEIGHT as u32)?;
-    let surf_launchpad = WindowSurface::new(&gpu, hwnd_launchpad, sw as u32, body_h as u32)?;
-    let surf_overview = WindowSurface::new(&gpu, hwnd_overview, sw as u32, body_h as u32)?;
+    let surf_cc = WindowSurface::new(&gpu, hwnd_cc, 2, 2)?;
+    let surf_power = WindowSurface::new(&gpu, hwnd_power, 2, 2)?;
+    let surf_calendar = WindowSurface::new(&gpu, hwnd_calendar, 2, 2)?;
+    let surf_clipboard = WindowSurface::new(&gpu, hwnd_clipboard, 2, 2)?;
+    let surf_osd = WindowSurface::new(&gpu, hwnd_osd, 2, 2)?;
+    let surf_launchpad = WindowSurface::new(&gpu, hwnd_launchpad, 2, 2)?;
+    let surf_overview = WindowSurface::new(&gpu, hwnd_overview, 2, 2)?;
 
     let wm_act = unsafe {
         let m = win32_shell::to_wide("WM_AURASHELL_V3_ACTIVATE");
@@ -422,6 +446,7 @@ fn run_shell() -> windows::core::Result<()> {
 
     let dock_preview = dock_preview::DockPreviewPopup::new(hwnd_topbar, wm_preview_click);
     let genie = genie::GenieAnimator::new(&gpu, sw, sh);
+    let traffic_lights = traffic_lights::TrafficLightOverlay::new(&gpu, hwnd_topbar, wm_genie_min);
 
     let upd_settings = state.settings.clone();
     let mut rt = ShellRuntime {
@@ -432,9 +457,11 @@ fn run_shell() -> windows::core::Result<()> {
         wallpaper: wp_engine,
         dock_preview,
         genie,
+        traffic_lights,
         startup_rx: Some(cat_rx),
         weather_rx: Some(w_rx),
         radio_rx: Some(r_rx),
+        dev_hub_rx: Some(dh_rx),
         file_pick_rx: None,
         hwnd_topbar,
         hwnd_dock,
@@ -535,6 +562,7 @@ fn run_shell() -> windows::core::Result<()> {
 
     hotkey_hook::uninstall();
     with_rt(|rt| {
+        rt.traffic_lights.shutdown();
         rt.dock_preview.shutdown();
         rt.genie.shutdown();
         rt.wallpaper.shutdown();
@@ -794,12 +822,54 @@ impl ShellRuntime {
     }
 
     fn trigger_volume_osd(&mut self) {
+        self.surf_osd.ensure_size(&self.gpu, OSD_WIDTH as u32, OSD_HEIGHT as u32);
         self.state.osd_until = Some(Instant::now() + std::time::Duration::from_millis(1450));
         self.redraw_osd();
         unsafe {
             let _ = ShowWindow(self.hwnd_osd, SW_SHOWNOACTIVATE);
         }
         win32_shell::ensure_topmost(self.hwnd_osd);
+    }
+
+    fn sync_material_you_palette(&mut self) {
+        let wp_id = self.state.settings.wallpaper_id.clone();
+        let mut seed = (124u8, 92u8, 255u8);
+        if let Some(item) = self.state.wallpapers.iter().find(|w| w.id == wp_id) {
+            seed = item.accent_rgb;
+            if let Some(prev) = &item.preview_path {
+                if let Some(rgb) = theme::extract_seed_rgb_from_image(prev) {
+                    seed = rgb;
+                }
+            } else if item.kind == WallpaperKind::Image {
+                if let Some(rgb) = theme::extract_seed_rgb_from_image(&item.file_path) {
+                    seed = rgb;
+                }
+            }
+        } else if let Some(img_path) = wp_id.strip_prefix("image:") {
+            if let Some(rgb) = theme::extract_seed_rgb_from_image(img_path) {
+                seed = rgb;
+            }
+        } else if let Some(vid_path) = wp_id.strip_prefix("video:") {
+            if let Some(thumb) = video_decoder::extract_video_thumbnail(vid_path) {
+                if let Some(rgb) = theme::extract_seed_rgb_from_image(&thumb) {
+                    seed = rgb;
+                }
+            }
+        }
+        theme::apply_theme_scheme(&self.state.settings.theme_scheme, seed);
+        window_styler::invalidate_styled_cache();
+        if self.state.settings.style_windows_apps {
+            window_styler::apply_aura_style_to_windows(&self.state.open_windows);
+        }
+    }
+
+    fn spawn_dev_hub_refresh(&mut self) {
+        let cfg = self.state.dev_hub_cfg.clone();
+        let (tx, rx) = mpsc::channel();
+        self.dev_hub_rx = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(dev_hub::fetch_dev_hub_snapshot(&cfg));
+        });
     }
 
     fn redraw_launchpad(&mut self) {
@@ -1072,13 +1142,14 @@ impl ShellRuntime {
         for w in &mut self.widget_wins {
             if let Some(cfg) = self.state.widgets.get(w.kind) {
                 let (ww, wh) = widget_window_dims(w.kind, cfg.size_tier);
-                w.surf.resize(&self.gpu, ww as u32, wh as u32);
                 unsafe {
                     if global_on && cfg.enabled {
+                        w.surf.ensure_size(&self.gpu, ww as u32, wh as u32);
                         let _ = SetWindowPos(w.hwnd, HWND_BOTTOM, cfg.x, cfg.y, ww, wh, SWP_NOACTIVATE);
                         let _ = ShowWindow(w.hwnd, SW_SHOWNOACTIVATE);
                     } else {
                         let _ = ShowWindow(w.hwnd, SW_HIDE);
+                        w.surf.trim_hidden(&self.gpu);
                     }
                 }
             }
@@ -1106,14 +1177,20 @@ impl ShellRuntime {
         self.close_calendar();
         self.close_clipboard();
         self.close_launchpad();
+        let body_h = (self.screen_h - TOPBAR_HEIGHT as i32).max(400) as u32;
+        self.surf_overview.ensure_size(&self.gpu, self.screen_w as u32, body_h);
         let was_closed = !self.state.overview_open;
         self.state.overview_open = true;
         self.state.overview_settings_view = settings_view;
         self.state.add_modal.open = false;
+        self.state.gh_input_active = false;
         self.state.search_query.clear();
         self.state.search_selected = 0;
         self.state.open_windows = win32_shell::get_open_user_windows();
         let _ = self.telemetry.tx.send(TelemetryCmd::RefreshOverview);
+        if self.state.mode == ShellMode::Dev && self.dev_hub_rx.is_none() {
+            self.spawn_dev_hub_refresh();
+        }
         if was_closed {
             if instant_kbd || self.state.settings.performance_mode {
                 // Emil Kowalski Rule #1: Keyboard actions snap instantaneously (0ms Raycast feel!)
@@ -1136,6 +1213,7 @@ impl ShellRuntime {
         self.close_power();
         self.close_clipboard();
         self.close_launchpad();
+        self.surf_calendar.ensure_size(&self.gpu, CAL_WIDTH as u32, CAL_HEIGHT as u32);
         let st = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
         if self.state.cal_year == 0 {
             self.state.cal_year = st.wYear as i32;
@@ -1167,6 +1245,7 @@ impl ShellRuntime {
         self.close_power();
         self.close_calendar();
         self.close_launchpad();
+        self.surf_clipboard.ensure_size(&self.gpu, CLIP_WIDTH as u32, CLIP_HEIGHT as u32);
         self.state.clipboard_open = true;
         self.state.clipboard_anim.snap(1.0); // Keyboard Win+V opens instantaneously!
         self.redraw_clipboard();
@@ -1233,12 +1312,14 @@ impl ShellRuntime {
         self.close_calendar();
         self.close_clipboard();
         self.close_launchpad();
-        // 0ms UI-THREAD OPEN: renders immediately from warm MTA background cache!
-        // Zero COM / WinRT / process-snapshot blocking even during heavy games or Spotify!
+        let cc_h = (self.screen_h - TOPBAR_HEIGHT as i32 - 18).min(CC_MAX_H as i32).max(400) as u32;
+        self.surf_cc.ensure_size(&self.gpu, CC_WIDTH as u32, cc_h);
+        self.state.uptime_label = win32_shell::get_uptime_short();
         self.state.keyboard_lang = win32_shell::get_keyboard_layout_short();
         self.state.active_keyboard_hkl = win32_shell::get_active_keyboard_hkl();
         self.state.keyboard_layouts = win32_shell::get_installed_keyboard_layouts();
         self.state.cc_keyboard_menu_open = false;
+        self.state.todo_input_active = false;
         self.state.cc_scroll = 0.0;
         self.state.cc_open = true;
 
@@ -1258,6 +1339,7 @@ impl ShellRuntime {
         }
         self.state.cc_open = false;
         self.state.cc_keyboard_menu_open = false;
+        self.state.todo_input_active = false;
         self.state.cc_last_closed = Some(Instant::now());
         self.state.cc_anim.animate_to(0.0, 135.0, CubicBezier::EASE_OUT);
         self.redraw_topbar();
@@ -1269,6 +1351,7 @@ impl ShellRuntime {
         self.close_calendar();
         self.close_clipboard();
         self.close_launchpad();
+        self.surf_power.ensure_size(&self.gpu, POWER_MENU_W as u32, POWER_MENU_H as u32);
         self.state.power_confirm = None;
         self.state.power_open = true;
         self.state.power_anim.snap(0.01);
@@ -1295,6 +1378,8 @@ impl ShellRuntime {
         self.close_power();
         self.close_calendar();
         self.close_clipboard();
+        let body_h = (self.screen_h - TOPBAR_HEIGHT as i32).max(400) as u32;
+        self.surf_launchpad.ensure_size(&self.gpu, self.screen_w as u32, body_h);
         self.state.launchpad_query.clear();
         self.state.launchpad_scroll = 0.0;
         self.state.launchpad_scroll_target = 0.0;
@@ -1409,10 +1494,6 @@ impl ShellRuntime {
             Action::LaunchAuraPdf => {
                 self.close_all_overlays();
                 win32_shell::launch_aura_pdf(None);
-            }
-            Action::LaunchAuraAgentAudit => {
-                self.close_all_overlays();
-                win32_shell::launch_aura_agent(Some("--audit-all"));
             }
             Action::ToggleCalendar => {
                 if self.state.calendar_open || AppState::was_just_closed(self.state.calendar_last_closed) {
@@ -1547,7 +1628,7 @@ impl ShellRuntime {
                 if target != 0 && !self.state.settings.performance_mode {
                     let is_left = !self.state.settings.dock_position.eq_ignore_ascii_case("Bottom");
                     let (gx, gy) = ui_dock::dock_icon_screen_center(&self.state, self.dock_geo, is_left, target);
-                    self.genie.start_minimize(target, gx, gy, is_left);
+                    self.genie.start_minimize(&self.gpu, target, gx, gy, is_left);
                     self.wake_anim_timer();
                 } else {
                     window_styler::minimize_active_window(target);
@@ -1657,6 +1738,108 @@ impl ShellRuntime {
                     let _ = tx.send(radios::query_radio_states());
                 });
             }
+            Action::SetBrightness(pct) => {
+                let p = pct.clamp(35, 100);
+                self.state.settings.brightness_pct = p;
+                win32_shell::apply_display_gamma(p, self.state.settings.night_light);
+                save_settings(&self.state.settings);
+                if self.state.cc_open { self.redraw_cc(); }
+            }
+            Action::ToggleNightLight => {
+                self.state.settings.night_light = !self.state.settings.night_light;
+                win32_shell::apply_display_gamma(self.state.settings.brightness_pct, self.state.settings.night_light);
+                save_settings(&self.state.settings);
+                if self.state.cc_open { self.redraw_cc(); }
+            }
+            Action::ToggleKeepAwake => {
+                self.state.settings.keep_awake = !self.state.settings.keep_awake;
+                win32_shell::set_keep_awake(self.state.settings.keep_awake);
+                save_settings(&self.state.settings);
+                if self.state.cc_open { self.redraw_cc(); }
+            }
+            Action::SetCcBottomTab(t) => {
+                self.state.cc_bottom_tab = t;
+                self.state.todo_input_active = false;
+                if self.state.cc_open { self.redraw_cc(); }
+            }
+            Action::ToggleTodo(id) => {
+                if let Some(it) = self.state.todos.iter_mut().find(|x| x.id == id) {
+                    it.done = !it.done;
+                    dev_hub::save_todos(&self.state.todos);
+                }
+                if self.state.cc_open { self.redraw_cc(); }
+            }
+            Action::DeleteTodo(id) => {
+                self.state.todos.retain(|x| x.id != id);
+                dev_hub::save_todos(&self.state.todos);
+                if self.state.cc_open { self.redraw_cc(); }
+            }
+            Action::StartTodoInput => {
+                self.state.todo_input_active = true;
+                if self.state.cc_open {
+                    win32_shell::bring_to_front(self.hwnd_cc);
+                    self.redraw_cc();
+                }
+            }
+            Action::SubmitTodoInput => {
+                let txt = self.state.todo_input_text.trim().to_string();
+                if !txt.is_empty() {
+                    let next_id = self.state.todos.iter().map(|t| t.id).max().unwrap_or(0) + 1;
+                    self.state.todos.insert(0, dev_hub::TodoItem { id: next_id, text: txt, done: false });
+                    self.state.todo_input_text.clear();
+                    dev_hub::save_todos(&self.state.todos);
+                }
+                self.state.todo_input_active = false;
+                if self.state.cc_open { self.redraw_cc(); }
+            }
+            Action::AdjustAiQuota(prov_id, delta) => {
+                match prov_id.as_str() {
+                    "antigravity" => self.state.dev_hub_cfg.antigravity_pct = (self.state.dev_hub_cfg.antigravity_pct + delta).clamp(0, 100),
+                    "gemini" => self.state.dev_hub_cfg.gemini_pct = (self.state.dev_hub_cfg.gemini_pct + delta).clamp(0, 100),
+                    "claude" => self.state.dev_hub_cfg.claude_pct = (self.state.dev_hub_cfg.claude_pct + delta).clamp(0, 100),
+                    _ => {}
+                }
+                dev_hub::save_dev_hub_config(&self.state.dev_hub_cfg);
+                for p in &mut self.state.dev_hub.providers {
+                    if p.id == prov_id {
+                        p.pct_remaining = (p.pct_remaining + delta).clamp(0, 100);
+                    }
+                }
+                if self.state.overview_open { self.redraw_overview(); }
+            }
+            Action::ResetAiQuota(prov_id) => {
+                match prov_id.as_str() {
+                    "antigravity" => self.state.dev_hub_cfg.antigravity_pct = 100,
+                    "gemini" => self.state.dev_hub_cfg.gemini_pct = 100,
+                    "claude" => self.state.dev_hub_cfg.claude_pct = 100,
+                    _ => {}
+                }
+                dev_hub::save_dev_hub_config(&self.state.dev_hub_cfg);
+                for p in &mut self.state.dev_hub.providers {
+                    if p.id == prov_id {
+                        p.pct_remaining = 100;
+                    }
+                }
+                if self.state.overview_open { self.redraw_overview(); }
+            }
+            Action::RefreshDevHub => {
+                self.spawn_dev_hub_refresh();
+            }
+            Action::StartGithubUserEdit => {
+                self.state.gh_input_active = true;
+                self.state.gh_input_text = self.state.dev_hub.github.username.clone();
+                if self.state.overview_open {
+                    win32_shell::bring_to_front(self.hwnd_overview);
+                    self.redraw_overview();
+                }
+            }
+            Action::SubmitGithubUserEdit => {
+                self.state.gh_input_active = false;
+                self.state.dev_hub_cfg.github_username = self.state.gh_input_text.trim().trim_start_matches('@').to_string();
+                dev_hub::save_dev_hub_config(&self.state.dev_hub_cfg);
+                self.spawn_dev_hub_refresh();
+                if self.state.overview_open { self.redraw_overview(); }
+            }
             Action::ToggleKeyboardMenu => {
                 self.state.keyboard_layouts = win32_shell::get_installed_keyboard_layouts();
                 if self.state.keyboard_layouts.len() <= 1 {
@@ -1699,13 +1882,13 @@ impl ShellRuntime {
                 let is_fg = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() == hw };
 
                 if !self.state.settings.performance_mode && is_iconic {
-                    if self.genie.start_restore(hwnd, gx, gy, is_left) {
+                    if self.genie.start_restore(&self.gpu, hwnd, gx, gy, is_left) {
                         self.wake_anim_timer();
                     } else {
                         win32_shell::toggle_or_focus_window(hwnd);
                     }
                 } else if !self.state.settings.performance_mode && is_fg {
-                    self.genie.start_minimize(hwnd, gx, gy, is_left);
+                    self.genie.start_minimize(&self.gpu, hwnd, gx, gy, is_left);
                     self.wake_anim_timer();
                 } else {
                     win32_shell::toggle_or_focus_window(hwnd);
@@ -1727,6 +1910,10 @@ impl ShellRuntime {
                 self.state.settings.wallpaper_id = id.clone();
                 save_settings(&self.state.settings);
                 self.wallpaper.set_wallpaper(&mut self.gpu, &id);
+                self.sync_material_you_palette();
+                self.redraw_topbar();
+                self.redraw_dock();
+                self.redraw_all_widgets();
                 if self.state.overview_open { self.redraw_overview(); }
             }
             Action::AddCustomWallpaperFile => {
@@ -1794,6 +1981,7 @@ impl ShellRuntime {
             }
             Action::RestoreWindowsAndExit => {
                 hotkey_hook::uninstall();
+                self.traffic_lights.shutdown();
                 self.dock_preview.shutdown();
                 self.genie.shutdown();
                 self.wallpaper.shutdown();
@@ -1999,10 +2187,14 @@ impl ShellRuntime {
             self.state.games = cat.games;
             self.state.wallpapers = cat.wallpapers;
             self.state.drives = cat.drives;
-            self.gpu.prewarm_icons(self.state.all_apps.iter().map(|a| a.icon_path.clone()));
-            self.gpu.prewarm_icons(self.state.games.iter().map(|g| g.icon_path.clone()));
-            self.gpu.prewarm_images(self.state.wallpapers.iter().filter_map(|w| w.preview_path.clone()));
-            self.gpu.prewarm_images(self.state.games.iter().filter_map(|g| g.cover_path.clone()));
+            self.sync_material_you_palette();
+            // Fix live QA Catch #1: ALWAYS re-sync tight dock bounds after all_apps populates pinned icons!
+            self.sync_dock_tight_bounds();
+            self.redraw_topbar();
+            self.redraw_dock();
+            self.redraw_all_widgets();
+            // Only prewarm tiny icons for open windows (ZERO 100MB eager wallpaper/cover decoding at idle!)
+            self.gpu.prewarm_icons(self.state.open_windows.iter().map(|w| w.exe_path.clone()));
             if self.state.settings.style_windows_apps {
                 window_styler::apply_aura_style_to_windows(&self.state.open_windows);
             }
@@ -2075,6 +2267,15 @@ impl ShellRuntime {
                     self.state.tray_apps = tray_apps;
                     ov_tel_dirty = true;
                 }
+            }
+        }
+
+        // Check async Dev Hub snapshot (AI Quotas + GitHub/Git Commits)
+        if let Some(snap) = self.dev_hub_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.dev_hub_rx = None;
+            self.state.dev_hub = snap;
+            if self.state.overview_open && self.state.mode == ShellMode::Dev {
+                self.redraw_overview();
             }
         }
 
@@ -2199,6 +2400,9 @@ impl ShellRuntime {
             let moving = self.state.overview_anim.step(dt_ms);
             if !moving && !self.state.overview_open && self.state.overview_anim.value <= 0.02 {
                 unsafe { let _ = ShowWindow(self.hwnd_overview, SW_HIDE); }
+                self.surf_overview.trim_hidden(&self.gpu);
+                self.gpu.purge_heavy_image_cache();
+                win32_shell::trim_own_working_set();
             } else {
                 ov_dirty = true;
             }
@@ -2232,6 +2436,7 @@ impl ShellRuntime {
             let moving = self.state.cc_anim.step(dt_ms);
             if !moving && !self.state.cc_open && self.state.cc_anim.value <= 0.02 {
                 unsafe { let _ = ShowWindow(self.hwnd_cc, SW_HIDE); }
+                self.surf_cc.trim_hidden(&self.gpu);
             } else {
                 self.redraw_cc();
             }
@@ -2242,6 +2447,7 @@ impl ShellRuntime {
             let moving = self.state.power_anim.step(dt_ms);
             if !moving && !self.state.power_open && self.state.power_anim.value <= 0.02 {
                 unsafe { let _ = ShowWindow(self.hwnd_power, SW_HIDE); }
+                self.surf_power.trim_hidden(&self.gpu);
             } else {
                 self.redraw_power();
             }
@@ -2250,6 +2456,7 @@ impl ShellRuntime {
             let moving = self.state.calendar_anim.step(dt_ms);
             if !moving && !self.state.calendar_open && self.state.calendar_anim.value <= 0.02 {
                 unsafe { let _ = ShowWindow(self.hwnd_calendar, SW_HIDE); }
+                self.surf_calendar.trim_hidden(&self.gpu);
             } else {
                 self.redraw_calendar();
             }
@@ -2258,6 +2465,7 @@ impl ShellRuntime {
             let moving = self.state.clipboard_anim.step(dt_ms);
             if !moving && !self.state.clipboard_open && self.state.clipboard_anim.value <= 0.02 {
                 unsafe { let _ = ShowWindow(self.hwnd_clipboard, SW_HIDE); }
+                self.surf_clipboard.trim_hidden(&self.gpu);
             } else {
                 self.redraw_clipboard();
             }
@@ -2266,6 +2474,7 @@ impl ShellRuntime {
             if Instant::now() >= until {
                 self.state.osd_until = None;
                 unsafe { let _ = ShowWindow(self.hwnd_osd, SW_HIDE); }
+                self.surf_osd.trim_hidden(&self.gpu);
             }
         }
 
@@ -2275,6 +2484,8 @@ impl ShellRuntime {
             let moving = self.state.launchpad_anim.step(dt_ms);
             if !moving && !self.state.launchpad_open && self.state.launchpad_anim.value <= 0.02 {
                 unsafe { let _ = ShowWindow(self.hwnd_launchpad, SW_HIDE); }
+                self.surf_launchpad.trim_hidden(&self.gpu);
+                win32_shell::trim_own_working_set();
             } else {
                 lp_dirty = true;
             }
@@ -2362,15 +2573,25 @@ impl ShellRuntime {
             || (self.state.launchpad_open && (self.state.launchpad_scroll_target - self.state.launchpad_scroll).abs() > 0.35)
             || (self.state.overview_open && self.state.mode == ShellMode::Studio && (self.state.wallpaper_scroll_target - self.state.wallpaper_scroll).abs() > 0.35);
 
-        let desired_ms = if ui_animating {
+        let desired_ms = if genie_running {
+            8 // Silky 120 FPS pacing during macOS Genie suction/un-suction!
+        } else if ui_animating {
             16
         } else if !self.state.launchpad_open && self.wallpaper.needs_fast_tick() {
             if self.wallpaper.active_kind == WallpaperKind::Video { 33 } else { 48 }
-        } else if music_animating {
+        } else if music_animating || (self.state.cc_open && self.state.now_playing.is_playing) {
             42
         } else {
             160
         };
+        if self.state.cc_open && self.state.now_playing.is_playing && !music_animating {
+            self.state.music_wave_phase = (self.state.music_wave_phase + dt_sec * 1.8) % 1000.0;
+            self.music_anim_accum += dt_sec;
+            if self.music_anim_accum >= 0.05 {
+                self.music_anim_accum = 0.0;
+                self.redraw_cc();
+            }
+        }
         if desired_ms != self.anim_interval_ms {
             self.anim_interval_ms = desired_ms;
             unsafe {
@@ -2446,10 +2667,33 @@ impl ShellRuntime {
             }
         }
         if self.hidden_for_fullscreen {
+            self.traffic_lights.hide(&self.gpu);
             return;
         }
 
-        // Zero-Interference Dock Auto-Hide + iPhone/Android Muesquita Trigger + Live Preview Hover Guard!
+        // Fast foreground sync so Smart Desktop Dock & Unified Traffic Lights react instantaneously!
+        let cur_fg = win32_shell::get_active_user_hwnd();
+        if cur_fg != self.state.active_user_hwnd {
+            self.state.active_user_hwnd = cur_fg;
+            self.state.active_window_label = win32_shell::get_active_window_label();
+            self.state.open_windows = win32_shell::get_open_user_windows();
+            self.sync_dock_tight_bounds();
+            self.redraw_topbar();
+            if self.dock_hwnd_visible {
+                self.redraw_dock();
+            }
+        }
+
+        // Sync Unified macOS Traffic-Light Overlay on the active standard third-party Windows app!
+        self.traffic_lights.sync(
+            &mut self.gpu,
+            self.state.settings.traffic_light_overlay,
+            self.hidden_for_fullscreen || any_overlay || self.genie.is_active(),
+        );
+
+        // SMART DESKTOP-AWARE DOCK AUTO-HIDE:
+        // • On the Desktop (no visible non-minimized apps OR desktop focused & not covered) -> ALWAYS VISIBLE!
+        // • When an application/program is open & focused -> Auto-hides smoothly into the edge notch!
         let is_left = !self.state.settings.dock_position.eq_ignore_ascii_case("Bottom");
         let (cx, cy) = win32_shell::cursor_pos();
         let (nx, ny, nw, nh) = ui_dock::notch_geometry(self.screen_w, self.screen_h, is_left);
@@ -2468,7 +2712,10 @@ impl ShellRuntime {
             self.dock_preview.hide();
         }
 
-        let want_hidden = if !self.state.settings.dock_auto_hide || any_overlay {
+        let has_visible_app = self.state.open_windows.iter().any(|w| !w.is_minimized);
+        let on_desktop = !has_visible_app || (self.state.active_user_hwnd == 0 && !self.desktop_covered);
+
+        let want_hidden = if !self.state.settings.dock_auto_hide || any_overlay || on_desktop {
             false
         } else if in_notch || in_dock_tight || in_preview || self.mouse_in_dock || self.mouse_in_notch {
             self.last_dock_hover_exit = Instant::now();
@@ -2516,6 +2763,13 @@ impl ShellRuntime {
         self.state.active_user_hwnd = win32_shell::get_active_user_hwnd();
         self.state.keyboard_lang = win32_shell::get_keyboard_layout_short();
         self.slow_tick_count = self.slow_tick_count.wrapping_add(1);
+        if self.slow_tick_count == 4 || self.slow_tick_count % 120 == 0 {
+            win32_shell::trim_own_working_set();
+        }
+        if self.slow_tick_count % 15 == 1 {
+            self.state.battery_status = win32_shell::get_battery_status();
+            self.state.uptime_label = win32_shell::get_uptime_short();
+        }
 
         // Zero-overhead Clipboard History tracking (`GetClipboardSequenceNumber` < 0.001ms!)
         self.poll_clipboard_history();
@@ -2622,6 +2876,10 @@ impl ShellRuntime {
                 let pct = (((px - x) / w.max(1.0)).clamp(0.0, 1.0) * 100.0).round() as i32;
                 self.execute(Action::SetMasterVolume(pct));
             }
+            SliderDragKind::Brightness { x, w } => {
+                let pct = (35.0 + ((px - x) / w.max(1.0)).clamp(0.0, 1.0) * 65.0).round() as i32;
+                self.execute(Action::SetBrightness(pct));
+            }
             SliderDragKind::AppVolume { x, w, pids } => {
                 let pct = (((px - x) / w.max(1.0)).clamp(0.0, 1.0) * 100.0).round() as i32;
                 self.execute(Action::SetAppVolume(pids, pct));
@@ -2683,6 +2941,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 let next_wp = rt.state.settings.wallpaper_id.clone();
                 rt.wallpaper.set_wallpaper(&mut rt.gpu, &next_wp);
             }
+            rt.sync_material_you_palette();
+            win32_shell::apply_display_gamma(rt.state.settings.brightness_pct, rt.state.settings.night_light);
+            win32_shell::set_keep_awake(rt.state.settings.keep_awake);
+            if !rt.state.settings.traffic_light_overlay {
+                rt.traffic_lights.hide(&rt.gpu);
+            }
             if rt.state.settings.weather_city != prev_city {
                 rt.spawn_weather_refresh();
             }
@@ -2730,7 +2994,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 if !rt.state.settings.performance_mode {
                     let is_left = !rt.state.settings.dock_position.eq_ignore_ascii_case("Bottom");
                     let (gx, gy) = ui_dock::dock_icon_screen_center(&rt.state, rt.dock_geo, is_left, target_hwnd);
-                    rt.genie.start_minimize(target_hwnd, gx, gy, is_left);
+                    rt.genie.start_minimize(&rt.gpu, target_hwnd, gx, gy, is_left);
                     rt.wake_anim_timer();
                 } else {
                     window_styler::minimize_active_window(target_hwnd);
@@ -3025,6 +3289,31 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 let vk = wparam.0 as u16;
                 let ov_active = kind == WinKind::Overview || rt.state.overview_open;
                 let lp_active = kind == WinKind::Launchpad || rt.state.launchpad_open;
+                let cc_active = kind == WinKind::ControlCenter || rt.state.cc_open;
+                if cc_active && rt.state.todo_input_active {
+                    if vk == VK_ESCAPE.0 {
+                        rt.state.todo_input_active = false;
+                        rt.redraw_cc();
+                    } else if vk == VK_RETURN.0 {
+                        rt.execute(Action::SubmitTodoInput);
+                    } else if vk == VK_BACK.0 {
+                        rt.state.todo_input_text.pop();
+                        rt.redraw_cc();
+                    }
+                    return true;
+                }
+                if ov_active && rt.state.gh_input_active {
+                    if vk == VK_ESCAPE.0 {
+                        rt.state.gh_input_active = false;
+                        rt.redraw_overview();
+                    } else if vk == VK_RETURN.0 {
+                        rt.execute(Action::SubmitGithubUserEdit);
+                    } else if vk == VK_BACK.0 {
+                        rt.state.gh_input_text.pop();
+                        rt.redraw_overview();
+                    }
+                    return true;
+                }
                 if vk == VK_ESCAPE.0 {
                     if rt.state.add_modal.open {
                         rt.execute(Action::CancelModal);
@@ -3092,7 +3381,18 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     if !ch.is_control() {
                         let ov_active = kind == WinKind::Overview || rt.state.overview_open;
                         let lp_active = kind == WinKind::Launchpad || rt.state.launchpad_open;
-                        if ov_active && rt.state.add_modal.open {
+                        let cc_active = kind == WinKind::ControlCenter || rt.state.cc_open;
+                        if cc_active && rt.state.todo_input_active {
+                            if rt.state.todo_input_text.len() < 72 {
+                                rt.state.todo_input_text.push(ch);
+                                rt.redraw_cc();
+                            }
+                        } else if ov_active && rt.state.gh_input_active {
+                            if rt.state.gh_input_text.len() < 40 && !ch.is_whitespace() {
+                                rt.state.gh_input_text.push(ch);
+                                rt.redraw_overview();
+                            }
+                        } else if ov_active && rt.state.add_modal.open {
                             if rt.state.add_modal.active_field == 0 {
                                 rt.state.add_modal.name.push(ch);
                             } else {
@@ -3299,5 +3599,88 @@ fn run_visual_capture(out_dir: &PathBuf) {
         ui_overview::render_overview(ctx, &state, 1600.0, 900.0 - TOPBAR_HEIGHT, &mut h1);
         ctx.reset_transform();
         ui_topbar::render_topbar(ctx, &state, 1600.0, &mut h2);
+    });
+
+    // 9. Capture v5.1 Dev & AI Hub (Multi-User AI Quotas + GitHub 7d Commits + Local Git Repos!)
+    state.search_query.clear();
+    state.mode = ShellMode::Dev;
+    state.overview_tab_pill_x.snap(1.0);
+    state.dev_hub = dev_hub::fetch_dev_hub_snapshot(&state.dev_hub_cfg);
+    if state.dev_hub.github.daily_commits_7d.iter().all(|&c| c == 0) {
+        state.dev_hub.github.daily_commits_7d = [2, 5, 3, 7, 4, 6, 9];
+        state.dev_hub.github.total_recent_commits = 36;
+        state.dev_hub.github.fetched_ok = true;
+    }
+    theme::apply_theme_scheme("Violet", (124, 92, 255));
+    let _ = gpu.render_to_png(1600, 900, &out_dir.join("v51_dev_hub.png"), |ctx| {
+        let mut h1 = Vec::new();
+        let mut h2 = Vec::new();
+        let mut h3 = Vec::new();
+        wallpaper::draw_wallpaper_frame(ctx, WallpaperKind::Preset, "aura_obsidian_flow", 1600.0, 900.0, 2.0);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 0.0, TOPBAR_HEIGHT);
+        ui_overview::render_overview(ctx, &state, 1600.0, 900.0 - TOPBAR_HEIGHT, &mut h1);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 0.0, TOPBAR_HEIGHT);
+        ui_dock::render_dock(ctx, &state, DOCK_THICKNESS, 900.0 - TOPBAR_HEIGHT, true, &mut h2);
+        ctx.reset_transform();
+        ui_topbar::render_topbar(ctx, &state, 1600.0, &mut h3);
+    });
+
+    // 10. Capture v5.1 Material You Sage Forest Unified Right Sidebar (Brightness + Night Light + Wavy Music + To-Do!)
+    theme::apply_theme_scheme("Sage", (162, 198, 128));
+    state.overview_open = false;
+    state.cc_open = true;
+    state.cc_anim.snap(1.0);
+    state.cc_keyboard_menu_open = false;
+    state.cc_bottom_tab = 0;
+    state.settings.night_light = true;
+    state.settings.keep_awake = true;
+    state.settings.brightness_pct = 85;
+    let _ = gpu.render_to_png(CC_WIDTH as u32, 860, &out_dir.join("v51_sidebar_sage.png"), |ctx| {
+        let mut h = Vec::new();
+        let p = theme::pal();
+        ctx.fill_rrect(Rect::new(0.0, 0.0, CC_WIDTH, 860.0), 0.0, p.canvas);
+        ui_control_center::render_control_center(ctx, &state, 860.0, &mut h);
+    });
+
+    // 11. Capture v5.1 Material You Apricot Desktop (Float TopBar + Battery + Vertical Bold Clock + Wavy Music!)
+    theme::apply_theme_scheme("Apricot", (244, 162, 108));
+    state.cc_open = false;
+    state.settings.bar_style = "Float".into();
+    state.settings.clock_widget_style = "Vertical".into();
+    state.battery_status = Some((88, true));
+    let _ = gpu.render_to_png(1600, 900, &out_dir.join("v51_desktop_vertical_float.png"), |ctx| {
+        let mut h1 = Vec::new();
+        let mut h2 = Vec::new();
+        let mut h3 = Vec::new();
+        let mut h4 = Vec::new();
+        wallpaper::draw_wallpaper_frame(ctx, WallpaperKind::Preset, "aura_obsidian_flow", 1600.0, 900.0, 2.4);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 590.0, 170.0);
+        ui_widgets::render_desktop_widget(ctx, &state, WidgetKind::Clock, 1, false, false, &mut h1);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 602.0, 392.0);
+        ui_widgets::render_desktop_widget(ctx, &state, WidgetKind::Music, 1, true, false, &mut h2);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 0.0, TOPBAR_HEIGHT);
+        ui_dock::render_dock(ctx, &state, DOCK_THICKNESS, 900.0 - TOPBAR_HEIGHT, true, &mut h3);
+        ctx.reset_transform();
+        ui_topbar::render_topbar(ctx, &state, 1600.0, &mut h4);
+    });
+
+    // 12. Capture v5.1 Cookie Scalloped Clock + Sage Forest Material You!
+    theme::apply_theme_scheme("Sage", (162, 198, 128));
+    state.settings.bar_style = "Hug".into();
+    state.settings.clock_widget_style = "Cookie".into();
+    let _ = gpu.render_to_png(1600, 900, &out_dir.join("v51_desktop_cookie_sage.png"), |ctx| {
+        let mut h1 = Vec::new();
+        let mut h2 = Vec::new();
+        let mut h3 = Vec::new();
+        let mut h4 = Vec::new();
+        wallpaper::draw_wallpaper_frame(ctx, WallpaperKind::Preset, "aura_obsidian_flow", 1600.0, 900.0, 2.4);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 590.0, 170.0);
+        ui_widgets::render_desktop_widget(ctx, &state, WidgetKind::Clock, 1, false, false, &mut h1);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 602.0, 392.0);
+        ui_widgets::render_desktop_widget(ctx, &state, WidgetKind::Music, 1, false, false, &mut h2);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 0.0, TOPBAR_HEIGHT);
+        ui_dock::render_dock(ctx, &state, DOCK_THICKNESS, 900.0 - TOPBAR_HEIGHT, true, &mut h3);
+        ctx.reset_transform();
+        ui_topbar::render_topbar(ctx, &state, 1600.0, &mut h4);
     });
 }

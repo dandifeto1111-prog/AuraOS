@@ -1,6 +1,6 @@
 ﻿param(
-    [string]$Version = "5.0.0",
-    [string]$Changelog = "v5.0.0: AuraPDF Studio (visor, previsualizador Quick-Look y editor PDF nativo en Rust), AuraPhotos Studio (editor GPU de color, recorte, volteo, anotacion y censura), AuraShot (<25ms capturas con anotacion y portapapeles), AuraAgent IA (cursor autonomo + integracion triple agent-desktop + puente JSON), Calendario Mensual + Pomodoro en reloj superior, AuraClip (Win+V historial de portapapeles), Calculadora instantanea en Spotlight, Desinstalador rapido de apps en AuraSettings, e iconos HD 256px en los 11 binarios."
+    [string]$Version = "5.1.0",
+    [string]$Changelog = "v5.1.0: Material You 3 dinamico (Auto Wallpaper, Violet, Sage, Apricot, Mono), TopBar Float/Hug + bateria laptop, Dock inteligente (siempre visible en escritorio + orden fijo sin saltos), Genie 120fps sin doble animacion de Windows, Semaforos macOS unificados en ventanas de terceros (100% Vanguard-safe), Sidebar derecho unificado (brillo, luz nocturna, cafe, ondas musicales, To-Do), Monitor de Cuotas IA multiusuario + GitHub/Git Commits en Dev Hub, OCR nativo WinRT en AuraShot, F2/Ctrl+C/V en AuraFiles y reduccion drastica de RAM via swapchains bajo demanda."
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,15 +9,15 @@ $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $legacy = Join-Path (Split-Path -Parent $root) "AuraShell"
 
-Write-Host "Compilando AuraOS Suite v$Version (11 binarios 100% Rust con iconos incrustados + AuraShell-Setup)..." -ForegroundColor Cyan
+Write-Host "Compilando AuraOS Suite v$Version (10 binarios 100% Rust con iconos incrustados + AuraShell-Setup)..." -ForegroundColor Cyan
 Set-Location $root
-cargo build --release --bin AuraShell --bin AuraFiles --bin AuraPhotos --bin AuraPlayer --bin AuraNotes --bin AuraLock --bin AuraSettings --bin AuraTasks --bin AuraPDF --bin AuraShot --bin AuraAgent
+cargo build --release --bin AuraShell --bin AuraFiles --bin AuraPhotos --bin AuraPlayer --bin AuraNotes --bin AuraLock --bin AuraSettings --bin AuraTasks --bin AuraPDF --bin AuraShot
 if ($LASTEXITCODE -ne 0) { Write-Error "Falló cargo build --release" }
 
 $bins = @(
     "AuraShell.exe", "AuraFiles.exe", "AuraPhotos.exe", "AuraPlayer.exe",
     "AuraNotes.exe", "AuraLock.exe", "AuraSettings.exe", "AuraTasks.exe",
-    "AuraPDF.exe", "AuraShot.exe", "AuraAgent.exe"
+    "AuraPDF.exe", "AuraShot.exe"
 )
 foreach ($b in $bins) {
     Copy-Item (Join-Path $root "target\release\$b") (Join-Path $root $b) -Force

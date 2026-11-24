@@ -17,7 +17,6 @@ pub enum Action {
     LaunchAuraTasks,
     LaunchAuraShot,
     LaunchAuraPdf,
-    LaunchAuraAgentAudit,
     ToggleCalendar,
     CalPrevMonth,
     CalNextMonth,
@@ -58,6 +57,20 @@ pub enum Action {
     // Native Android/iOS-Style Quick Controls (In-Place!)
     ToggleWifiRadio,
     ToggleBluetoothRadio,
+    SetBrightness(i32),
+    ToggleNightLight,
+    ToggleKeepAwake,
+    SetCcBottomTab(u8), // 0 = To-Do, 1 = Pomodoro, 2 = Apps 2do Plano
+    ToggleTodo(u64),
+    DeleteTodo(u64),
+    StartTodoInput,
+    SubmitTodoInput,
+    // v5.1 Dev Hub: AI Quotas & GitHub/Git Commits Monitor
+    AdjustAiQuota(String, i32),
+    ResetAiQuota(String),
+    RefreshDevHub,
+    StartGithubUserEdit,
+    SubmitGithubUserEdit,
     CycleKeyboardLayout,
     SelectKeyboardLayout(isize),
     ToggleKeyboardMenu,
@@ -110,6 +123,7 @@ pub struct HitRegion {
 #[derive(Debug, Clone)]
 pub enum SliderDragKind {
     MasterVolume { x: f32, w: f32 },
+    Brightness { x: f32, w: f32 },
     AppVolume { x: f32, w: f32, pids: Vec<u32> },
     GlassOpacity { x: f32, w: f32 },
 }
@@ -149,7 +163,17 @@ pub struct AppState {
     pub cc_last_closed: Option<Instant>,
     pub cc_showing_mics: bool,
     pub cc_keyboard_menu_open: bool,
+    pub cc_bottom_tab: u8, // 0 = To-Do, 1 = Pomodoro, 2 = Apps 2º Plano
     pub cc_scroll: f32,
+    pub todos: Vec<crate::dev_hub::TodoItem>,
+    pub todo_input_active: bool,
+    pub todo_input_text: String,
+    pub battery_status: Option<(u8, bool)>,
+    pub uptime_label: String,
+    pub dev_hub_cfg: crate::dev_hub::DevHubConfig,
+    pub dev_hub: crate::dev_hub::DevHubSnapshot,
+    pub gh_input_active: bool,
+    pub gh_input_text: String,
 
     pub power_open: bool,
     pub power_anim: Tween, // Apple circular reveal from top-right Power icon (180ms / 120ms)
@@ -272,7 +296,17 @@ impl AppState {
             cc_last_closed: None,
             cc_showing_mics: false,
             cc_keyboard_menu_open: false,
+            cc_bottom_tab: 0,
             cc_scroll: 0.0,
+            todos: crate::dev_hub::load_todos(),
+            todo_input_active: false,
+            todo_input_text: String::new(),
+            battery_status: crate::win32_shell::get_battery_status(),
+            uptime_label: crate::win32_shell::get_uptime_short(),
+            dev_hub_cfg: crate::dev_hub::load_dev_hub_config(),
+            dev_hub: crate::dev_hub::DevHubSnapshot::default(),
+            gh_input_active: false,
+            gh_input_text: String::new(),
             power_open: false,
             power_anim: Tween::new(0.0),
             power_last_closed: None,

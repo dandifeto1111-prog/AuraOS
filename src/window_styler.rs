@@ -41,6 +41,8 @@ fn is_aura_own_process(proc_name: &str) -> bool {
         || low == "aurasettings"
         || low == "auralock"
         || low == "auratasks"
+        || low == "aurapdf"
+        || low == "aurashot"
         || low.starts_with("aurashell")
 }
 
@@ -124,7 +126,8 @@ fn style_single_hwnd(hwnd: HWND, active: bool) {
             &corner as *const _ as *const _,
             std::mem::size_of_val(&corner) as u32,
         );
-        let caption = COLOR_CAPTION_OBSIDIAN;
+        let p = crate::theme::pal();
+        let caption = crate::theme::color_to_colorref(p.surface);
         let _ = DwmSetWindowAttribute(
             hwnd,
             DWMWA_CAPTION_COLOR,
@@ -138,13 +141,13 @@ fn style_single_hwnd(hwnd: HWND, active: bool) {
             &text as *const u32 as *const _,
             std::mem::size_of::<u32>() as u32,
         );
-        // Zero outer border bleed on maximized windows; refined subtle obsidian border when floating
+        // Zero outer border bleed on maximized windows; refined Material You border when floating
         let border = if IsZoomed(hwnd).as_bool() {
             DWMWA_COLOR_NONE
         } else if active {
-            COLOR_BORDER_ACTIVE
+            crate::theme::color_to_colorref(p.border_strong)
         } else {
-            COLOR_BORDER_INACTIVE
+            crate::theme::color_to_colorref(p.border)
         };
         let _ = DwmSetWindowAttribute(
             hwnd,
@@ -217,6 +220,14 @@ pub fn apply_aura_style_to_windows(windows: &[RunningWindow]) {
             style_single_hwnd(hwnd, is_active);
             map.insert(w.hwnd, state);
         }
+    }
+}
+
+/// Forces re-application of Material You DWM caption/border colors after a palette change!
+pub fn invalidate_styled_cache() {
+    let mut map_guard = STYLED_HWNDS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(map) = map_guard.as_mut() {
+        map.clear();
     }
 }
 

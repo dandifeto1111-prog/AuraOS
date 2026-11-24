@@ -43,6 +43,14 @@ pub struct ShellSettings {
     pub weather_city: String,      // "" = Auto IP Geolocation, or custom city name ("Bogotá", "Madrid", etc.)
     pub performance_mode: bool,    // Ultra-low CPU/GPU mode for modest PCs (disables heavy continuous GPU loops)
     pub intercept_win_hotkeys: bool, // Intercept solo Win -> Launchpad, Ctrl+Shift+Esc -> AuraTasks, Win+E/I/S
+    // v5.1: illogical-impulse Material You 3 + Unified Traffic Lights + Display Controls
+    pub theme_scheme: String,      // "Auto" | "Violet" | "Sage" | "Apricot" | "Monochrome"
+    pub bar_style: String,         // "Hug" | "Float" | "Rect"
+    pub clock_widget_style: String, // "Horizontal" | "Vertical" | "Cookie"
+    pub night_light: bool,
+    pub brightness_pct: i32,
+    pub keep_awake: bool,
+    pub traffic_light_overlay: bool,
 }
 
 impl Default for ShellSettings {
@@ -76,6 +84,13 @@ impl Default for ShellSettings {
             weather_city: String::new(),
             performance_mode: low_spec,
             intercept_win_hotkeys: true,
+            theme_scheme: "Auto".to_string(),
+            bar_style: "Hug".to_string(),
+            clock_widget_style: "Vertical".to_string(),
+            night_light: false,
+            brightness_pct: 100,
+            keep_awake: false,
+            traffic_light_overlay: true,
         }
     }
 }

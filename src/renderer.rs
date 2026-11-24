@@ -298,6 +298,12 @@ impl GpuEngine {
         }
     }
 
+    /// Frees large decoded thumbnail/wallpaper BGRA buffers when Overview/Studio closes to keep idle RAM ultra-slim!
+    pub fn purge_heavy_image_cache(&mut self) {
+        self.decoded_cache.retain(|k, _| k.starts_with("ico:"));
+        self.wic_cache.clear();
+    }
+
     /// Drains ready decoded icons/thumbnails from the background thread into RAM (0ms lock-free).
     /// Returns true if any new icon/thumbnail arrived and visible panels should refresh!
     pub fn drain_decoded_assets(&mut self) -> bool {
@@ -839,6 +845,25 @@ impl WindowSurface {
 
     pub fn clear_bitmap_cache(&mut self) {
         self.bmp_cache.clear();
+    }
+
+    /// v5.1 Lazy Swapchain Trimming: shrinks hidden overlay swapchains down to 2x2 and releases cached
+    /// D2D bitmaps so idle `AuraShell.exe` RAM drops dramatically without destroying DirectComposition targets!
+    pub fn trim_hidden(&mut self, gpu: &GpuEngine) {
+        self.bmp_cache.clear();
+        self.video_bmp = None;
+        if self.width > 4 || self.height > 4 {
+            self.resize(gpu, 2, 2);
+        }
+    }
+
+    /// Restores a lazily-trimmed swapchain to its full pixel dimensions right before showing!
+    pub fn ensure_size(&mut self, gpu: &GpuEngine, width: u32, height: u32) {
+        let w = width.max(2);
+        let h = height.max(2);
+        if self.width != w || self.height != h {
+            self.resize(gpu, w, h);
+        }
     }
 
     pub fn draw<F>(&mut self, gpu: &mut GpuEngine, draw_fn: F)
@@ -1861,7 +1886,83 @@ impl<'a> DrawCtx<'a> {
                 self.fill_rrect(Rect::new(cx - s * 0.36, cy - s * 0.70, s * 0.72, s * 0.44), 1.0, color);
                 self.stroke_rrect(Rect::new(cx - s * 0.40, cy + s * 0.08, s * 0.80, s * 0.62), 1.2, color, sw * 0.9);
             }
+            VectorIcon::Moon => {
+                self.draw_arc_segment(cx + s * 0.08, cy, s * 0.68, sw * 1.1, 45.0, 235.0, color);
+                self.draw_arc_segment(cx + s * 0.40, cy - s * 0.22, s * 0.54, sw * 0.95, 115.0, 110.0, color);
+            }
+            VectorIcon::Coffee => {
+                self.stroke_rrect(Rect::new(cx - s * 0.66, cy - s * 0.28, s * 1.06, s * 0.92), 2.5, color, sw);
+                self.draw_arc_segment(cx + s * 0.44, cy + s * 0.14, s * 0.28, sw, -80.0, 180.0, color);
+                self.draw_line(cx - s * 0.32, cy - s * 0.74, cx - s * 0.26, cy - s * 0.46, color, sw * 0.9);
+                self.draw_line(cx + s * 0.04, cy - s * 0.78, cx + s * 0.10, cy - s * 0.46, color, sw * 0.9);
+            }
+            VectorIcon::Battery => {
+                self.stroke_rrect(Rect::new(cx - s * 0.82, cy - s * 0.46, s * 1.46, s * 0.92), 2.0, color, sw);
+                self.fill_rrect(Rect::new(cx + s * 0.68, cy - s * 0.20, s * 0.18, s * 0.40), 0.8, color);
+                self.fill_rrect(Rect::new(cx - s * 0.62, cy - s * 0.26, s * 0.98, s * 0.52), 1.0, color);
+            }
+            VectorIcon::Check => {
+                self.draw_line(cx - s * 0.62, cy + s * 0.04, cx - s * 0.16, cy + s * 0.50, color, sw * 1.15);
+                self.draw_line(cx - s * 0.16, cy + s * 0.50, cx + s * 0.66, cy - s * 0.46, color, sw * 1.15);
+            }
+            VectorIcon::GitBranch => {
+                self.stroke_circle(cx - s * 0.46, cy - s * 0.54, s * 0.24, color, sw);
+                self.stroke_circle(cx - s * 0.46, cy + s * 0.54, s * 0.24, color, sw);
+                self.stroke_circle(cx + s * 0.46, cy - s * 0.18, s * 0.24, color, sw);
+                self.draw_line(cx - s * 0.46, cy - s * 0.28, cx - s * 0.46, cy + s * 0.28, color, sw);
+                self.draw_line(cx + s * 0.46, cy + s * 0.06, cx - s * 0.34, cy + s * 0.42, color, sw);
+            }
         }
+    }
+
+    /// Material 3 Expressive Wavy/Squiggly Animated Progress Bar (inspired by illogical-impulse!)
+    pub fn draw_wavy_progress_bar(
+        &self,
+        r: Rect,
+        progress: f32,
+        phase: f32,
+        playing: bool,
+        active_col: D2D1_COLOR_F,
+        track_col: D2D1_COLOR_F,
+    ) {
+        let mid_y = r.y + r.h * 0.5;
+        let split_x = r.x + r.w * progress.clamp(0.05, 1.0);
+        // Inactive smooth straight rail on the right
+        if split_x < r.x + r.w - 2.0 {
+            self.draw_line(split_x + 4.0, mid_y, r.x + r.w, mid_y, track_col, 2.4);
+        }
+        // Active Material 3 sine-wave progress trail on the left!
+        let amp = if playing { 3.2f32 } else { 0.8f32 };
+        let steps = ((split_x - r.x) / 3.0).ceil().clamp(6.0, 96.0) as usize;
+        unsafe {
+            if let Ok(geo) = self.gpu.d2d_factory.CreatePathGeometry() {
+                if let Ok(sink) = geo.Open() {
+                    let mut started = false;
+                    for i in 0..=steps {
+                        let frac = i as f32 / steps as f32;
+                        let x = r.x + (split_x - r.x) * frac;
+                        let env = (frac * std::f32::consts::PI).sin().clamp(0.25, 1.0);
+                        let y = mid_y + ((x - r.x) * 0.26 - phase * 3.8).sin() * amp * env;
+                        let pt = D2D_POINT_2F { x, y };
+                        if !started {
+                            sink.BeginFigure(pt, D2D1_FIGURE_BEGIN_HOLLOW);
+                            started = true;
+                        } else {
+                            sink.AddLine(pt);
+                        }
+                    }
+                    if started {
+                        sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                    }
+                    let _ = sink.Close();
+                    if let Some(b) = self.brush(active_col) {
+                        self.rt.DrawGeometry(&geo, &b, 2.6, &self.gpu.round_stroke);
+                    }
+                }
+            }
+        }
+        // Crisp rounded vertical pill thumb
+        self.fill_rrect(Rect::new(split_x - 2.0, mid_y - 6.0, 4.0, 12.0), 2.0, active_col);
     }
 
     fn draw_polygon(&self, pts: &[D2D_POINT_2F], color: D2D1_COLOR_F) {

@@ -216,6 +216,9 @@ struct FilesRuntime {
     width: f32,
     height: f32,
     quicklook_open: bool,
+    renaming_path: Option<PathBuf>,
+    rename_buf: String,
+    file_clip: Option<(PathBuf, bool)>, // (path, is_cut)
     analyzer: AnalyzerState,
 }
 
@@ -356,6 +359,9 @@ fn run_aurafiles(start_dir: PathBuf) -> windows::core::Result<()> {
         width: w as f32,
         height: h as f32,
         quicklook_open: false,
+        renaming_path: None,
+        rename_buf: String::new(),
+        file_clip: None,
         analyzer: AnalyzerState::default(),
     };
 
@@ -1093,6 +1099,7 @@ impl FilesRuntime {
             hovered: self.hovered.as_deref(),
             toast: self.toast.as_ref().map(|(s, ok, _)| (s.as_str(), *ok)),
             quicklook_open: self.quicklook_open,
+            renaming_buf: if self.renaming_path.is_some() { Some(self.rename_buf.as_str()) } else { None },
             analyzer: &self.analyzer,
         };
         self.surf.draw(&mut self.gpu, |ctx| {
@@ -1124,6 +1131,7 @@ struct RenderSnap<'a> {
     hovered: Option<&'a str>,
     toast: Option<(&'a str, bool)>,
     quicklook_open: bool,
+    renaming_buf: Option<&'a str>,
     analyzer: &'a AnalyzerState,
 }
 
@@ -1655,6 +1663,18 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
                 }
             }
         }
+    }
+
+    // v5.1 F2 Inline Rename Modal Overlay
+    if let Some(buf) = s.renaming_buf {
+        let mr = Rect::new((w - 420.0) * 0.5, (h - 118.0) * 0.5, 420.0, 118.0);
+        ctx.fill_rrect(win_r, corner_r, theme::rgba(8, 8, 14, 0.54));
+        ctx.fill_card(mr, 16.0, theme::SURFACE, theme::VIOLET_LIGHT);
+        ctx.draw_text("Renombrar archivo o carpeta (F2)", Rect::new(mr.x + 16.0, mr.y + 12.0, mr.w - 32.0, 20.0), TextStyle::Title14Semi, theme::CRISP_WHITE);
+        let inp = Rect::new(mr.x + 16.0, mr.y + 42.0, mr.w - 32.0, 34.0);
+        ctx.fill_card(inp, 10.0, theme::ELEVATED, theme::VIOLET);
+        ctx.draw_text(&format!("{}|", buf), Rect::new(inp.x + 10.0, inp.y, inp.w - 20.0, 34.0), TextStyle::Body12Med, theme::CRISP_WHITE);
+        ctx.draw_text("Enter = Guardar nombre   ·   Esc = Cancelar", Rect::new(mr.x + 16.0, mr.y + 86.0, mr.w - 32.0, 18.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
     }
 
     // Toast notification pill at bottom center
@@ -2321,6 +2341,111 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
             WM_KEYDOWN => {
                 let vk = wparam.0 as u16;
                 let ctrl = (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
+
+                // v5.1 F2 Inline Rename Mode Keyboard Capture
+                if rt.renaming_path.is_some() {
+                    if vk == VK_ESCAPE.0 {
+                        rt.renaming_path = None;
+                        rt.rename_buf.clear();
+                        rt.redraw();
+                    } else if vk == VK_RETURN.0 {
+                        if let Some(src) = rt.renaming_path.take() {
+                            let new_name = rt.rename_buf.trim().to_string();
+                            rt.rename_buf.clear();
+                            if !new_name.is_empty() && !new_name.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|']) {
+                                if let Some(parent) = src.parent() {
+                                    let dst = parent.join(&new_name);
+                                    if std::fs::rename(&src, &dst).is_ok() {
+                                        rt.load_current_dir_instant();
+                                        rt.show_toast(format!("Renombrado a '{}'", new_name), true);
+                                    } else {
+                                        rt.show_toast("No se pudo renombrar (archivo en uso o duplicado)", false);
+                                    }
+                                }
+                            } else {
+                                rt.show_toast("Nombre inválido", false);
+                            }
+                        }
+                        rt.redraw();
+                    } else if vk == VK_BACK.0 {
+                        rt.rename_buf.pop();
+                        rt.redraw();
+                    }
+                    return true;
+                }
+
+                // F2 = Start inline rename on selected entry!
+                if vk == 0x71 && !rt.search_focused {
+                    if let Some(vis_i) = rt.tabs[rt.active_tab].selected_idx {
+                        if let Some(&ri) = rt.filtered_indices.get(vis_i) {
+                            if let Some(ent) = rt.active_entries().get(ri).cloned() {
+                                rt.renaming_path = Some(PathBuf::from(&ent.path));
+                                rt.rename_buf = ent.name.clone();
+                                rt.redraw();
+                                return true;
+                            }
+                        }
+                    }
+                }
+
+                // Ctrl+C / Ctrl+X / Ctrl+V Real File Copy/Cut/Paste!
+                if ctrl && (vk == 'C' as u16 || vk == 'X' as u16) {
+                    if let Some(vis_i) = rt.tabs[rt.active_tab].selected_idx {
+                        if let Some(&ri) = rt.filtered_indices.get(vis_i) {
+                            if let Some(ent) = rt.active_entries().get(ri).cloned() {
+                                let is_cut = vk == 'X' as u16;
+                                rt.file_clip = Some((PathBuf::from(&ent.path), is_cut));
+                                rt.show_toast(
+                                    format!("{}: {}", if is_cut { "Cortado" } else { "Copiado" }, ent.name),
+                                    true,
+                                );
+                                return true;
+                            }
+                        }
+                    }
+                } else if ctrl && vk == 'V' as u16 {
+                    if let Some((src, is_cut)) = rt.file_clip.clone() {
+                        let dst_dir = rt.cur_path();
+                        if let Some(fname) = src.file_name() {
+                            let mut dst = dst_dir.join(fname);
+                            if dst.exists() {
+                                let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("archivo");
+                                let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("");
+                                for n in 1..100 {
+                                    let cand = if ext.is_empty() {
+                                        format!("{} (copia {})", stem, n)
+                                    } else {
+                                        format!("{} (copia {}).{}", stem, n, ext)
+                                    };
+                                    let p = dst_dir.join(&cand);
+                                    if !p.exists() {
+                                        dst = p;
+                                        break;
+                                    }
+                                }
+                            }
+                            let ok = if is_cut {
+                                std::fs::rename(&src, &dst).is_ok()
+                                    || (copy_path_recursive(&src, &dst).is_ok() && {
+                                        if src.is_dir() { std::fs::remove_dir_all(&src).is_ok() } else { std::fs::remove_file(&src).is_ok() }
+                                    })
+                            } else {
+                                copy_path_recursive(&src, &dst).is_ok()
+                            };
+                            if ok {
+                                if is_cut {
+                                    rt.file_clip = None;
+                                }
+                                rt.load_current_dir_instant();
+                                rt.show_toast(if is_cut { "Elemento movido aquí" } else { "Elemento pegado aquí" }, true);
+                            } else {
+                                rt.show_toast("Error al pegar el elemento", false);
+                            }
+                        }
+                    }
+                    return true;
+                }
+
                 if ctrl && vk == 'T' as u16 {
                     rt.execute(FileAction::NewTab);
                 } else if ctrl && vk == 'F' as u16 {
@@ -2375,6 +2500,13 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                     return true;
                 }
                 if let Some(ch) = char::from_u32(wparam.0 as u32) {
+                    if rt.renaming_path.is_some() {
+                        if !ch.is_control() && rt.rename_buf.len() < 180 {
+                            rt.rename_buf.push(ch);
+                            rt.redraw();
+                        }
+                        return true;
+                    }
                     if ch == ' ' && !rt.search_focused {
                         return true;
                     }
@@ -2402,6 +2534,20 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
     }
 
     if handled { LRESULT(0) } else { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+fn copy_path_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            copy_path_recursive(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        std::fs::copy(src, dst)?;
+        Ok(())
+    }
 }
 
 fn capture_aurafiles_png(out_png: &Path, dir: PathBuf, analyzer_mode: bool) {
@@ -2448,6 +2594,7 @@ fn capture_aurafiles_png(out_png: &Path, dir: PathBuf, analyzer_mode: bool) {
         hovered: None,
         toast: None,
         quicklook_open: false,
+        renaming_buf: None,
         analyzer: &analyzer,
     };
     let _ = gpu.render_to_png(1240, 760, out_png, |ctx| {

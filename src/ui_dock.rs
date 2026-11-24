@@ -48,7 +48,6 @@ fn aura_fallback_icon(proc_name: &str) -> VectorIcon {
         "auraphotos" => VectorIcon::Image,
         "aurapdf" => VectorIcon::FileText,
         "aurashot" => VectorIcon::Maximize,
-        "auraagent" => VectorIcon::Sparkle,
         "auraplayer" => VectorIcon::Play,
         "auranotes" => VectorIcon::Code,
         "auratasks" => VectorIcon::Sparkle,
@@ -223,13 +222,14 @@ pub fn notch_geometry(sw: i32, sh: i32, is_left: bool) -> (i32, i32, i32, i32) {
 
 /// Renders the minimal iPhone/Android Home-Indicator pill ("Muesquita") at the edge of the screen!
 pub fn render_dock_notch(ctx: &mut DrawCtx<'_>, w: f32, h: f32, is_left: bool, hovered: bool) {
+    let p = theme::pal();
     let halo_col = if hovered {
-        theme::rgba(124, 92, 255, 0.36)
+        theme::with_alpha(p.accent, 0.36)
     } else {
-        theme::rgba(13, 13, 20, 0.58)
+        theme::with_alpha(p.canvas, 0.62)
     };
     let bar_col = if hovered {
-        theme::VIOLET_LIGHT
+        p.accent_light
     } else {
         theme::rgba(245, 245, 252, 0.62)
     };
@@ -279,9 +279,10 @@ pub fn render_dock(
     ctx.set_transform_scale_origin(1.0, 0.0, 0.0, slide_dx, slide_dy);
     let _layer = ctx.push_opacity_layer(Rect::new(0.0, 0.0, win_w, win_h), reveal);
 
-    // Matte Obsidian Dock Capsule
+    // Material You Obsidian Dock Capsule
+    let p = theme::pal();
     let capsule = Rect::new(cap_x, cap_y, cap_w, cap_h);
-    ctx.fill_card(capsule, 20.0, theme::rgba(18, 18, 25, 0.96), theme::BORDER_STRONG);
+    ctx.fill_card(capsule, 20.0, theme::with_alpha(p.surface, 0.96), p.border_strong);
 
     // 1. TOP/LEFT PINNED: AuraFiles HD
     let f_rect = Rect::new(cap_x + 10.0, cap_y + 10.0, 42.0, 42.0);
@@ -493,19 +494,20 @@ fn draw_dock_tile(
     let sh = r.h * scale;
     let sr = Rect::new(cx - sw * 0.5, cy - sh * 0.5, sw, sh);
 
+    let p = theme::pal();
     let bg = if is_active {
         theme::CRISP_WHITE
     } else if hov {
-        theme::VIOLET
+        p.accent
     } else {
-        theme::ELEVATED
+        p.elevated
     };
     let border = if is_active {
-        theme::VIOLET
+        p.accent
     } else if hov {
-        theme::VIOLET_LIGHT
+        p.accent_light
     } else {
-        theme::BORDER
+        p.border
     };
 
     ctx.fill_card(sr, 13.0 * scale.min(1.2), bg, border);
@@ -513,12 +515,12 @@ fn draw_dock_tile(
     let ic_sz = 28.0 * scale;
     let ic_rect = Rect::new(cx - ic_sz * 0.5, cy - ic_sz * 0.5, ic_sz, ic_sz);
     if icon_path.is_empty() || !ctx.draw_app_icon(icon_path, ic_rect) {
-        let ic_col = if is_active { theme::DARK_INK } else { theme::TEXT_PRIMARY };
+        let ic_col = if is_active { theme::DARK_INK } else { p.text_primary };
         ctx.draw_vector_icon(fallback, cx, cy, 18.0 * scale, ic_col);
     }
 
     if is_running {
-        let dot_col = if is_active { theme::VIOLET } else { theme::TEXT_SECONDARY };
+        let dot_col = if is_active { p.accent } else { p.text_secondary };
         if is_left {
             let dh = if is_active { 14.0 } else { 6.0 };
             ctx.fill_rrect(Rect::new(r.x - 6.0, r.y + r.h * 0.5 - dh * 0.5, 3.5, dh), 1.8, dot_col);

@@ -5,7 +5,7 @@
   <p>Conserva toda la compatibilidad de juegos, DirectX, drivers y anti-cheats de Windows (Riot Vanguard, Steam, Epic), mientras reemplaza la interfaz pesada por una suite ultrarrápida estilo <em>Drool Dark Mode</em>.</p>
 
   <p>
-    <a href="https://github.com/dandifeto1111-prog/AuraOS/releases/latest"><img src="https://img.shields.io/badge/Release-v5.0.0-7C5CFF?style=for-the-badge&logo=github" alt="Release v5.0.0" /></a>
+    <a href="https://github.com/dandifeto1111-prog/AuraOS/releases/latest"><img src="https://img.shields.io/badge/Release-v5.1.0-7C5CFF?style=for-the-badge&logo=github" alt="Release v5.1.0" /></a>
     <img src="https://img.shields.io/badge/100%25_Rust-Direct2D_%2B_DirectComposition-F4727F?style=for-the-badge&logo=rust" alt="100% Rust" />
     <img src="https://img.shields.io/badge/OS-Windows_11_x64-34D399?style=for-the-badge&logo=windows11" alt="Windows 11" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-FBBF24?style=for-the-badge" alt="MIT License" /></a>
@@ -22,9 +22,28 @@ Cada aplicación del sistema está acelerada por hardware con **Direct2D y Direc
 
 ---
 
-## 🖼️ Galería del Sistema (Capturas Reales v4.5.0)
+## 🖼️ Galería del Sistema (Capturas Reales v5.1.0)
 
-### 🌌 Escritorio, Barra Superior, Dock macOS (Magnificación + Vista Previa en Vivo + Efecto Genio) y Widgets Magnéticos
+### 🎨 Material You 3 Dinámico, Barra Flotante + Batería, Reloj Vertical/Cookie y Barra Musical Ondulada
+Paleta oscura Material You 3 extraída automáticamente de tu fondo de pantalla (o seleccionable entre `Auto`, `Obsidian Violet`, `Sage Forest`, `Warm Apricot` y `Monochrome`), barra superior en estilos `Hug` / `Flotante` / `Recta` con batería real en portátiles, **Dock consciente del escritorio con orden fijo**, **Efecto Genio a 120 FPS sin doble animación de Windows** y **semáforos macOS unificados** en ventanas de Windows.
+
+<p align="center">
+  <img src="docs/screenshots/v51_desktop_vertical_float.png" alt="AuraOS v5.1 Escritorio Material You Apricot + Reloj Vertical + Barra Flotante" width="100%" />
+</p>
+
+### 🧑‍💻 Dev & AI Hub Multiusuario (Cuotas IA + GitHub 7 Días + Repositorios Git Locales) & 🎛️ Panel Derecho *illogical-impulse*
+<table>
+  <tr>
+    <td width="65%"><img src="docs/screenshots/v51_dev_hub.png" alt="Dev & AI Hub: Cuotas IA y Monitor GitHub/Git" /></td>
+    <td width="35%"><img src="docs/screenshots/v51_sidebar_sage.png" alt="Panel Derecho Sage Forest: Brillo, Luz Nocturna, Onda Musical y To-Do" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><strong>Dev & AI Hub:</strong> Cuotas de Antigravity, Gemini, Claude, Ollama/OpenRouter + gráfica de commits GitHub 7d y estado real de repos locales</sub></td>
+    <td align="center"><sub><strong>Panel Derecho Material You (Sage Forest):</strong> Brillo real, Luz Nocturna, Café, barra musical ondulada y checklist <code>To-Do / Pomodoro / Mezclador</code></sub></td>
+  </tr>
+</table>
+
+### 🌌 Escritorio Clásico Drool, Barra Superior, Dock macOS y Widgets Magnéticos
 Barra superior de 34 px con controles activos, telemetría en vivo (CPU, RAM, clima geolocalizado automáticamente según tu ciudad, Ethernet/Wi-Fi dinámico), Dock con **magnificación parabólica estilo macOS**, **vista previa DWM 60 FPS en vivo** al pasar el cursor, **efecto Genio al minimizar/abrir ventanas** y widgets arrastrables con cuadrícula magnética.
 
 <p align="center">

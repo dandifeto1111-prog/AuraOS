@@ -437,7 +437,6 @@ pub fn scan_all_apps(custom: &CustomItemsStore) -> Vec<AppEntry> {
         ("AuraNotes", "AuraNotes.exe", "AuraOS"),
         ("AuraSettings", "AuraSettings.exe", "AuraOS"),
         ("AuraLock", "AuraLock.exe", "AuraOS"),
-        ("AuraAgent IA", "AuraAgent.exe", "AI"),
     ] {
         if let Some(p) = crate::win32_shell::resolve_aura_app_path(exe) {
             let p_str = p.to_string_lossy().to_string();

@@ -26,13 +26,16 @@ pub fn render_overview(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32, 
     let full_r = Rect::new(0.0, 0.0, w, h);
     let _outer_layer: Option<windows::Win32::Graphics::Direct2D::ID2D1Layer> = None;
 
+    let p = theme::pal();
     let alpha = state.settings.glass_opacity.clamp(0.50, 0.96) * open_t;
-    ctx.fill_rrect(full_r, 0.0, theme::rgba(10, 10, 15, alpha));
+    ctx.fill_rrect(full_r, 0.0, theme::with_alpha(p.canvas, alpha));
 
-    // Zero-layer GPU origin-aware scale + slide (0.4ms even during 100% GPU games!)
-    let scale = 0.96 + 0.04 * open_t;
-    let rise_y = (1.0 - open_t) * -8.0;
-    ctx.set_transform_scale_origin(scale, ox, oy, 0.0, rise_y);
+    // Zero-layer GPU origin-aware scale + slide (skip matrix override at rest so parent transforms compose cleanly!)
+    if open_t < 0.995 {
+        let scale = 0.96 + 0.04 * open_t;
+        let rise_y = (1.0 - open_t) * -8.0;
+        ctx.set_transform_scale_origin(scale, ox, oy, 0.0, rise_y);
+    }
 
     // Clicking empty backdrop closes Overview (unless modal is open)
     hits.push(HitRegion {
@@ -51,11 +54,11 @@ pub fn render_overview(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32, 
 
     // 4-Mode Segmented Pill (Overview / Dev & AI / Gamer / Fondos)
     let seg_r = Rect::new(margin_x, top_y, 356.0, 38.0);
-    ctx.fill_card(seg_r, 19.0, theme::SURFACE, theme::BORDER);
+    ctx.fill_card(seg_r, 19.0, p.surface, p.border);
     let tab_w = (seg_r.w - 8.0) / 4.0;
     let pill_x = seg_r.x + 4.0 + state.overview_tab_pill_x.value.clamp(0.0, 3.0) * tab_w;
     if !state.overview_settings_view {
-        ctx.fill_rrect(Rect::new(pill_x, seg_r.y + 4.0, tab_w, 30.0), 15.0, theme::VIOLET);
+        ctx.fill_rrect(Rect::new(pill_x, seg_r.y + 4.0, tab_w, 30.0), 15.0, p.accent);
     }
     let tabs = [
         ("ov_tab_pc", "Overview", ShellMode::PC),
@@ -70,7 +73,7 @@ pub fn render_overview(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32, 
             lbl,
             tr,
             if active { TextStyle::Body11Med } else { TextStyle::Body11Reg },
-            if active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY },
+            if active { theme::CRISP_WHITE } else { p.text_secondary },
         );
         hits.push(HitRegion { id: id.into(), rect: tr, action: Action::ClickModeTab(m), right_action: None, tooltip: None, slider: None });
     }
@@ -83,15 +86,15 @@ pub fn render_overview(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32, 
     ctx.fill_card(
         sr,
         19.0,
-        if sr_hov || !state.search_query.is_empty() { theme::ELEVATED } else { theme::SURFACE },
-        if !state.search_query.is_empty() || sr_hov { theme::VIOLET_LIGHT } else { theme::VIOLET_BORDER },
+        if sr_hov || !state.search_query.is_empty() { p.elevated } else { p.surface },
+        if !state.search_query.is_empty() || sr_hov { p.accent_light } else { p.accent_border },
     );
     ctx.draw_vector_icon(
         VectorIcon::Search,
         sr.x + 20.0,
         sr.y + 19.0,
         13.5,
-        if !state.search_query.is_empty() || sr_hov { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY },
+        if !state.search_query.is_empty() || sr_hov { p.accent_light } else { p.text_tertiary },
     );
     let q_disp = if state.search_query.is_empty() {
         "Buscar apps, calcular (245*18, 100c a f) o > cmd...".to_string()
@@ -398,67 +401,58 @@ fn render_pc_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits: &m
     ctx.draw_text_center(if state.ram_pct > 80 { "Alta" } else { "Ideal" }, st_pill, TextStyle::Small9Reg, theme::TEXT_PRIMARY);
 }
 
-// ==================== 2. DEV & AI HUB (+ MANUAL ADD AI / LOCAL APP!) ====================
+// ==================== 2. DEV & AI HUB (AI QUOTAS + GITHUB/GIT COMMITS + TOOLS!) ====================
 
 fn render_dev_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits: &mut Vec<HitRegion>) {
-    let gap = 16.0;
-    let left_w = area.w * 0.66 - gap * 0.5;
+    let p = theme::pal();
+    let gap = 14.0;
+    let left_w = (area.w * 0.58 - gap * 0.5).max(460.0);
     let right_w = area.w - left_w - gap;
-    let y0 = area.y + 14.0;
+    let y0 = area.y + 10.0;
+    let total_h = (area.h - 20.0).max(480.0);
 
-    // LEFT: AI & Dev Tools Card with Manual "+ Agregar IA Web" & "+ App local" Buttons!
-    let ai_card = Rect::new(area.x, y0, left_w, area.h - 24.0);
-    ctx.fill_card(ai_card, 22.0, theme::CARD_BG, theme::BORDER);
-    ctx.draw_text("AI & DEV WORKSPACE", Rect::new(ai_card.x + 20.0, ai_card.y + 18.0, 200.0, 20.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
-    ctx.draw_text("Agrega cualquier IA web o herramienta local", Rect::new(ai_card.x + 20.0, ai_card.y + 34.0, 320.0, 16.0), TextStyle::Body11Reg, theme::TEXT_SECONDARY);
+    // ---------- LEFT TOP: AI & DEV WORKSPACE TOOLS ----------
+    let tools_h = (total_h * 0.44).clamp(210.0, 270.0);
+    let ai_card = Rect::new(area.x, y0, left_w, tools_h);
+    ctx.fill_card(ai_card, 22.0, p.card_bg, p.border);
+    ctx.draw_text("AI & DEV WORKSPACE", Rect::new(ai_card.x + 18.0, ai_card.y + 14.0, 200.0, 18.0), TextStyle::Small10Bold, p.accent_light);
+    ctx.draw_text("Tus herramientas IA y de código", Rect::new(ai_card.x + 18.0, ai_card.y + 30.0, 260.0, 15.0), TextStyle::Small9Reg, p.text_tertiary);
 
-    // Manual "+ Agregar IA Web" button
-    let btn_web = Rect::new(ai_card.x + ai_card.w - 266.0, ai_card.y + 18.0, 128.0, 30.0);
-    ctx.fill_rrect(btn_web, 11.0, theme::VIOLET);
-    ctx.draw_vector_icon(VectorIcon::Plus, btn_web.x + 15.0, btn_web.y + 15.0, 11.0, theme::TEXT_PRIMARY);
-    ctx.draw_text("Agregar IA Web", Rect::new(btn_web.x + 26.0, btn_web.y, 98.0, 30.0), TextStyle::Small10Bold, theme::TEXT_PRIMARY);
+    let btn_web = Rect::new(ai_card.x + ai_card.w - 246.0, ai_card.y + 14.0, 120.0, 28.0);
+    ctx.fill_rrect(btn_web, 10.0, p.accent);
+    ctx.draw_vector_icon(VectorIcon::Plus, btn_web.x + 14.0, btn_web.y + 14.0, 10.5, theme::CRISP_WHITE);
+    ctx.draw_text("IA Web", Rect::new(btn_web.x + 26.0, btn_web.y, 88.0, 28.0), TextStyle::Small10Bold, theme::CRISP_WHITE);
     hits.push(HitRegion { id: "dev_add_web".into(), rect: btn_web, action: Action::OpenAddDevWebModal, right_action: None, tooltip: None, slider: None });
 
-    // Manual "+ App local" button
-    let btn_loc = Rect::new(ai_card.x + ai_card.w - 130.0, ai_card.y + 18.0, 112.0, 30.0);
-    ctx.fill_card(btn_loc, 11.0, theme::ELEVATED, theme::BORDER_STRONG);
-    ctx.draw_vector_icon(VectorIcon::Plus, btn_loc.x + 15.0, btn_loc.y + 15.0, 11.0, theme::VIOLET_LIGHT);
-    ctx.draw_text("App local", Rect::new(btn_loc.x + 26.0, btn_loc.y, 82.0, 30.0), TextStyle::Small10Bold, theme::TEXT_PRIMARY);
+    let btn_loc = Rect::new(ai_card.x + ai_card.w - 118.0, ai_card.y + 14.0, 102.0, 28.0);
+    ctx.fill_card(btn_loc, 10.0, p.elevated, p.border_strong);
+    ctx.draw_vector_icon(VectorIcon::Plus, btn_loc.x + 14.0, btn_loc.y + 14.0, 10.5, p.accent_light);
+    ctx.draw_text("App local", Rect::new(btn_loc.x + 25.0, btn_loc.y, 72.0, 28.0), TextStyle::Small10Bold, p.text_primary);
     hits.push(HitRegion { id: "dev_add_local".into(), rect: btn_loc, action: Action::AddDevLocalFile, right_action: None, tooltip: None, slider: None });
 
-    // Responsive 3-column grid of Dev & AI tools
     let cols = 3usize;
-    let cw = (ai_card.w - 40.0 - 20.0) / cols as f32;
-    let ch = 64.0;
-    let gx = ai_card.x + 20.0;
-    let gy = ai_card.y + 66.0;
-
-    for (idx, item) in state.dev_ai_apps.iter().take(15).enumerate() {
+    let cw = (ai_card.w - 36.0 - 16.0) / cols as f32;
+    let ch = 56.0;
+    let gx = ai_card.x + 18.0;
+    let gy = ai_card.y + 54.0;
+    for (idx, item) in state.dev_ai_apps.iter().take(9).enumerate() {
         let c = (idx % cols) as f32;
         let r = (idx / cols) as f32;
-        let tr = Rect::new(gx + c * (cw + 10.0), gy + r * (ch + 10.0), cw, ch);
-        if tr.y + tr.h > ai_card.y + ai_card.h - 14.0 {
+        let tr = Rect::new(gx + c * (cw + 8.0), gy + r * (ch + 8.0), cw, ch);
+        if tr.y + tr.h > ai_card.y + ai_card.h - 10.0 {
             break;
         }
         let id = format!("dev_item_{}", idx);
         let hov = state.hovered_id.as_deref() == Some(&id);
-        ctx.fill_card(
-            tr,
-            15.0,
-            if hov { theme::ELEVATED_HOVER } else { theme::ELEVATED },
-            if item.is_custom { theme::VIOLET_BORDER } else { theme::BORDER },
-        );
-
-        let ib = Rect::new(tr.x + 12.0, tr.y + 14.0, 36.0, 36.0);
-        ctx.fill_rrect(ib, 10.0, if item.is_web { theme::VIOLET_TINT } else { theme::CARD_BG });
-        if item.icon_path.is_empty() || !ctx.draw_app_icon(&item.icon_path, Rect::new(ib.x + 6.0, ib.y + 6.0, 24.0, 24.0)) {
-            ctx.draw_vector_icon(if item.is_web { VectorIcon::Sparkle } else { VectorIcon::Code }, ib.x + 18.0, ib.y + 18.0, 15.0, theme::VIOLET_LIGHT);
+        ctx.fill_card(tr, 13.0, if hov { p.elevated_hover } else { p.elevated }, if item.is_custom { p.accent_border } else { p.border });
+        let ib = Rect::new(tr.x + 10.0, tr.y + 11.0, 34.0, 34.0);
+        ctx.fill_rrect(ib, 9.0, if item.is_web { p.accent_tint } else { p.card_bg });
+        if item.icon_path.is_empty() || !ctx.draw_app_icon(&item.icon_path, Rect::new(ib.x + 5.0, ib.y + 5.0, 24.0, 24.0)) {
+            ctx.draw_vector_icon(if item.is_web { VectorIcon::Sparkle } else { VectorIcon::Code }, ib.x + 17.0, ib.y + 17.0, 14.0, p.accent_light);
         }
-
-        let tw = if item.is_custom { tr.w - 84.0 } else { tr.w - 60.0 };
-        ctx.draw_text(&item.name, Rect::new(tr.x + 56.0, tr.y + 13.0, tw, 18.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
-        ctx.draw_text(&item.category, Rect::new(tr.x + 56.0, tr.y + 33.0, tw, 15.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
-
+        let tw = if item.is_custom { tr.w - 76.0 } else { tr.w - 54.0 };
+        ctx.draw_text(&item.name, Rect::new(tr.x + 50.0, tr.y + 10.0, tw, 17.0), TextStyle::Body11Med, p.text_primary);
+        ctx.draw_text(&item.category, Rect::new(tr.x + 50.0, tr.y + 28.0, tw, 14.0), TextStyle::Small9Reg, p.text_tertiary);
         hits.push(HitRegion {
             id,
             rect: tr,
@@ -467,61 +461,220 @@ fn render_dev_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits: &
             tooltip: None,
             slider: None,
         });
-
-        // Clean delete badge on custom user-added items
         if let Some(cid) = &item.custom_id {
-            let del_r = Rect::new(tr.x + tr.w - 26.0, tr.y + 8.0, 18.0, 18.0);
-            ctx.fill_rrect(del_r, 9.0, theme::CORAL_BG);
-            ctx.draw_vector_icon(VectorIcon::Close, del_r.x + 9.0, del_r.y + 9.0, 8.0, theme::CORAL);
+            let del_r = Rect::new(tr.x + tr.w - 22.0, tr.y + 6.0, 16.0, 16.0);
+            ctx.fill_rrect(del_r, 8.0, theme::CORAL_BG);
+            ctx.draw_vector_icon(VectorIcon::Close, del_r.x + 8.0, del_r.y + 8.0, 7.5, theme::CORAL);
+            hits.push(HitRegion { id: format!("dev_del_{}", idx), rect: del_r, action: Action::RemoveCustomDevItem(cid.clone()), right_action: None, tooltip: Some("Quitar".into()), slider: None });
+        }
+    }
+
+    // ---------- LEFT BOTTOM: MULTI-USER AI QUOTAS & USAGE MONITOR ----------
+    let q_y = y0 + tools_h + gap;
+    let q_h = (total_h - tools_h - gap).max(220.0);
+    let q_card = Rect::new(area.x, q_y, left_w, q_h);
+    ctx.fill_card(q_card, 22.0, p.card_bg, p.border);
+    ctx.draw_text("CUOTAS Y ESTADO DE TUS IAs (POR CUENTA DE USUARIO)", Rect::new(q_card.x + 18.0, q_card.y + 14.0, q_card.w - 130.0, 18.0), TextStyle::Small10Bold, p.accent_light);
+    ctx.draw_text("Antigravity · Gemini · Claude · Ollama Local / OpenRouter", Rect::new(q_card.x + 18.0, q_card.y + 30.0, q_card.w - 130.0, 15.0), TextStyle::Small9Reg, p.text_tertiary);
+
+    let ref_q = Rect::new(q_card.x + q_card.w - 104.0, q_card.y + 14.0, 88.0, 26.0);
+    ctx.fill_card(ref_q, 9.0, p.elevated, p.border_strong);
+    ctx.draw_vector_icon(VectorIcon::Refresh, ref_q.x + 14.0, ref_q.y + 13.0, 10.5, p.accent_light);
+    ctx.draw_text("Sincronizar", Rect::new(ref_q.x + 24.0, ref_q.y, 60.0, 26.0), TextStyle::Small9Reg, p.text_primary);
+    hits.push(HitRegion { id: "dev_refresh".into(), rect: ref_q, action: Action::RefreshDevHub, right_action: None, tooltip: Some("Refrescar Ollama, APIs y GitHub".into()), slider: None });
+
+    let providers = if state.dev_hub.providers.is_empty() {
+        vec![
+            crate::dev_hub::AiProviderStatus { id: "antigravity".into(), name: "Antigravity".into(), subtitle: "Tu sesión · Cuota local".into(), pct_remaining: state.dev_hub_cfg.antigravity_pct, badge: "CUENTA".into(), live_connected: true, dashboard_url: "https://aistudio.google.com/".into(), adjustable: true },
+            crate::dev_hub::AiProviderStatus { id: "gemini".into(), name: "Gemini".into(), subtitle: "Google AI Studio · Tu cuenta".into(), pct_remaining: state.dev_hub_cfg.gemini_pct, badge: "WEB".into(), live_connected: false, dashboard_url: "https://aistudio.google.com/apikey".into(), adjustable: true },
+            crate::dev_hub::AiProviderStatus { id: "claude".into(), name: "Claude".into(), subtitle: "Anthropic · Tu cuenta".into(), pct_remaining: state.dev_hub_cfg.claude_pct, badge: "WEB".into(), live_connected: false, dashboard_url: "https://claude.ai/settings/usage".into(), adjustable: true },
+            crate::dev_hub::AiProviderStatus { id: "ollama".into(), name: "Ollama Local".into(), subtitle: "Detectando 127.0.0.1:11434...".into(), pct_remaining: 0, badge: "LOCAL".into(), live_connected: false, dashboard_url: "http://127.0.0.1:11434".into(), adjustable: false },
+        ]
+    } else {
+        state.dev_hub.providers.clone()
+    };
+
+    let q_cols = 2usize;
+    let qcw = (q_card.w - 36.0 - 10.0) * 0.5;
+    let qch = ((q_h - 68.0) * 0.5).clamp(72.0, 96.0);
+    for (idx, prov) in providers.iter().take(4).enumerate() {
+        let c = (idx % q_cols) as f32;
+        let r = (idx / q_cols) as f32;
+        let qr = Rect::new(q_card.x + 18.0 + c * (qcw + 10.0), q_card.y + 54.0 + r * (qch + 8.0), qcw, qch);
+        let hov = state.hovered_id.as_deref() == Some(&format!("dev_aiq_{}", idx));
+        ctx.fill_card(qr, 14.0, if hov { p.elevated_hover } else { p.elevated }, if prov.live_connected { p.accent_border } else { p.border });
+
+        ctx.draw_text(&prov.name, Rect::new(qr.x + 12.0, qr.y + 8.0, 118.0, 18.0), TextStyle::Body12Semi, p.text_primary);
+        let b_r = Rect::new(qr.x + qr.w - 64.0, qr.y + 8.0, 52.0, 17.0);
+        ctx.fill_rrect(b_r, 6.0, if prov.live_connected { p.accent_tint } else { p.card_bg });
+        ctx.draw_text_center(&prov.badge, b_r, TextStyle::Small9Reg, if prov.live_connected { p.accent_light } else { p.text_tertiary });
+        ctx.draw_text(&prov.subtitle, Rect::new(qr.x + 12.0, qr.y + 26.0, qr.w - 24.0, 14.0), TextStyle::Small9Reg, p.text_tertiary);
+
+        // Material 3 Quota Progress Bar
+        let bar_r = Rect::new(qr.x + 12.0, qr.y + 44.0, qr.w - 64.0, 8.0);
+        ctx.fill_rrect(bar_r, 4.0, p.card_bg);
+        let fill_col = if prov.pct_remaining <= 20 { theme::CORAL } else if prov.pct_remaining <= 45 { theme::AMBER } else { p.accent };
+        let fw = ((prov.pct_remaining as f32 / 100.0).clamp(0.0, 1.0) * bar_r.w).max(if prov.pct_remaining > 0 { 6.0 } else { 0.0 });
+        if fw > 0.0 {
+            ctx.fill_rrect(Rect::new(bar_r.x, bar_r.y, fw, 8.0), 4.0, fill_col);
+        }
+        ctx.draw_text_right(&format!("{}%", prov.pct_remaining), Rect::new(qr.x + qr.w - 48.0, qr.y + 39.0, 36.0, 17.0), TextStyle::Mono11Med, p.text_primary);
+
+        // Bottom quick controls: [-5%] [+5%] [Reset] + [Panel]
+        let by = qr.y + qr.h - 24.0;
+        if prov.adjustable {
+            let b_dec = Rect::new(qr.x + 12.0, by, 26.0, 18.0);
+            let b_inc = Rect::new(qr.x + 42.0, by, 26.0, 18.0);
+            let b_rst = Rect::new(qr.x + 72.0, by, 42.0, 18.0);
+            ctx.fill_rrect(b_dec, 6.0, p.card_bg);
+            ctx.fill_rrect(b_inc, 6.0, p.card_bg);
+            ctx.fill_rrect(b_rst, 6.0, p.card_bg);
+            ctx.draw_text_center("−5", b_dec, TextStyle::Small9Reg, p.text_secondary);
+            ctx.draw_text_center("+5", b_inc, TextStyle::Small9Reg, p.text_secondary);
+            ctx.draw_text_center("100%", b_rst, TextStyle::Small9Reg, p.accent_light);
+            hits.push(HitRegion { id: format!("q_dec_{}", idx), rect: b_dec, action: Action::AdjustAiQuota(prov.id.clone(), -5), right_action: None, tooltip: Some("Restar 5%".into()), slider: None });
+            hits.push(HitRegion { id: format!("q_inc_{}", idx), rect: b_inc, action: Action::AdjustAiQuota(prov.id.clone(), 5), right_action: None, tooltip: Some("Sumar 5%".into()), slider: None });
+            hits.push(HitRegion { id: format!("q_rst_{}", idx), rect: b_rst, action: Action::ResetAiQuota(prov.id.clone()), right_action: None, tooltip: Some("Reiniciar ciclo a 100%".into()), slider: None });
+        }
+        let open_r = Rect::new(qr.x + qr.w - 72.0, by, 60.0, 18.0);
+        ctx.fill_rrect(open_r, 6.0, p.accent_tint);
+        ctx.draw_text_center("Panel ↗", open_r, TextStyle::Small9Reg, p.accent_light);
+        hits.push(HitRegion { id: format!("dev_aiq_{}", idx), rect: open_r, action: Action::LaunchTarget(prov.dashboard_url.clone()), right_action: None, tooltip: Some(format!("Abrir panel oficial de {}", prov.name)), slider: None });
+    }
+
+    // ---------- RIGHT TOP: MULTI-USER GITHUB & LOCAL GIT COMMITS MONITOR! ----------
+    let right_x = area.x + left_w + gap;
+    let git_h = (total_h * 0.66).clamp(310.0, 420.0);
+    let g_card = Rect::new(right_x, y0, right_w, git_h);
+    ctx.fill_card(g_card, 22.0, p.card_bg, p.border);
+    ctx.draw_vector_icon(VectorIcon::GitBranch, g_card.x + 24.0, g_card.y + 22.0, 14.0, p.accent_light);
+    ctx.draw_text("GITHUB Y COMMITS GIT", Rect::new(g_card.x + 38.0, g_card.y + 13.0, 180.0, 18.0), TextStyle::Small10Bold, p.accent_light);
+
+    // Editable / Clickable @username pill (auto-detected per user!)
+    let gh_label = if state.gh_input_active {
+        format!("@{}|", state.gh_input_text)
+    } else if !state.dev_hub.github.username.is_empty() {
+        format!("@{}", state.dev_hub.github.username)
+    } else {
+        "Configurar @GitHub".to_string()
+    };
+    let gh_pill = Rect::new(g_card.x + g_card.w - 156.0, g_card.y + 12.0, 140.0, 24.0);
+    ctx.fill_card(gh_pill, 10.0, if state.gh_input_active { p.elevated_hover } else { p.elevated }, if state.gh_input_active { p.accent } else { p.border_strong });
+    ctx.draw_text_center(&gh_label, gh_pill, TextStyle::Small10Bold, p.text_primary);
+    hits.push(HitRegion {
+        id: "dev_gh_user".into(),
+        rect: gh_pill,
+        action: if !state.gh_input_active && !state.dev_hub.github.profile_url.is_empty() {
+            Action::LaunchTarget(state.dev_hub.github.profile_url.clone())
+        } else {
+            Action::StartGithubUserEdit
+        },
+        right_action: Some(Action::StartGithubUserEdit),
+        tooltip: Some("Clic abrir perfil GitHub · Clic derecho cambiar @usuario".into()),
+        slider: None,
+    });
+
+    // 7-Day GitHub Commits Mini Activity Bar Chart
+    let chart_r = Rect::new(g_card.x + 16.0, g_card.y + 44.0, g_card.w - 32.0, 74.0);
+    ctx.fill_card(chart_r, 14.0, p.elevated, p.border);
+    let total_c = state.dev_hub.github.total_recent_commits;
+    let gh_hdr = if state.dev_hub.github.fetched_ok {
+        format!("Actividad 7 días · {} commits recientes", total_c)
+    } else {
+        "Actividad GitHub (clic der. en @usuario para vincular)".to_string()
+    };
+    ctx.draw_text(&gh_hdr, Rect::new(chart_r.x + 12.0, chart_r.y + 6.0, chart_r.w - 24.0, 16.0), TextStyle::Small9Reg, p.text_secondary);
+
+    let max_day = state.dev_hub.github.daily_commits_7d.iter().copied().max().unwrap_or(1).max(1) as f32;
+    let bw = ((chart_r.w - 24.0 - 6.0 * 8.0) / 7.0).max(14.0);
+    let day_lbls = ["D-6", "D-5", "D-4", "D-3", "D-2", "Ayer", "Hoy"];
+    for (i, &cnt) in state.dev_hub.github.daily_commits_7d.iter().enumerate() {
+        let bx = chart_r.x + 12.0 + i as f32 * (bw + 8.0);
+        let frac = (cnt as f32 / max_day).clamp(0.0, 1.0);
+        let bh = if cnt > 0 { 8.0 + frac * 24.0 } else { 4.0 };
+        let by = chart_r.y + 54.0 - bh;
+        ctx.fill_rrect(Rect::new(bx, by, bw, bh), 4.0, if cnt > 0 { p.accent } else { p.card_bg });
+        ctx.draw_text_center(day_lbls[i], Rect::new(bx, chart_r.y + 56.0, bw, 14.0), TextStyle::Small9Reg, p.text_tertiary);
+    }
+
+    // Local Git Repositories Live Status
+    let mut ry = g_card.y + 128.0;
+    ctx.draw_text("REPOSITORIOS LOCALES (GIT STATUS)", Rect::new(g_card.x + 18.0, ry, g_card.w - 36.0, 15.0), TextStyle::Small9Reg, p.text_tertiary);
+    ry += 20.0;
+
+    if state.dev_hub.repos.is_empty() {
+        ctx.draw_text("No se detectaron repositorios .git locales aún.", Rect::new(g_card.x + 18.0, ry, g_card.w - 36.0, 28.0), TextStyle::Body11Reg, p.text_tertiary);
+    } else {
+        for (i, repo) in state.dev_hub.repos.iter().take(4).enumerate() {
+            if ry + 48.0 > g_card.y + g_card.h - 10.0 {
+                break;
+            }
+            let rr = Rect::new(g_card.x + 14.0, ry, g_card.w - 28.0, 48.0);
+            let hov = state.hovered_id.as_deref() == Some(&format!("dev_repo_{}", i));
+            ctx.fill_card(rr, 12.0, if hov { p.elevated_hover } else { p.elevated }, p.border);
+            ctx.draw_text(&repo.name, Rect::new(rr.x + 10.0, rr.y + 5.0, rr.w - 140.0, 18.0), TextStyle::Body11Med, p.text_primary);
+
+            // Branch + Dirty Files Badge
+            let br_lbl = format!("{}", repo.branch);
+            let br_r = Rect::new(rr.x + rr.w - 130.0, rr.y + 6.0, 66.0, 16.0);
+            ctx.fill_rrect(br_r, 6.0, p.accent_tint);
+            ctx.draw_text_center(&br_lbl, br_r, TextStyle::Small9Reg, p.accent_light);
+
+            let st_r = Rect::new(rr.x + rr.w - 60.0, rr.y + 6.0, 52.0, 16.0);
+            let (st_bg, st_fg, st_txt) = if repo.dirty_files > 0 {
+                (theme::rgba(245, 183, 49, 0.22), theme::AMBER, format!("{} mod", repo.dirty_files))
+            } else {
+                (theme::rgba(34, 197, 94, 0.20), theme::EMERALD, "Limpio".to_string())
+            };
+            ctx.fill_rrect(st_r, 6.0, st_bg);
+            ctx.draw_text_center(&st_txt, st_r, TextStyle::Small9Reg, st_fg);
+
+            let commit_line = format!("{} · {} ({})", repo.last_hash, repo.last_msg, repo.last_when);
+            ctx.draw_text(&commit_line, Rect::new(rr.x + 10.0, rr.y + 25.0, rr.w - 20.0, 16.0), TextStyle::Small9Reg, p.text_secondary);
             hits.push(HitRegion {
-                id: format!("dev_del_{}", idx),
-                rect: del_r,
-                action: Action::RemoveCustomDevItem(cid.clone()),
+                id: format!("dev_repo_{}", i),
+                rect: rr,
+                action: Action::LaunchAuraFiles(Some(repo.path.clone())),
                 right_action: None,
-                tooltip: Some("Quitar elemento personalizado".into()),
+                tooltip: Some(format!("Abrir carpeta {}", repo.path)),
                 slider: None,
             });
+            ry += 54.0;
         }
     }
 
-    // RIGHT: Local Dev Servers (Ports) + Quick Dev Actions
-    let right_x = area.x + left_w + gap;
-    let p_card = Rect::new(right_x, y0, right_w, area.h - 24.0);
-    ctx.fill_card(p_card, 22.0, theme::CARD_BG, theme::BORDER);
-    ctx.draw_text("SERVIDORES LOCALES ACTIVOS", Rect::new(p_card.x + 18.0, p_card.y + 18.0, right_w - 36.0, 18.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
+    // ---------- RIGHT BOTTOM: ACTIVE LOCAL SERVERS + TERMINAL SHORTCUTS ----------
+    let p_y = y0 + git_h + gap;
+    let p_h = (total_h - git_h - gap).max(140.0);
+    let p_card = Rect::new(right_x, p_y, right_w, p_h);
+    ctx.fill_card(p_card, 22.0, p.card_bg, p.border);
+    ctx.draw_text("SERVIDORES LOCALES Y TERMINAL", Rect::new(p_card.x + 16.0, p_card.y + 12.0, right_w - 32.0, 16.0), TextStyle::Small10Bold, p.text_tertiary);
 
-    let mut py = p_card.y + 48.0;
+    let mut py = p_card.y + 34.0;
     if state.dev_ports.is_empty() {
-        ctx.draw_text("Ningún puerto local detectado (3000, 5173, 8000, 11434).", Rect::new(p_card.x + 18.0, py, right_w - 36.0, 36.0), TextStyle::Body11Reg, theme::TEXT_TERTIARY);
-        py += 48.0;
+        ctx.draw_text("Puertos 3000 / 5173 / 8000 / 11434 inactivos.", Rect::new(p_card.x + 16.0, py, right_w - 32.0, 22.0), TextStyle::Small9Reg, p.text_tertiary);
+        py += 28.0;
     } else {
-        for (i, port) in state.dev_ports.iter().enumerate() {
-            let pr = Rect::new(p_card.x + 14.0, py, right_w - 28.0, 46.0);
-            ctx.fill_card(pr, 13.0, theme::ELEVATED, theme::BORDER);
-            ctx.fill_circle(pr.x + 16.0, pr.y + 23.0, 4.5, theme::EMERALD);
-            ctx.draw_text(&format!("localhost:{}", port.port), Rect::new(pr.x + 28.0, pr.y + 6.0, pr.w - 90.0, 18.0), TextStyle::Mono12Bold, theme::TEXT_PRIMARY);
-            ctx.draw_text(&port.label, Rect::new(pr.x + 28.0, pr.y + 24.0, pr.w - 90.0, 15.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
+        for (i, port) in state.dev_ports.iter().take(2).enumerate() {
+            let pr = Rect::new(p_card.x + 14.0, py, right_w - 28.0, 30.0);
+            ctx.fill_card(pr, 9.0, p.elevated, p.border);
+            ctx.fill_circle(pr.x + 12.0, pr.y + 15.0, 4.0, theme::EMERALD);
+            ctx.draw_text(&format!("localhost:{} · {}", port.port, port.label), Rect::new(pr.x + 22.0, pr.y, pr.w - 32.0, 30.0), TextStyle::Mono11Med, p.text_primary);
             hits.push(HitRegion { id: format!("dev_port_{}", i), rect: pr, action: Action::LaunchTarget(port.url.clone()), right_action: None, tooltip: None, slider: None });
-            py += 54.0;
+            py += 34.0;
         }
     }
 
-    py += 12.0;
-    ctx.draw_text("ACCESOS DEV", Rect::new(p_card.x + 18.0, py, right_w - 36.0, 18.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
-    py += 26.0;
-    let dev_acts = [
-        ("dev_a_wt", "Abrir Windows Terminal", Action::LaunchTarget("wt.exe".into())),
-        ("dev_a_proj", "Abrir carpeta AuraOS-Rust", Action::LaunchAuraFiles(Some(r"C:\Users\danil\.gemini\antigravity\scratch\AuraOS-Rust".into()))),
-        ("dev_a_code", "Abrir PowerShell", Action::LaunchTarget("powershell.exe".into())),
-    ];
-    for (id, lbl, act) in dev_acts {
-        let ar = Rect::new(p_card.x + 14.0, py, right_w - 28.0, 40.0);
-        let hov = state.hovered_id.as_deref() == Some(id);
-        ctx.fill_rrect(ar, 12.0, if hov { theme::ELEVATED_HOVER } else { theme::ELEVATED });
-        ctx.draw_text(lbl, Rect::new(ar.x + 14.0, ar.y, ar.w - 28.0, 40.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
-        hits.push(HitRegion { id: id.into(), rect: ar, action: act, right_action: None, tooltip: None, slider: None });
-        py += 48.0;
-    }
+    let term_y = (p_card.y + p_card.h - 42.0).max(py + 4.0);
+    let bw2 = (right_w - 36.0) * 0.5;
+    let b_wt = Rect::new(p_card.x + 14.0, term_y, bw2, 30.0);
+    let b_ps = Rect::new(b_wt.x + bw2 + 8.0, term_y, bw2, 30.0);
+    ctx.fill_rrect(b_wt, 10.0, p.elevated);
+    ctx.fill_rrect(b_ps, 10.0, p.elevated);
+    ctx.draw_text_center("Windows Terminal", b_wt, TextStyle::Small10Bold, p.text_primary);
+    ctx.draw_text_center("PowerShell", b_ps, TextStyle::Small10Bold, p.text_primary);
+    hits.push(HitRegion { id: "dev_a_wt".into(), rect: b_wt, action: Action::LaunchTarget("wt.exe".into()), right_action: None, tooltip: None, slider: None });
+    hits.push(HitRegion { id: "dev_a_code".into(), rect: b_ps, action: Action::LaunchTarget("powershell.exe".into()), right_action: None, tooltip: None, slider: None });
 }
 
 // ==================== 3. GAMER CONSOLE (+ MANUAL ADD GAME + GAME BOOST!) ====================
@@ -905,16 +1058,6 @@ fn render_search_results(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hi
             "Ejecutor rápido de AuraOS (reemplaza Win+R)".into(),
             String::new(),
             Action::RunShellCommand(cmd_body.to_string()),
-        ));
-    }
-
-    // 3. `@audit` / `@agent` AI Desktop Self-Test Trigger
-    if q.starts_with("@audit") || q.starts_with("@agent") || q.starts_with("@test") {
-        matches.push((
-            "Ejecutar Auditoría IA con Cursor Autónomo (AuraAgent)".into(),
-            "Prueba en vivo todos los módulos sin mover tu ratón físico".into(),
-            String::new(),
-            Action::LaunchAuraAgentAudit,
         ));
     }
 

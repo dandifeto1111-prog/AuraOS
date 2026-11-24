@@ -338,12 +338,97 @@ pub fn enforce_taskbar_suppressed() {
 }
 
 pub fn restore_windows_safely() {
+    apply_display_gamma(100, false);
+    set_keep_awake(false);
     crate::window_styler::restore_all_styled_windows();
     unregister_top_appbar();
     if TASKBAR_HIDDEN_BY_US.load(Ordering::Relaxed) {
         set_taskbar_visibility(true);
         let (sw, sh) = screen_size();
         set_work_area(0, 0, sw, sh - 48);
+    }
+}
+
+// ==================== v5.1 LAPTOP BATTERY, BRIGHTNESS/NIGHT LIGHT, KEEP AWAKE & RAM TRIM ====================
+
+/// Returns `Some((battery_pct, is_charging))` on laptops/UPS, or `None` on desktop PCs without battery!
+pub fn get_battery_status() -> Option<(u8, bool)> {
+    use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+    unsafe {
+        let mut sps = SYSTEM_POWER_STATUS::default();
+        if GetSystemPowerStatus(&mut sps).is_ok() {
+            // 128 = No system battery, 255 = Unknown
+            if (sps.BatteryFlag & 128) != 0 || sps.BatteryLifePercent > 100 {
+                return None;
+            }
+            let charging = sps.ACLineStatus == 1 || (sps.BatteryFlag & 8) != 0;
+            return Some((sps.BatteryLifePercent, charging));
+        }
+    }
+    None
+}
+
+/// Real smooth hardware display brightness (35..=100%) + warm 3800K Night Light via GDI Gamma Ramp!
+pub fn apply_display_gamma(brightness_pct: i32, night_light: bool) {
+    use windows::Win32::Graphics::Gdi::{GetDC, ReleaseDC};
+    use windows::Win32::UI::ColorSystem::SetDeviceGammaRamp;
+    let b_scale = (brightness_pct.clamp(35, 100) as f32) / 100.0;
+    let r_mul = b_scale;
+    let g_mul = if night_light { b_scale * 0.84 } else { b_scale };
+    let bl_mul = if night_light { b_scale * 0.62 } else { b_scale };
+
+    let mut ramp = [[0u16; 256]; 3];
+    for i in 0..256usize {
+        let base = (i * 256) as f32;
+        ramp[0][i] = (base * r_mul).clamp(0.0, 65535.0) as u16;
+        ramp[1][i] = (base * g_mul).clamp(0.0, 65535.0) as u16;
+        ramp[2][i] = (base * bl_mul).clamp(0.0, 65535.0) as u16;
+    }
+    unsafe {
+        let hdc = GetDC(HWND::default());
+        if !hdc.is_invalid() {
+            let _ = SetDeviceGammaRamp(hdc, ramp.as_ptr() as *const _);
+            let _ = ReleaseDC(HWND::default(), hdc);
+        }
+    }
+}
+
+/// Prevents monitor sleep & screensaver while active ("Café / Keep Awake" mode)!
+pub fn set_keep_awake(enabled: bool) {
+    use windows::Win32::System::Power::{
+        SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
+    };
+    unsafe {
+        let flags = if enabled {
+            ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED
+        } else {
+            ES_CONTINUOUS
+        };
+        let _ = SetThreadExecutionState(flags);
+    }
+}
+
+pub fn get_uptime_short() -> String {
+    use windows::Win32::System::SystemInformation::GetTickCount64;
+    let secs = unsafe { GetTickCount64() } / 1000;
+    let mins = (secs / 60) % 60;
+    let hours = (secs / 3600) % 24;
+    let days = secs / 86400;
+    if days > 0 {
+        format!("Activo {}d {}h", days, hours)
+    } else if hours > 0 {
+        format!("Activo {}h {}m", hours, mins)
+    } else {
+        format!("Activo {}m", mins.max(1))
+    }
+}
+
+/// Gently returns unused working-set pages to Windows after closing heavy overlays!
+pub fn trim_own_working_set() {
+    use windows::Win32::System::ProcessStatus::EmptyWorkingSet;
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    unsafe {
+        let _ = EmptyWorkingSet(GetCurrentProcess());
     }
 }
 
@@ -620,7 +705,12 @@ unsafe extern "system" fn enum_windows_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
 }
 
 pub fn get_open_user_windows() -> Vec<RunningWindow> {
-    unsafe {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Mutex;
+
+    static WINDOW_ORDER: Mutex<Option<(u64, HashMap<isize, u64>)>> = Mutex::new(None);
+
+    let mut out = unsafe {
         let mut state = EnumState {
             fg: GetForegroundWindow(),
             my_pid: std::process::id(),
@@ -628,7 +718,25 @@ pub fn get_open_user_windows() -> Vec<RunningWindow> {
         };
         let _ = EnumWindows(Some(enum_windows_cb), LPARAM(&mut state as *mut EnumState as isize));
         state.out
+    };
+
+    // STABLE INSERTION ORDER: EnumWindows enumerates in Z-order (focused first), which used to
+    // jump clicked apps to slot #1 in AuraDock! Assign each HWND a permanent monotonic order ID
+    // the first time it appears so icons stay ROCK-SOLID in their exact slot forever!
+    let mut guard = WINDOW_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+    let (next_seq, map) = guard.get_or_insert_with(|| (1u64, HashMap::new()));
+    let live_set: HashSet<isize> = out.iter().map(|w| w.hwnd).collect();
+    map.retain(|h, _| live_set.contains(h));
+
+    for w in &out {
+        map.entry(w.hwnd).or_insert_with(|| {
+            let id = *next_seq;
+            *next_seq += 1;
+            id
+        });
     }
+    out.sort_by_key(|w| map.get(&w.hwnd).copied().unwrap_or(u64::MAX));
+    out
 }
 
 pub fn get_active_window_label() -> String {
@@ -1208,10 +1316,6 @@ pub fn launch_aura_pdf(file: Option<&str>) {
 
 pub fn launch_aura_shot() {
     let _ = launch_aura_app("AuraShot.exe", None);
-}
-
-pub fn launch_aura_agent(arg: Option<&str>) {
-    let _ = launch_aura_app("AuraAgent.exe", arg);
 }
 
 // ==================== AURAOS v4.0 NATIVE SUITE ROUTER ====================

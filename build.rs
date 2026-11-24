@@ -220,7 +220,6 @@ fn main() {
         "AuraTasks",
         "AuraPDF",
         "AuraShot",
-        "AuraAgent",
     ];
 
     for bin in bins {

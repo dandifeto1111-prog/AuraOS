@@ -42,7 +42,7 @@ namespace AuraShellInstaller
         private static readonly string[] SuiteStems = new[]
         {
             "AuraShell", "AuraFiles", "AuraPhotos", "AuraPlayer", "AuraNotes",
-            "AuraSettings", "AuraLock", "AuraTasks", "AuraPDF", "AuraShot", "AuraAgent"
+            "AuraSettings", "AuraLock", "AuraTasks", "AuraPDF", "AuraShot"
         };
 
         [STAThread]
@@ -417,7 +417,6 @@ namespace AuraShellInstaller
                 string dstTasks = Path.Combine(InstallDir, "AuraTasks.exe");
                 string dstPdf = Path.Combine(InstallDir, "AuraPDF.exe");
                 string dstShot = Path.Combine(InstallDir, "AuraShot.exe");
-                string dstAgent = Path.Combine(InstallDir, "AuraAgent.exe");
                 string dstShellIco = Path.Combine(InstallDir, "AuraShell.ico");
                 string dstFilesIco = Path.Combine(InstallDir, "AuraFiles.ico");
                 string dstRestore = Path.Combine(InstallDir, "restore-windows.ps1");
@@ -425,7 +424,7 @@ namespace AuraShellInstaller
                 string dstSetup = Path.Combine(InstallDir, "AuraShell-Setup.exe");
                 string dstVersion = Path.Combine(InstallDir, "version.json");
 
-                if (onProgress != null) onProgress("Copiando Suite AuraOS v5.0 (11 apps nativas + iconos HD 256px)...");
+                if (onProgress != null) onProgress("Copiando Suite AuraOS v5.1 (10 apps nativas + iconos HD 256px)...");
                 foreach (string stem in SuiteStems)
                 {
                     string sExe = Path.Combine(sourceDir, stem + ".exe");
@@ -537,8 +536,6 @@ namespace AuraShellInstaller
                         CreateShortcut(Path.Combine(startFolder, "AuraTasks (Tareas).lnk"), dstTasks, "", InstallDir, IconFor("AuraTasks", dstTasks), "Administrador de Tareas nativo y eficiente AuraTasks (Ctrl+Shift+Esc)");
                     if (File.Exists(dstLock))
                         CreateShortcut(Path.Combine(startFolder, "AuraLock (Bloquear).lnk"), dstLock, "", InstallDir, IconFor("AuraLock", dstLock), "Pantalla de bloqueo GPU AuraLock con foto de perfil y contraseña");
-                    if (File.Exists(dstAgent))
-                        CreateShortcut(Path.Combine(startFolder, "AuraAgent IA.lnk"), dstAgent, "", InstallDir, IconFor("AuraAgent", dstAgent), "Operador y Auditor IA de Escritorio AuraAgent");
                     CreateShortcut(Path.Combine(startFolder, "Actualizar o Configurar AuraOS.lnk"), dstSetup, "", InstallDir, shellIconRef, "Actualizar versión, optimizar Windows o desinstalar AuraOS");
                     if (File.Exists(dstApb))
                         CreateShortcut(Path.Combine(startFolder, "Optimizar Windows (APBOptimizer).lnk"), "powershell.exe", "-ExecutionPolicy Bypass -NoProfile -File \"" + dstApb + "\"", InstallDir, shellIconRef, "Abrir APBOptimizer (OptiJuegos) para optimizar Windows");

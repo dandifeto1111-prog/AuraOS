@@ -59,6 +59,7 @@ enum ShotAct {
     SetTool(ShotTool),
     FullScreenSel,
     Undo,
+    OcrCopyExit,
     CopyExit,
     SavePngExit,
     CancelExit,
@@ -143,6 +144,31 @@ fn capture_screen_bgra() -> (u32, u32, Vec<u8>) {
         px[3] = 255;
     }
     (sw, sh, bgra)
+}
+
+/// Native Windows 11 WinRT OCR (`Windows.Media.Ocr.OcrEngine`) — zero external dependencies!
+fn run_winrt_ocr_bgra(width: u32, height: u32, bgra: &[u8]) -> Option<String> {
+    use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
+    use windows::Media::Ocr::OcrEngine;
+    use windows::Storage::Streams::DataWriter;
+
+    if width < 8 || height < 8 || bgra.len() < (width * height * 4) as usize {
+        return None;
+    }
+    let writer = DataWriter::new().ok()?;
+    writer.WriteBytes(&bgra[..(width * height * 4) as usize]).ok()?;
+    let ibuf = writer.DetachBuffer().ok()?;
+    let soft_bmp = SoftwareBitmap::CreateCopyFromBuffer(
+        &ibuf,
+        BitmapPixelFormat::Bgra8,
+        width as i32,
+        height as i32,
+    )
+    .ok()?;
+    let engine = OcrEngine::TryCreateFromUserProfileLanguages().ok()?;
+    let result = engine.RecognizeAsync(&soft_bmp).ok()?.get().ok()?;
+    let txt = result.Text().ok()?.to_string();
+    Some(txt)
 }
 
 fn save_bgra_png(path: &Path, width: u32, height: u32, bgra: &[u8]) -> bool {
@@ -465,6 +491,25 @@ impl ShotRuntime {
             ShotAct::Undo => {
                 self.marks.pop();
             }
+            ShotAct::OcrCopyExit => {
+                let sel = self.effective_sel();
+                let (cw, ch, cropped) =
+                    bake_cropped_region(self.sw, self.sh, &self.desktop_bgra, sel, &self.marks);
+                if let Some(text) = run_winrt_ocr_bgra(cw, ch, &cropped) {
+                    if !text.trim().is_empty() {
+                        win32_shell::copy_text_to_clipboard(text.trim());
+                    } else {
+                        let _ = win32_shell::copy_bgra_to_clipboard(cw, ch, &cropped);
+                    }
+                } else {
+                    let _ = win32_shell::copy_bgra_to_clipboard(cw, ch, &cropped);
+                }
+                unsafe {
+                    let _ = ShowWindow(self.hwnd, SW_HIDE);
+                    PostQuitMessage(0);
+                }
+                return;
+            }
             ShotAct::CopyExit => {
                 let sel = self.effective_sel();
                 let (cw, ch, cropped) =
@@ -623,8 +668,8 @@ fn render_shot_ui(
         );
     }
 
-    // 4. Floating Studio Action Bar
-    let bar_w = 724.0f32;
+    // 4. Floating Studio Action Bar (with Built-In WinRT OCR Text Extraction!)
+    let bar_w = 816.0f32;
     let bar_h = 44.0f32;
     let (bx, by) = if let Some(s) = selection.filter(|r| r.w > 20.0 && r.h > 20.0) {
         let x = (s.x + s.w - bar_w).clamp(16.0, (fw - bar_w - 16.0).max(16.0));
@@ -641,7 +686,7 @@ fn render_shot_ui(
     let bar = Rect::new(bx, by, bar_w, bar_h);
     ctx.fill_card(bar, 14.0, theme::rgba(18, 18, 27, 0.96), theme::BORDER_STRONG);
 
-    let items: [(&str, &str, ShotAct, bool, bool); 10] = [
+    let items: [(&str, &str, ShotAct, bool, bool); 11] = [
         ("sh_reg", "Región", ShotAct::SetTool(ShotTool::RegionSelect), tool == ShotTool::RegionSelect, false),
         ("sh_arr", "Flecha", ShotAct::SetTool(ShotTool::Arrow), tool == ShotTool::Arrow, false),
         ("sh_rct", "Cuadro", ShotAct::SetTool(ShotTool::RectBox), tool == ShotTool::RectBox, false),
@@ -650,6 +695,7 @@ fn render_shot_ui(
         ("sh_px", "Pixelar", ShotAct::SetTool(ShotTool::Pixelate), tool == ShotTool::Pixelate, false),
         ("sh_und", "Deshacer", ShotAct::Undo, false, false),
         ("sh_ful", "Completa", ShotAct::FullScreenSel, false, false),
+        ("sh_ocr", "Texto OCR", ShotAct::OcrCopyExit, false, false),
         ("sh_sav", "Guardar PNG", ShotAct::SavePngExit, false, false),
         ("sh_cpy", "Copiar ✓", ShotAct::CopyExit, false, true),
     ];

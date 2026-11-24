@@ -163,6 +163,9 @@ enum SetAct {
     SetDnsPreset(&'static str),
     // Personalize
     ToggleShellSetting(&'static str),
+    SetThemeScheme(&'static str),
+    SetBarStyle(&'static str),
+    SetClockStyle(&'static str),
     ToggleWidget(WidgetKind),
     FocusCityInput,
     SaveWeatherCity,
@@ -917,10 +920,27 @@ impl SettingsRuntime {
                     "lock_media" => self.settings.lock_show_media = !self.settings.lock_show_media,
                     "perf_mode" => self.settings.performance_mode = !self.settings.performance_mode,
                     "win_hotkeys" => self.settings.intercept_win_hotkeys = !self.settings.intercept_win_hotkeys,
+                    "traffic_light_overlay" => self.settings.traffic_light_overlay = !self.settings.traffic_light_overlay,
                     _ => {}
                 }
                 self.save_and_broadcast();
                 self.show_toast("Ajuste aplicado en vivo en AuraOS", true);
+            }
+            SetAct::SetThemeScheme(scheme) => {
+                self.settings.theme_scheme = scheme.to_string();
+                theme::apply_theme_scheme(scheme, theme::pal().seed_rgb);
+                self.save_and_broadcast();
+                self.show_toast(format!("Paleta Material You '{}' aplicada en vivo", scheme), true);
+            }
+            SetAct::SetBarStyle(style) => {
+                self.settings.bar_style = style.to_string();
+                self.save_and_broadcast();
+                self.show_toast(format!("Barra superior estilo '{}' aplicada", style), true);
+            }
+            SetAct::SetClockStyle(style) => {
+                self.settings.clock_widget_style = style.to_string();
+                self.save_and_broadcast();
+                self.show_toast(format!("Estilo de reloj '{}' aplicado en vivo", style), true);
             }
             SetAct::FocusCityInput => {
                 self.city_focused = true;
@@ -1270,7 +1290,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
 
     ctx.draw_text("Configuración de AuraOS", Rect::new(82.0, 0.0, 240.0, TOP_H), TextStyle::Title14Semi, theme::TEXT_PRIMARY);
     ctx.draw_text_right(
-        &format!("{} · {} · v5.0.0 Rust", s.username, s.hostname),
+        &format!("{} · {} · v5.1.0 Rust", s.username, s.hostname),
         Rect::new(w - 340.0, 0.0, 322.0, TOP_H),
         TextStyle::Small10Med,
         theme::TEXT_TERTIARY,
@@ -1583,12 +1603,58 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             }
         }
         Tab::Personalize => {
+            // v5.1 Material You 3 Theme Scheme Selector!
+            ctx.draw_text("TEMA MATERIAL YOU 3 (ADAPTATIVO AL FONDO DE PANTALLA)", Rect::new(cx, y, cw, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
+            y += 22.0;
+            let schemes = [
+                ("th_auto", "Auto (Fondo)", "Auto", theme::VIOLET_LIGHT),
+                ("th_violet", "Obsidian Violet", "Violet", theme::VIOLET),
+                ("th_sage", "Sage Forest", "Sage", theme::rgb(148, 194, 120)),
+                ("th_apricot", "Warm Apricot", "Apricot", theme::rgb(244, 162, 108)),
+                ("th_mono", "Monochrome", "Mono", theme::rgb(188, 194, 208)),
+            ];
+            let sbw = (cw - 32.0) / 5.0;
+            for (i, (id, lbl, key, dot)) in schemes.into_iter().enumerate() {
+                let r = Rect::new(cx + i as f32 * (sbw + 8.0), y, sbw, 38.0);
+                let active = s.settings.theme_scheme.eq_ignore_ascii_case(key);
+                ctx.fill_card(r, 11.0, if active { theme::VIOLET_TINT } else { theme::CARD_BG }, if active { theme::VIOLET_LIGHT } else { theme::BORDER });
+                ctx.fill_circle(r.x + 14.0, r.y + 19.0, 5.5, dot);
+                ctx.draw_text(lbl, Rect::new(r.x + 25.0, r.y, r.w - 30.0, 38.0), TextStyle::Small10Bold, theme::TEXT_PRIMARY);
+                hits.push(Hit { id: id.into(), rect: r, act: SetAct::SetThemeScheme(key), slider: None });
+            }
+            y += 50.0;
+
+            // TopBar Style + Desktop Clock Style side-by-side selectors!
+            let half_w = (cw - 14.0) * 0.5;
+            ctx.draw_text("ESTILO BARRA SUPERIOR", Rect::new(cx, y, half_w, 15.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
+            ctx.draw_text("ESTILO RELOJ DEL ESCRITORIO", Rect::new(cx + half_w + 14.0, y, half_w, 15.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
+            y += 20.0;
+            let bar_opts = [("bar_hug", "Hug", "Hug"), ("bar_flt", "Flotante", "Float"), ("bar_rct", "Recta", "Rect")];
+            let b3w = (half_w - 12.0) / 3.0;
+            for (i, (id, lbl, key)) in bar_opts.into_iter().enumerate() {
+                let r = Rect::new(cx + i as f32 * (b3w + 6.0), y, b3w, 32.0);
+                let act = s.settings.bar_style.eq_ignore_ascii_case(key);
+                ctx.fill_card(r, 10.0, if act { theme::VIOLET } else { theme::CARD_BG }, if act { theme::VIOLET_LIGHT } else { theme::BORDER });
+                ctx.draw_text_center(lbl, r, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
+                hits.push(Hit { id: id.into(), rect: r, act: SetAct::SetBarStyle(key), slider: None });
+            }
+            let clk_opts = [("clk_vert", "Vertical", "Vertical"), ("clk_cook", "Cookie", "Cookie"), ("clk_horz", "Clásico", "Horizontal")];
+            for (i, (id, lbl, key)) in clk_opts.into_iter().enumerate() {
+                let r = Rect::new(cx + half_w + 14.0 + i as f32 * (b3w + 6.0), y, b3w, 32.0);
+                let act = s.settings.clock_widget_style.eq_ignore_ascii_case(key);
+                ctx.fill_card(r, 10.0, if act { theme::VIOLET } else { theme::CARD_BG }, if act { theme::VIOLET_LIGHT } else { theme::BORDER });
+                ctx.draw_text_center(lbl, r, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
+                hits.push(Hit { id: id.into(), rect: r, act: SetAct::SetClockStyle(key), slider: None });
+            }
+            y += 46.0;
+
             let rows = [
                 ("p_tb", "Ocultar barra clásica de Windows", "Reemplaza la barra inferior por AuraOS (Ctrl+Alt+W restaura)", s.settings.hide_windows_taskbar, "hide_taskbar"),
+                ("p_tl_ov", "Semáforos macOS en ventanas de Windows (× − +)", "Reemplaza los botones tradicionales de Windows por semáforos unificados (100% seguro)", s.settings.traffic_light_overlay, "traffic_light_overlay"),
                 ("p_hotkeys", "Atajos de Windows integrados con AuraOS", "Tecla Win → Launchpad · Ctrl+Shift+Esc → AuraTasks · Win+E/I/S", s.settings.intercept_win_hotkeys, "win_hotkeys"),
                 ("p_perf", "Modo Rendimiento (PC Modesto / Ultra Ligero)", "Reduce animaciones GPU continuas para máxima fluidez en equipos ligeros", s.settings.performance_mode, "perf_mode"),
                 ("p_dock_pos", "Dock a la izquierda estilo Ubuntu", "OFF = Dock inferior centrado estilo macOS", !s.settings.dock_position.eq_ignore_ascii_case("Bottom"), "dock_left"),
-                ("p_dock_hide", "Auto-ocultar Dock con muesquita inteligente", "Se oculta al maximizar ventanas y aparece al tocar el borde", s.settings.dock_auto_hide, "dock_auto_hide"),
+                ("p_dock_hide", "Auto-ocultar Dock solo al abrir apps (visible en escritorio)", "Siempre visible en tu escritorio; se esconde automáticamente al usar programas", s.settings.dock_auto_hide, "dock_auto_hide"),
                 ("p_style", "Estilo AuraOS en ventanas de Windows", "Aplica modo oscuro y bordes redondeados nativos DWM", s.settings.style_windows_apps, "style_windows_apps"),
                 ("p_wp_pause", "Auto-pausar fondo animado al jugar o maximizar", "0% consumo de CPU/GPU mientras juegas", s.settings.wallpaper_auto_pause, "wp_autopause"),
                 ("p_boost", "Game Boost automático en modo Gamer", "Prioriza tus juegos instalados al instante", s.settings.auto_game_boost, "auto_boost"),
@@ -1773,7 +1839,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             }
         }
         Tab::StartupAndApps => {
-            ctx.draw_text("SUITE NATIVA AURAOS v5.0 (100% RUST + GPU)", Rect::new(cx, y, cw, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
+            ctx.draw_text("SUITE NATIVA AURAOS v5.1 (100% RUST + GPU)", Rect::new(cx, y, cw, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
             y += 22.0;
             let suite = [
                 ("st_af", "AuraFiles", "AuraFiles.exe"),
@@ -1784,10 +1850,9 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 ("st_av", "AuraPlayer", "AuraPlayer.exe"),
                 ("st_an", "AuraNotes", "AuraNotes.exe"),
                 ("st_al", "AuraLock", "AuraLock.exe"),
-                ("st_ai", "AuraAgent Test IA", "AuraAgent.exe"),
             ];
-            let cols = 3usize;
-            let sw = (cw - 20.0) / cols as f32;
+            let cols = 4usize;
+            let sw = (cw - 30.0) / cols as f32;
             for (i, (id, lbl, exe)) in suite.into_iter().enumerate() {
                 let col_i = (i % cols) as f32;
                 let row_i = (i / cols) as f32;
@@ -1797,7 +1862,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 ctx.draw_text_center(lbl, r, TextStyle::Body11Med, theme::TEXT_PRIMARY);
                 hits.push(Hit { id: id.into(), rect: r, act: SetAct::LaunchSuiteExe(exe), slider: None });
             }
-            y += 3.0 * 46.0 + 10.0;
+            y += 2.0 * 46.0 + 10.0;
 
             let apb_r = Rect::new(cx, y, cw, 46.0);
             ctx.fill_card(apb_r, 13.0, theme::VIOLET_TINT, theme::VIOLET_LIGHT);
@@ -1866,8 +1931,8 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
         Tab::Updates => {
             let uc = Rect::new(cx, y, cw, 92.0);
             ctx.fill_card(uc, 16.0, theme::SURFACE, theme::VIOLET_BORDER);
-            ctx.draw_text("AuraOS v5.0.0 (Suite Completa IA + Productividad Rust)", Rect::new(uc.x + 16.0, uc.y + 14.0, 460.0, 24.0), TextStyle::Title16Semi, theme::TEXT_PRIMARY);
-            ctx.draw_text("AuraShell · AuraPDF · AuraPhotos · AuraShot · AuraTasks · AuraFiles · AuraAgent · AuraLock", Rect::new(uc.x + 16.0, uc.y + 42.0, cw - 32.0, 18.0), TextStyle::Body11Reg, theme::TEXT_SECONDARY);
+            ctx.draw_text("AuraOS v5.1.0 (Material You 3 + Suite Productividad & Dev Rust)", Rect::new(uc.x + 16.0, uc.y + 14.0, 520.0, 24.0), TextStyle::Title16Semi, theme::TEXT_PRIMARY);
+            ctx.draw_text("AuraShell · AuraPDF · AuraPhotos · AuraShot · AuraTasks · AuraFiles · AuraLock · AuraSettings", Rect::new(uc.x + 16.0, uc.y + 42.0, cw - 32.0, 18.0), TextStyle::Body11Reg, theme::TEXT_SECONDARY);
             ctx.draw_text("Actualizaciones automáticas silenciosas compatibles con GitHub Releases y Discord", Rect::new(uc.x + 16.0, uc.y + 63.0, cw - 32.0, 16.0), TextStyle::Small10Med, theme::VIOLET_LIGHT);
             y += 108.0;
 
