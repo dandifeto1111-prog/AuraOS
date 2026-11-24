@@ -4,6 +4,7 @@
 //! - Strips 100% of native Win32 titlebar / white border via WM_NCCALCSIZE = 0 + DWMWA_COLOR_NONE
 //! - Respects AuraTopBar's 34px Work Area cleanly when maximized or tiled!
 
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE,
@@ -12,12 +13,14 @@ use windows::Win32::Graphics::Dwm::{
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, IsZoomed, SetWindowPos, ShowWindow, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT,
-    HTCAPTION, HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, MINMAXINFO,
+    GetWindowRect, IsZoomed, LoadImageW, SendMessageW, SetWindowPos, ShowWindow, HTBOTTOM,
+    HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT,
+    HTTOPRIGHT, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED, MINMAXINFO,
     NCCALCSIZE_PARAMS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SW_MAXIMIZE, SW_RESTORE, WINDOW_STYLE, WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP,
-    WS_SYSMENU, WS_THICKFRAME,
+    SW_MAXIMIZE, SW_RESTORE, WINDOW_STYLE, WM_SETICON, WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
+    WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
 };
 
 /// Standard frameless yet 100% Windows-11-resizable & Aero-Snappable style for all AuraOS apps!
@@ -62,8 +65,29 @@ impl SnapZone {
     }
 }
 
+/// Binds the executable's embedded resource icon (ID = 1) to the window so Alt+Tab, Taskbar,
+/// and AuraDock ALWAYS display the crisp native AuraOS squircle icon instead of a blank icon!
+pub fn apply_app_icon(hwnd: HWND) {
+    unsafe {
+        if let Ok(hinst) = GetModuleHandleW(None) {
+            let res_id = PCWSTR(1usize as *const u16);
+            if let Ok(big) = LoadImageW(hinst, res_id, IMAGE_ICON, 48, 48, LR_SHARED) {
+                if !big.is_invalid() {
+                    let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(big.0 as isize));
+                }
+            }
+            if let Ok(small) = LoadImageW(hinst, res_id, IMAGE_ICON, 16, 16, LR_SHARED | LR_DEFAULTSIZE) {
+                if !small.is_invalid() {
+                    let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(small.0 as isize));
+                }
+            }
+        }
+    }
+}
+
 /// Disables DWM's grey border & native rounding so our Direct2D rounded canvas has ZERO artifacts!
 pub fn configure_frameless_dwm(hwnd: HWND) {
+    apply_app_icon(hwnd);
     unsafe {
         let none_col = DWMWA_COLOR_NONE;
         let _ = DwmSetWindowAttribute(

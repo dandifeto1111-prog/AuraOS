@@ -973,7 +973,9 @@ unsafe extern "system" fn photos_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         let _ = ReleaseCapture();
         let _ = SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
     } else if deferred_min {
-        let _ = ShowWindow(hwnd, SW_MINIMIZE);
+        if !win32_shell::request_genie_minimize(hwnd) {
+            let _ = ShowWindow(hwnd, SW_MINIMIZE);
+        }
     } else if deferred_snap.is_some() {
         aura_window::cycle_snap_window(hwnd);
     } else if let Some(max) = deferred_max {

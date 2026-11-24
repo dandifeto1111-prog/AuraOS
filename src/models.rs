@@ -33,14 +33,21 @@ pub struct ShellSettings {
     pub update_manifest_url: String, // GitHub Releases API or raw version.json URL for community updates!
     // AuraLock Native Lock Screen Configuration (v4.3+)
     pub lock_wallpaper_id: String, // "" = sync with desktop wallpaper, or "preset:...", "image:<path>", "video:<path>"
-    pub lock_pin_hash: String,     // Optional FNV/SHA-256 hex hash of user's AuraLock PIN (empty = instant unlock)
+    pub lock_pin_hash: String,     // Optional salted hash of user's AuraLock password/PIN (empty = instant unlock)
     pub lock_use_windows_pwd: bool,
     pub lock_on_startup: bool,
     pub lock_show_media: bool,
+    pub lock_avatar_path: String,  // v4.5: Custom profile photo for AuraLock
+    pub lock_display_name: String, // v4.5: Optional custom profile display name on AuraLock
+    // v4.5: Geolocation, Modest-PC Performance Mode & Native Windows Shortcut Interception
+    pub weather_city: String,      // "" = Auto IP Geolocation, or custom city name ("Bogotá", "Madrid", etc.)
+    pub performance_mode: bool,    // Ultra-low CPU/GPU mode for modest PCs (disables heavy continuous GPU loops)
+    pub intercept_win_hotkeys: bool, // Intercept solo Win -> Launchpad, Ctrl+Shift+Esc -> AuraTasks, Win+E/I/S
 }
 
 impl Default for ShellSettings {
     fn default() -> Self {
+        let low_spec = detect_modest_hardware();
         Self {
             glass_opacity: 0.78,
             hide_windows_taskbar: true,
@@ -51,7 +58,11 @@ impl Default for ShellSettings {
             dock_position: "Left".to_string(),
             last_mode: ShellMode::PC,
             style_windows_apps: true,
-            wallpaper_id: "preset:aura_obsidian_flow".to_string(),
+            wallpaper_id: if low_spec {
+                "preset:matte_grid".to_string()
+            } else {
+                "preset:aura_obsidian_flow".to_string()
+            },
             wallpaper_auto_pause: true,
             auto_apply_updates: true,
             update_manifest_url: "https://api.github.com/repos/dandifeto1111-prog/AuraOS/releases/latest".to_string(),
@@ -60,8 +71,37 @@ impl Default for ShellSettings {
             lock_use_windows_pwd: false,
             lock_on_startup: false,
             lock_show_media: true,
+            lock_avatar_path: String::new(),
+            lock_display_name: String::new(),
+            weather_city: String::new(),
+            performance_mode: low_spec,
+            intercept_win_hotkeys: true,
         }
     }
+}
+
+/// Auto-detects modest hardware (<= 4 logical threads or <= 8 GB RAM) so fresh installs run buttery smooth!
+pub fn detect_modest_hardware() -> bool {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8);
+    if cores <= 4 {
+        return true;
+    }
+    unsafe {
+        use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        let mut ms = MEMORYSTATUSEX {
+            dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+            ..Default::default()
+        };
+        if GlobalMemoryStatusEx(&mut ms).is_ok() {
+            let total_gb = ms.ullTotalPhys as f64 / 1_073_741_824.0;
+            if total_gb <= 8.5 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Deterministic salted SHA-256-like 64-hex-char digest for local AuraLock PIN verification (zero extra crates!)
@@ -276,7 +316,8 @@ impl Default for NowPlaying {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct WeatherInfo {
     pub temp_c: i32,
     pub feels_like_c: i32,
@@ -291,13 +332,13 @@ pub struct WeatherInfo {
 impl Default for WeatherInfo {
     fn default() -> Self {
         Self {
-            temp_c: 27,
-            feels_like_c: 31,
-            humidity_pct: 78,
-            wind_kmh: 12,
+            temp_c: 0,
+            feels_like_c: 0,
+            humidity_pct: 0,
+            wind_kmh: 0,
             weather_code: 0,
-            condition: "Despejado".to_string(),
-            city: "Barranquilla".to_string(),
+            condition: "Actualizando...".to_string(),
+            city: String::new(),
             loaded: false,
         }
     }

@@ -162,8 +162,12 @@ pub fn render_topbar(ctx: &mut DrawCtx<'_>, state: &AppState, width: f32, hits: 
 
     // ==================== CENTER CLUSTER (Clock + Weather) ====================
     let clock_str = format_top_clock();
-    let center_str = format!("{}  ·  {}°C {}", clock_str, state.weather.temp_c, state.weather.city);
-    let cw = 256.0;
+    let center_str = if state.weather.loaded && !state.weather.city.is_empty() {
+        format!("{}  ·  {}°C {}", clock_str, state.weather.temp_c, state.weather.city)
+    } else {
+        clock_str
+    };
+    let cw = 304.0;
     let cx = (width - cw) * 0.5;
     let center_rect = Rect::new(cx, 4.0, cw, 26.0);
     if state.hovered_id.as_deref() == Some("top_clock") {
@@ -340,13 +344,25 @@ pub fn render_topbar(ctx: &mut DrawCtx<'_>, state: &AppState, width: f32, hits: 
         });
     }
 
-    // 6. Compact Live CPU & RAM Telemetry (hidden on very narrow displays <1360px)
+    // 6. Compact Interactive Live CPU & RAM Telemetry -> Opens AuraTasks.exe!
     if width >= 1400.0 {
         rx -= 8.0;
-        let stat_w = 96.0;
+        let stat_w = 104.0;
         rx -= stat_w;
+        let stat_rect = Rect::new(rx, 5.0, stat_w, 24.0);
+        if state.hovered_id.as_deref() == Some("top_tasks") {
+            ctx.fill_card(stat_rect, 10.0, theme::ELEVATED, theme::VIOLET_BORDER);
+        }
         let stat_txt = format!("CPU {:>2}% · {:.1}G", state.cpu_pct.round() as i32, state.ram_used_gb);
-        ctx.draw_text_right(&stat_txt, Rect::new(rx, 5.0, stat_w, 24.0), TextStyle::Mono11Med, theme::TEXT_TERTIARY);
+        ctx.draw_text_center(&stat_txt, stat_rect, TextStyle::Mono11Med, if state.hovered_id.as_deref() == Some("top_tasks") { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY });
+        hits.push(HitRegion {
+            id: "top_tasks".into(),
+            rect: stat_rect,
+            action: Action::LaunchAuraTasks,
+            right_action: None,
+            tooltip: Some("Abrir AuraTasks · Administrador de Tareas (Ctrl+Shift+Esc)".into()),
+            slider: None,
+        });
     }
 
     // 7. 4-Mode Segmented Switcher (PC | Dev | Gamer | Fondos) — TRUE TOGGLE!

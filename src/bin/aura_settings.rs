@@ -17,14 +17,15 @@
 use aura_os::audio;
 use aura_os::aura_window::{self, SnapZone};
 use aura_os::models::{
-    app_data_dir, hash_lock_pin, load_custom_items, load_settings, load_widgets, save_settings,
-    save_widgets, AudioAppSession, AudioDevice, DriveInfo, ShellSettings, WallpaperItem,
-    WidgetKind, WidgetsStore,
+    app_data_dir, hash_lock_pin, load_custom_items, load_settings, load_widgets, save_custom_items,
+    save_settings, save_widgets, AudioAppSession, AudioDevice, CustomEntry, DriveInfo,
+    ShellSettings, WallpaperItem, WidgetKind, WidgetsStore,
 };
 use aura_os::radios::{self, RadioStates};
 use aura_os::renderer::{DrawCtx, GpuEngine, Rect, TextStyle, WindowSurface};
 use aura_os::system;
 use aura_os::theme::{self, VectorIcon};
+use aura_os::video_decoder;
 use aura_os::wallpaper;
 use aura_os::win32_shell;
 use std::cell::RefCell;
@@ -163,11 +164,16 @@ enum SetAct {
     // Personalize
     ToggleShellSetting(&'static str),
     ToggleWidget(WidgetKind),
+    FocusCityInput,
+    SaveWeatherCity,
+    ClearWeatherCity,
     // Wallpapers & AuraLock
     SetDesktopWallpaper(String),
     SetLockWallpaper(String),
     PickLocalLockWallpaper,
     PickLocalDesktopWallpaper,
+    PickLockAvatar,
+    ClearLockAvatar,
     FocusPinInput,
     SaveLockPin,
     ClearLockPin,
@@ -524,6 +530,8 @@ struct SettingsRuntime {
     radios: RadioStates,
     pin_draft: String,
     pin_focused: bool,
+    city_draft: String,
+    city_focused: bool,
     github_draft: String,
     github_focused: bool,
     active_slider: Option<SliderKind>,
@@ -554,6 +562,36 @@ impl SettingsRuntime {
         save_settings(&self.settings);
         save_widgets(&self.widgets);
         win32_shell::notify_shell_settings_changed();
+    }
+
+    fn register_custom_wallpaper(&mut self, path: &str, is_vid: bool) {
+        let mut custom = load_custom_items();
+        if !custom.custom_wallpapers.iter().any(|w| w.target.eq_ignore_ascii_case(path)) {
+            let name = Path::new(path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Fondo personalizado")
+                .to_string();
+            let cover_path = if is_vid {
+                video_decoder::extract_video_thumbnail(path)
+            } else {
+                None
+            };
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            custom.custom_wallpapers.push(CustomEntry {
+                id: format!("wp_{}", ts),
+                name,
+                target: path.to_string(),
+                subtitle: "Fondo personalizado".into(),
+                category: "Wallpaper".into(),
+                cover_path,
+            });
+            save_custom_items(&custom);
+        }
+        self.wallpapers = wallpaper::scan_wallpapers(&custom);
     }
 
     fn spawn_audio_refresh(&self) {
@@ -677,6 +715,7 @@ impl SettingsRuntime {
                 self.active_tab = t;
                 self.scroll = 0.0;
                 self.pin_focused = false;
+                self.city_focused = false;
                 self.github_focused = false;
                 if t == Tab::Sound {
                     self.spawn_audio_refresh();
@@ -874,10 +913,38 @@ impl SettingsRuntime {
                     "lock_win_pwd" => self.settings.lock_use_windows_pwd = !self.settings.lock_use_windows_pwd,
                     "lock_startup" => self.settings.lock_on_startup = !self.settings.lock_on_startup,
                     "lock_media" => self.settings.lock_show_media = !self.settings.lock_show_media,
+                    "perf_mode" => self.settings.performance_mode = !self.settings.performance_mode,
+                    "win_hotkeys" => self.settings.intercept_win_hotkeys = !self.settings.intercept_win_hotkeys,
                     _ => {}
                 }
                 self.save_and_broadcast();
                 self.show_toast("Ajuste aplicado en vivo en AuraOS", true);
+            }
+            SetAct::FocusCityInput => {
+                self.city_focused = true;
+                self.pin_focused = false;
+                self.github_focused = false;
+                self.redraw();
+            }
+            SetAct::SaveWeatherCity => {
+                self.settings.weather_city = self.city_draft.trim().to_string();
+                self.city_focused = false;
+                self.save_and_broadcast();
+                self.show_toast(
+                    if self.settings.weather_city.is_empty() {
+                        "Clima configurado en detección automática de ubicación"
+                    } else {
+                        "Ciudad del clima guardada y actualizando en vivo..."
+                    },
+                    true,
+                );
+            }
+            SetAct::ClearWeatherCity => {
+                self.city_draft.clear();
+                self.settings.weather_city.clear();
+                self.city_focused = false;
+                self.save_and_broadcast();
+                self.show_toast("Ubicación automática por IP restaurada", true);
             }
             SetAct::ToggleWidget(wk) => {
                 if let Some(cfg) = self.widgets.get_mut(wk) {
@@ -902,15 +969,12 @@ impl SettingsRuntime {
             SetAct::PickLocalLockWallpaper => {
                 if let Some(p) = win32_shell::pick_file_dialog(
                     "Elegir fondo para AuraLock (Imagen o Video)",
-                    "Fondos (*.png;*.jpg;*.jpeg;*.webp;*.mp4;*.webm;*.mkv)",
-                    "*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.mp4;*.webm;*.mkv",
+                    "Fondos (*.png;*.jpg;*.jpeg;*.webp;*.mp4;*.webm;*.mkv;*.mov;*.m4v;*.wmv;*.avi)",
+                    "*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.mp4;*.webm;*.mkv;*.mov;*.m4v;*.wmv;*.avi",
                 ) {
-                    let low = p.to_lowercase();
-                    let id = if low.ends_with(".mp4") || low.ends_with(".webm") || low.ends_with(".mkv") {
-                        format!("video:{}", p)
-                    } else {
-                        format!("image:{}", p)
-                    };
+                    let is_vid = video_decoder::is_video_ext(&p);
+                    let id = if is_vid { format!("video:{}", p) } else { format!("image:{}", p) };
+                    self.register_custom_wallpaper(&p, is_vid);
                     self.settings.lock_wallpaper_id = id;
                     self.save_and_broadcast();
                     self.show_toast("Fondo personalizado aplicado a AuraLock", true);
@@ -919,35 +983,58 @@ impl SettingsRuntime {
             SetAct::PickLocalDesktopWallpaper => {
                 if let Some(p) = win32_shell::pick_file_dialog(
                     "Elegir fondo para el Escritorio (Imagen o Video)",
-                    "Fondos (*.png;*.jpg;*.jpeg;*.webp;*.mp4;*.webm;*.mkv)",
-                    "*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.mp4;*.webm;*.mkv",
+                    "Fondos (*.png;*.jpg;*.jpeg;*.webp;*.mp4;*.webm;*.mkv;*.mov;*.m4v;*.wmv;*.avi)",
+                    "*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.mp4;*.webm;*.mkv;*.mov;*.m4v;*.wmv;*.avi",
                 ) {
-                    let low = p.to_lowercase();
-                    let id = if low.ends_with(".mp4") || low.ends_with(".webm") || low.ends_with(".mkv") {
-                        format!("video:{}", p)
-                    } else {
-                        format!("image:{}", p)
-                    };
+                    let is_vid = video_decoder::is_video_ext(&p);
+                    let id = if is_vid { format!("video:{}", p) } else { format!("image:{}", p) };
+                    self.register_custom_wallpaper(&p, is_vid);
                     self.settings.wallpaper_id = id;
                     self.save_and_broadcast();
-                    self.show_toast("Fondo personalizado aplicado al escritorio", true);
+                    self.show_toast("Fondo personalizado aplicado al escritorio en vivo", true);
                 }
+            }
+            SetAct::PickLockAvatar => {
+                if let Some(p) = win32_shell::pick_file_dialog(
+                    "Elegir foto de perfil para AuraLock",
+                    "Imágenes (*.png;*.jpg;*.jpeg;*.webp;*.bmp)",
+                    "*.png;*.jpg;*.jpeg;*.webp;*.bmp",
+                ) {
+                    // Copy locally into AuraShell data dir so moving/deleting original doesn't break avatar
+                    let dst_dir = app_data_dir();
+                    let _ = std::fs::create_dir_all(&dst_dir);
+                    let ext = Path::new(&p).extension().and_then(|e| e.to_str()).unwrap_or("png");
+                    let dst = dst_dir.join(format!("lock_avatar.{}", ext));
+                    let final_path = if std::fs::copy(&p, &dst).is_ok() {
+                        dst.to_string_lossy().to_string()
+                    } else {
+                        p
+                    };
+                    self.settings.lock_avatar_path = final_path;
+                    self.save_and_broadcast();
+                    self.show_toast("Foto de perfil actualizada en AuraLock", true);
+                }
+            }
+            SetAct::ClearLockAvatar => {
+                self.settings.lock_avatar_path.clear();
+                self.save_and_broadcast();
+                self.show_toast("Foto de perfil eliminada", true);
             }
             SetAct::FocusPinInput => {
                 self.pin_focused = true;
+                self.city_focused = false;
                 self.github_focused = false;
                 self.redraw();
             }
             SetAct::SaveLockPin => {
                 if self.pin_draft.trim().len() < 4 {
-                    self.show_toast("El PIN debe tener al menos 4 caracteres", false);
+                    self.show_toast("La contraseña o PIN debe tener al menos 4 caracteres", false);
                 } else {
                     self.settings.lock_pin_hash = hash_lock_pin(&self.pin_draft);
-                    self.settings.lock_use_windows_pwd = false;
                     self.pin_draft.clear();
                     self.pin_focused = false;
                     self.save_and_broadcast();
-                    self.show_toast("PIN de AuraLock guardado con hash seguro", true);
+                    self.show_toast("Contraseña de AuraLock guardada con cifrado seguro", true);
                 }
             }
             SetAct::ClearLockPin => {
@@ -956,7 +1043,7 @@ impl SettingsRuntime {
                 self.pin_draft.clear();
                 self.pin_focused = false;
                 self.save_and_broadcast();
-                self.show_toast("PIN de AuraLock eliminado (desbloqueo rápido)", true);
+                self.show_toast("Contraseña de AuraLock eliminada (desbloqueo rápido)", true);
             }
             SetAct::TestAuraLock => {
                 win32_shell::launch_aura_lock();
@@ -1047,6 +1134,8 @@ impl SettingsRuntime {
             radios: &self.radios,
             pin_draft: &self.pin_draft,
             pin_focused: self.pin_focused,
+            city_draft: &self.city_draft,
+            city_focused: self.city_focused,
             github_draft: &self.github_draft,
             github_focused: self.github_focused,
             toast: self.toast.as_ref().map(|(s, ok, _)| (s.as_str(), *ok)),
@@ -1093,6 +1182,8 @@ struct SettingsSnap<'a> {
     radios: &'a RadioStates,
     pin_draft: &'a str,
     pin_focused: bool,
+    city_draft: &'a str,
+    city_focused: bool,
     github_draft: &'a str,
     github_focused: bool,
     toast: Option<(&'a str, bool)>,
@@ -1164,7 +1255,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
 
     ctx.draw_text("Configuración de AuraOS", Rect::new(82.0, 0.0, 240.0, TOP_H), TextStyle::Title14Semi, theme::TEXT_PRIMARY);
     ctx.draw_text_right(
-        &format!("{} · {} · v4.3.0 Rust", s.username, s.hostname),
+        &format!("{} · {} · v4.5.0 Rust", s.username, s.hostname),
         Rect::new(w - 340.0, 0.0, 322.0, TOP_H),
         TextStyle::Small10Med,
         theme::TEXT_TERTIARY,
@@ -1176,12 +1267,21 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
     ctx.fill_rrect(Rect::new(0.0, body_y, SB_W, body_h), 0.0, theme::SURFACE);
     ctx.draw_line(SB_W, body_y, SB_W, h, theme::BORDER, 1.0);
 
-    // User profile badge in sidebar
+    // User profile badge in sidebar (shows custom AuraLock avatar if configured!)
     let prof_r = Rect::new(12.0, body_y + 14.0, SB_W - 24.0, 52.0);
     ctx.fill_card(prof_r, 14.0, theme::CARD_BG, theme::BORDER);
-    ctx.fill_circle(prof_r.x + 24.0, prof_r.y + 26.0, 15.0, theme::VIOLET);
-    let init = s.username.chars().next().unwrap_or('A').to_uppercase().to_string();
-    ctx.draw_text_center(&init, Rect::new(prof_r.x + 9.0, prof_r.y + 11.0, 30.0, 30.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
+    let av_r = Rect::new(prof_r.x + 9.0, prof_r.y + 11.0, 30.0, 30.0);
+    let mut drew_av = false;
+    if !s.settings.lock_avatar_path.trim().is_empty() && Path::new(&s.settings.lock_avatar_path).exists() {
+        let _l = ctx.push_rrect_mask_layer(av_r, av_r, 15.0, 1.0);
+        drew_av = ctx.draw_image_file(&s.settings.lock_avatar_path, av_r, 1.0);
+        if _l.is_some() { ctx.pop_layer(); }
+    }
+    if !drew_av {
+        ctx.fill_circle(prof_r.x + 24.0, prof_r.y + 26.0, 15.0, theme::VIOLET);
+        let init = s.username.chars().next().unwrap_or('A').to_uppercase().to_string();
+        ctx.draw_text_center(&init, av_r, TextStyle::Body12Semi, theme::TEXT_PRIMARY);
+    }
     ctx.draw_text(s.username, Rect::new(prof_r.x + 48.0, prof_r.y + 9.0, prof_r.w - 56.0, 18.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
     ctx.draw_text("AuraOS sobre Windows 11", Rect::new(prof_r.x + 48.0, prof_r.y + 27.0, prof_r.w - 56.0, 15.0), TextStyle::Small9Reg, theme::VIOLET_LIGHT);
 
@@ -1470,6 +1570,8 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
         Tab::Personalize => {
             let rows = [
                 ("p_tb", "Ocultar barra clásica de Windows", "Reemplaza la barra inferior por AuraOS (Ctrl+Alt+W restaura)", s.settings.hide_windows_taskbar, "hide_taskbar"),
+                ("p_hotkeys", "Atajos de Windows integrados con AuraOS", "Tecla Win → Launchpad · Ctrl+Shift+Esc → AuraTasks · Win+E/I/S", s.settings.intercept_win_hotkeys, "win_hotkeys"),
+                ("p_perf", "Modo Rendimiento (PC Modesto / Ultra Ligero)", "Reduce animaciones GPU continuas para máxima fluidez en equipos ligeros", s.settings.performance_mode, "perf_mode"),
                 ("p_dock_pos", "Dock a la izquierda estilo Ubuntu", "OFF = Dock inferior centrado estilo macOS", !s.settings.dock_position.eq_ignore_ascii_case("Bottom"), "dock_left"),
                 ("p_dock_hide", "Auto-ocultar Dock con muesquita inteligente", "Se oculta al maximizar ventanas y aparece al tocar el borde", s.settings.dock_auto_hide, "dock_auto_hide"),
                 ("p_style", "Estilo AuraOS en ventanas de Windows", "Aplica modo oscuro y bordes redondeados nativos DWM", s.settings.style_windows_apps, "style_windows_apps"),
@@ -1478,10 +1580,43 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 ("p_widgets", "Mostrar widgets flotantes en el escritorio", "Activa o apaga todos los widgets de escritorio", s.settings.show_desktop_widgets, "show_widgets"),
             ];
             for (id, title, sub, on, key) in rows {
-                draw_toggle_row(ctx, Rect::new(cx, y, cw, 50.0), id, title, sub, on, s.hovered, SetAct::ToggleShellSetting(key), hits);
-                y += 57.0;
+                draw_toggle_row(ctx, Rect::new(cx, y, cw, 48.0), id, title, sub, on, s.hovered, SetAct::ToggleShellSetting(key), hits);
+                y += 54.0;
             }
-            y += 10.0;
+            y += 8.0;
+
+            // Weather City Auto-Geolocation / Manual Override Card
+            let wc = Rect::new(cx, y, cw, 82.0);
+            ctx.fill_card(wc, 14.0, theme::SURFACE, theme::BORDER);
+            let city_mode = if s.settings.weather_city.trim().is_empty() {
+                "Ubicación automática activa (detecta tu ciudad actual por IP)".to_string()
+            } else {
+                format!("Ciudad fijada manualmente: {}", s.settings.weather_city)
+            };
+            ctx.draw_text("UBICACIÓN DEL CLIMA Y RELOJ", Rect::new(wc.x + 14.0, wc.y + 10.0, 260.0, 14.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
+            ctx.draw_text(&city_mode, Rect::new(wc.x + 220.0, wc.y + 10.0, wc.w - 236.0, 14.0), TextStyle::Small10Med, theme::VIOLET_LIGHT);
+
+            let ci_r = Rect::new(wc.x + 14.0, wc.y + 34.0, 260.0, 34.0);
+            ctx.fill_card(ci_r, 10.0, theme::CARD_BG, if s.city_focused { theme::VIOLET_LIGHT } else { theme::BORDER });
+            let ci_txt = if s.city_draft.is_empty() {
+                if s.city_focused { "|".to_string() } else { "Automático (o escribe: Bogotá, Madrid...)".to_string() }
+            } else {
+                format!("{}{}", s.city_draft, if s.city_focused { "|" } else { "" })
+            };
+            ctx.draw_text(&ci_txt, Rect::new(ci_r.x + 10.0, ci_r.y, ci_r.w - 20.0, 34.0), TextStyle::Body11Med, if s.city_draft.is_empty() && !s.city_focused { theme::TEXT_TERTIARY } else { theme::TEXT_PRIMARY });
+            hits.push(Hit { id: "city_in".into(), rect: ci_r, act: SetAct::FocusCityInput, slider: None });
+
+            let c_save = Rect::new(ci_r.x + ci_r.w + 10.0, wc.y + 34.0, 118.0, 34.0);
+            ctx.fill_rrect(c_save, 10.0, theme::VIOLET);
+            ctx.draw_text_center("Guardar ciudad", c_save, TextStyle::Body11Med, theme::TEXT_PRIMARY);
+            hits.push(Hit { id: "city_save".into(), rect: c_save, act: SetAct::SaveWeatherCity, slider: None });
+
+            let c_auto = Rect::new(c_save.x + c_save.w + 10.0, wc.y + 34.0, 132.0, 34.0);
+            ctx.fill_card(c_auto, 10.0, theme::ELEVATED, theme::BORDER);
+            ctx.draw_text_center("Automático (IP)", c_auto, TextStyle::Body11Med, theme::TEXT_PRIMARY);
+            hits.push(Hit { id: "city_auto".into(), rect: c_auto, act: SetAct::ClearWeatherCity, slider: None });
+            y += 94.0;
+
             ctx.draw_text("WIDGETS DEL ESCRITORIO (TODOS CON SEMÁFORO MACOS)", Rect::new(cx, y, cw, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
             y += 22.0;
             let wgs = [
@@ -1500,45 +1635,77 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             }
         }
         Tab::LockAndWallpapers => {
-            // AuraLock Security Card
-            let lc = Rect::new(cx, y, cw, 122.0);
+            // AuraLock Profile Photo + Security Password Card
+            let lc = Rect::new(cx, y, cw, 184.0);
             ctx.fill_card(lc, 16.0, theme::SURFACE, theme::VIOLET_BORDER);
-            let pin_status = if s.settings.lock_use_windows_pwd {
-                "Protegido con tu contraseña real de Windows"
-            } else if !s.settings.lock_pin_hash.is_empty() {
-                "Protegido con PIN cifrado de AuraLock"
-            } else {
-                "Desbloqueo rápido sin PIN (puedes crear uno abajo)"
-            };
-            ctx.draw_text("Seguridad de AuraLock (Ctrl + Alt + L)", Rect::new(lc.x + 16.0, lc.y + 12.0, 340.0, 20.0), TextStyle::Title14Semi, theme::TEXT_PRIMARY);
-            ctx.draw_text(pin_status, Rect::new(lc.x + 16.0, lc.y + 34.0, cw - 200.0, 16.0), TextStyle::Small10Med, theme::VIOLET_LIGHT);
 
-            let test_r = Rect::new(lc.x + lc.w - 178.0, lc.y + 14.0, 162.0, 34.0);
+            // Live Circular Profile Avatar Preview (left side of card)
+            let av_r = Rect::new(lc.x + 18.0, lc.y + 18.0, 62.0, 62.0);
+            let mut drew_av = false;
+            if !s.settings.lock_avatar_path.trim().is_empty() && Path::new(&s.settings.lock_avatar_path).exists() {
+                let _l = ctx.push_rrect_mask_layer(av_r, av_r, 31.0, 1.0);
+                drew_av = ctx.draw_image_file(&s.settings.lock_avatar_path, av_r, 1.0);
+                if _l.is_some() { ctx.pop_layer(); }
+            }
+            if !drew_av {
+                ctx.fill_circle(av_r.x + 31.0, av_r.y + 31.0, 31.0, theme::VIOLET);
+                let init = s.username.chars().next().unwrap_or('A').to_uppercase().to_string();
+                ctx.draw_text_center(&init, av_r, TextStyle::Title22Bold, theme::TEXT_PRIMARY);
+            }
+            ctx.stroke_circle(av_r.x + 31.0, av_r.y + 31.0, 31.5, theme::rgba(255, 255, 255, 0.35), 1.5);
+
+            let pin_status = if !s.settings.lock_pin_hash.is_empty() {
+                "Protegido con contraseña segura de AuraLock"
+            } else if s.settings.lock_use_windows_pwd {
+                "Protegido con tu contraseña real de Windows"
+            } else {
+                "Desbloqueo rápido sin contraseña (puedes agregar una abajo)"
+            };
+            ctx.draw_text("Perfil y Seguridad de AuraLock (Ctrl + Alt + L)", Rect::new(lc.x + 94.0, lc.y + 16.0, 380.0, 20.0), TextStyle::Title14Semi, theme::TEXT_PRIMARY);
+            ctx.draw_text(pin_status, Rect::new(lc.x + 94.0, lc.y + 38.0, cw - 290.0, 16.0), TextStyle::Small10Med, theme::VIOLET_LIGHT);
+
+            // Profile photo buttons
+            let av_pick = Rect::new(lc.x + 94.0, lc.y + 60.0, 152.0, 28.0);
+            ctx.fill_card(av_pick, 9.0, theme::ELEVATED, theme::VIOLET_BORDER);
+            ctx.draw_text_center("+ Foto de perfil", av_pick, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
+            hits.push(Hit { id: "lk_av_pick".into(), rect: av_pick, act: SetAct::PickLockAvatar, slider: None });
+
+            if !s.settings.lock_avatar_path.trim().is_empty() {
+                let av_clr = Rect::new(av_pick.x + av_pick.w + 8.0, lc.y + 60.0, 96.0, 28.0);
+                ctx.fill_card(av_clr, 9.0, theme::CORAL_BG, theme::CORAL);
+                ctx.draw_text_center("Quitar foto", av_clr, TextStyle::Small10Bold, theme::CORAL);
+                hits.push(Hit { id: "lk_av_clr".into(), rect: av_clr, act: SetAct::ClearLockAvatar, slider: None });
+            }
+
+            let test_r = Rect::new(lc.x + lc.w - 178.0, lc.y + 18.0, 162.0, 34.0);
             ctx.fill_rrect(test_r, 11.0, theme::VIOLET);
             ctx.draw_text_center("Probar AuraLock ahora", test_r, TextStyle::Body11Med, theme::TEXT_PRIMARY);
             hits.push(Hit { id: "lk_test".into(), rect: test_r, act: SetAct::TestAuraLock, slider: None });
 
-            // PIN Input Box + Save / Clear buttons
-            let pin_r = Rect::new(lc.x + 16.0, lc.y + 68.0, 240.0, 36.0);
+            ctx.draw_line(lc.x + 16.0, lc.y + 104.0, lc.x + lc.w - 16.0, lc.y + 104.0, theme::BORDER, 1.0);
+            ctx.draw_text("CONTRASEÑA O PIN DE SEGURIDAD PARA AURALOCK", Rect::new(lc.x + 16.0, lc.y + 112.0, 380.0, 14.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
+
+            // Password/PIN Input Box + Save / Clear buttons
+            let pin_r = Rect::new(lc.x + 16.0, lc.y + 132.0, 280.0, 36.0);
             ctx.fill_card(pin_r, 10.0, theme::CARD_BG, if s.pin_focused { theme::VIOLET_LIGHT } else { theme::BORDER });
             let pin_txt = if s.pin_draft.is_empty() {
-                if s.pin_focused { "|".to_string() } else { "Nuevo PIN (4-8 dígitos)...".to_string() }
+                if s.pin_focused { "|".to_string() } else { "Nueva contraseña o PIN (mín. 4)...".to_string() }
             } else {
                 format!("{}{}", "●".repeat(s.pin_draft.len()), if s.pin_focused { "|" } else { "" })
             };
             ctx.draw_text(&pin_txt, Rect::new(pin_r.x + 12.0, pin_r.y, pin_r.w - 24.0, 36.0), TextStyle::Body11Med, if s.pin_draft.is_empty() && !s.pin_focused { theme::TEXT_TERTIARY } else { theme::TEXT_PRIMARY });
             hits.push(Hit { id: "lk_pin_in".into(), rect: pin_r, act: SetAct::FocusPinInput, slider: None });
 
-            let save_pin = Rect::new(pin_r.x + pin_r.w + 10.0, lc.y + 68.0, 118.0, 36.0);
+            let save_pin = Rect::new(pin_r.x + pin_r.w + 10.0, lc.y + 132.0, 146.0, 36.0);
             ctx.fill_rrect(save_pin, 10.0, theme::VIOLET);
-            ctx.draw_text_center("Guardar PIN", save_pin, TextStyle::Body11Med, theme::TEXT_PRIMARY);
+            ctx.draw_text_center("Guardar contraseña", save_pin, TextStyle::Body11Med, theme::TEXT_PRIMARY);
             hits.push(Hit { id: "lk_pin_save".into(), rect: save_pin, act: SetAct::SaveLockPin, slider: None });
 
-            let clr_pin = Rect::new(save_pin.x + save_pin.w + 10.0, lc.y + 68.0, 112.0, 36.0);
+            let clr_pin = Rect::new(save_pin.x + save_pin.w + 10.0, lc.y + 132.0, 128.0, 36.0);
             ctx.fill_card(clr_pin, 10.0, theme::CORAL_BG, theme::CORAL);
-            ctx.draw_text_center("Quitar PIN", clr_pin, TextStyle::Body11Med, theme::CORAL);
+            ctx.draw_text_center("Quitar contraseña", clr_pin, TextStyle::Body11Med, theme::CORAL);
             hits.push(Hit { id: "lk_pin_clr".into(), rect: clr_pin, act: SetAct::ClearLockPin, slider: None });
-            y += 136.0;
+            y += 198.0;
 
             draw_toggle_row(ctx, Rect::new(cx, y, cw, 48.0), "lk_wpwd", "Verificar con contraseña real de Windows (LogonUserW)", "Usa tu contraseña de cuenta local de Windows para desbloquear AuraLock", s.settings.lock_use_windows_pwd, s.hovered, SetAct::ToggleShellSetting("lock_win_pwd"), hits);
             y += 55.0;
@@ -1595,6 +1762,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             y += 22.0;
             let suite = [
                 ("st_af", "AuraFiles", "AuraFiles.exe"),
+                ("st_at", "AuraTasks", "AuraTasks.exe"),
                 ("st_ap", "AuraPhotos", "AuraPhotos.exe"),
                 ("st_av", "AuraPlayer", "AuraPlayer.exe"),
                 ("st_an", "AuraNotes", "AuraNotes.exe"),
@@ -1842,11 +2010,15 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 let vk = wparam.0 as u16;
                 if vk == VK_ESCAPE.0 {
                     rt.pin_focused = false;
+                    rt.city_focused = false;
                     rt.github_focused = false;
                     rt.redraw();
                 } else if vk == VK_BACK.0 {
                     if rt.pin_focused {
                         rt.pin_draft.pop();
+                        rt.redraw();
+                    } else if rt.city_focused {
+                        rt.city_draft.pop();
                         rt.redraw();
                     } else if rt.github_focused {
                         rt.github_draft.pop();
@@ -1855,6 +2027,8 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 } else if vk == VK_RETURN.0 {
                     if rt.pin_focused {
                         rt.execute(SetAct::SaveLockPin);
+                    } else if rt.city_focused {
+                        rt.execute(SetAct::SaveWeatherCity);
                     } else if rt.github_focused {
                         rt.execute(SetAct::SaveGithubUrl);
                     }
@@ -1864,8 +2038,11 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             WM_CHAR => {
                 if let Some(ch) = char::from_u32(wparam.0 as u32) {
                     if !ch.is_control() {
-                        if rt.pin_focused && rt.pin_draft.len() < 12 {
+                        if rt.pin_focused && rt.pin_draft.len() < 32 {
                             rt.pin_draft.push(ch);
+                            rt.redraw();
+                        } else if rt.city_focused && rt.city_draft.len() < 48 {
+                            rt.city_draft.push(ch);
                             rt.redraw();
                         } else if rt.github_focused && rt.github_draft.len() < 160 {
                             rt.github_draft.push(ch);
@@ -1883,7 +2060,9 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
         let _ = ReleaseCapture();
         let _ = SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
     } else if deferred_min {
-        let _ = ShowWindow(hwnd, SW_MINIMIZE);
+        if !win32_shell::request_genie_minimize(hwnd) {
+            let _ = ShowWindow(hwnd, SW_MINIMIZE);
+        }
     } else if deferred_snap.is_some() {
         aura_window::cycle_snap_window(hwnd);
     } else if let Some(max) = deferred_max {
@@ -1943,6 +2122,8 @@ fn capture_settings_png(out_png: &Path, tab: Tab) {
         radios: &radios,
         pin_draft: "",
         pin_focused: false,
+        city_draft: &settings.weather_city,
+        city_focused: false,
         github_draft: &settings.update_manifest_url,
         github_focused: false,
         toast: None,
@@ -2046,6 +2227,7 @@ fn main() {
     });
 
     let github_draft = settings.update_manifest_url.clone();
+    let city_draft = settings.weather_city.clone();
     let mut rt = SettingsRuntime {
         hwnd,
         gpu,
@@ -2077,6 +2259,8 @@ fn main() {
         radios: RadioStates::default(),
         pin_draft: String::new(),
         pin_focused: false,
+        city_draft,
+        city_focused: false,
         github_draft,
         github_focused: false,
         active_slider: None,

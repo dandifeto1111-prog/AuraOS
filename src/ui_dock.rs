@@ -1,8 +1,9 @@
-//! Zero-Interference Tight-Bounds Spring Dock + iPhone/Android Home-Indicator Notch ("Muesquita")
-//! - Window bounds ALWAYS fit the exact visible capsule (ZERO click-blocking transparent air!)
-//! - When tucked away behind an open app, `hwnd_dock` is fully hidden (`SW_HIDE`) and replaced by a
-//!   minimal translucent iPhone/Android Home-Indicator pill (`AuraDockNotch`: 128x14 bottom or 14x112 left)
-//! - Dock ONLY reveals when hovering that exact small notch (zero accidental popups along screen edges!)
+//! AuraOS v4.5 macOS-Style Parabolic Magnification Dock + Live Preview Targets + Genie Coordinates
+//! - True macOS parabolic magnification wave: hovered icon grows smoothly to 1.42x while
+//!   neighboring icons ripple gently upward/outward with zero overlap!
+//! - Tight-bounds capsule + minimal iPhone/Android Home-Indicator Notch ("Muesquita") when auto-hidden
+//!   (`SW_HIDE` when tucked -> ZERO click-blocking transparent air!).
+//! - Crisp embedded squircle icons for ALL 8 AuraOS binaries + native Windows apps!
 
 use crate::models::app_data_dir;
 use crate::renderer::{DrawCtx, Rect};
@@ -10,7 +11,8 @@ use crate::theme::{self, VectorIcon};
 use crate::ui_state::{Action, AppState, HitRegion};
 use crate::ui_topbar::TOPBAR_HEIGHT;
 
-pub const DOCK_THICKNESS: f32 = 76.0;
+/// Includes +22px magnification headroom on the inner desktop edge ONLY while visible!
+pub const DOCK_THICKNESS: f32 = 96.0;
 pub const NOTCH_LONG_BOTTOM: i32 = 132;
 pub const NOTCH_LONG_LEFT: i32 = 112;
 pub const NOTCH_THICK: i32 = 14;
@@ -22,18 +24,34 @@ struct DockEntry {
     fallback: VectorIcon,
     is_running: bool,
     is_active: bool,
+    hwnd: isize,
     action: Action,
 }
 
-fn aurafiles_icon_path() -> String {
-    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+fn resolve_aura_exe(bin_name: &str) -> String {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
     for d in [exe_dir, Some(app_data_dir())].into_iter().flatten() {
-        let p = d.join("AuraFiles.exe");
+        let p = d.join(bin_name);
         if p.exists() {
             return p.to_string_lossy().to_string();
         }
     }
     String::new()
+}
+
+fn aura_fallback_icon(proc_name: &str) -> VectorIcon {
+    match proc_name.to_lowercase().as_str() {
+        "aurafiles" => VectorIcon::Folder,
+        "aurasettings" => VectorIcon::Settings,
+        "auraphotos" => VectorIcon::Image,
+        "auraplayer" => VectorIcon::Play,
+        "auranotes" => VectorIcon::Code,
+        "auratasks" => VectorIcon::Sparkle,
+        "auralock" => VectorIcon::Lock,
+        _ => VectorIcon::Code,
+    }
 }
 
 fn build_middle_entries(state: &AppState) -> Vec<DockEntry> {
@@ -42,13 +60,19 @@ fn build_middle_entries(state: &AppState) -> Vec<DockEntry> {
         if w.process_name.eq_ignore_ascii_case("AuraFiles") {
             continue;
         }
+        let icon_path = if !w.exe_path.is_empty() {
+            w.exe_path.clone()
+        } else {
+            resolve_aura_exe(&format!("{}.exe", w.process_name))
+        };
         middle.push(DockEntry {
             id: format!("dock_win_{}", w.hwnd),
             tooltip: format!("{} ({})", w.title, w.process_name),
-            icon_path: w.exe_path.clone(),
-            fallback: VectorIcon::Code,
+            icon_path,
+            fallback: aura_fallback_icon(&w.process_name),
             is_running: true,
             is_active: w.is_active,
+            hwnd: w.hwnd,
             action: Action::FocusWindow(w.hwnd),
         });
     }
@@ -77,11 +101,29 @@ fn build_middle_entries(state: &AppState) -> Vec<DockEntry> {
             fallback: VectorIcon::Sparkle,
             is_running: false,
             is_active: false,
+            hwnd: 0,
             action: Action::LaunchTarget(app.target.clone()),
         });
         added_pinned += 1;
     }
     middle
+}
+
+/// Computes the exact macOS parabolic magnification scale for a tile centered at `center_axis`
+/// given the live cursor coordinate `mouse_axis` along the Dock.
+pub fn compute_magnify_scale(center_axis: f32, mouse_axis: Option<f32>, low_spec: bool) -> f32 {
+    let Some(m) = mouse_axis else {
+        return 1.0;
+    };
+    let max_boost = if low_spec { 0.16 } else { 0.42 };
+    let radius = if low_spec { 72.0 } else { 126.0 };
+    let dist = (center_axis - m).abs();
+    if dist >= radius {
+        return 1.0;
+    }
+    let u = (dist / radius) * std::f32::consts::FRAC_PI_2;
+    let c = u.cos();
+    1.0 + max_boost * (c * c)
 }
 
 /// Computes the EXACT tight pixel bounding box for `hwnd_dock` so transparent pixels NEVER steal clicks!
@@ -90,23 +132,76 @@ pub fn dock_tight_geometry(state: &AppState, sw: i32, sh: i32, is_left: bool) ->
     let mid_count = build_middle_entries(state).len();
     let total_items = 2 + mid_count; // AuraFiles + middle + 9-dot Launchpad
     let item_step = 50.0f32;
-    let pad = 12.0f32; // tiny breathing room for hover scale (1.10x)
+    let pad = 28.0f32; // extra end-margin for parabolic magnification pop
 
     if is_left {
-        let max_len = (sh - top_h - 24).max(200) as f32;
-        let cap_len = (total_items as f32 * item_step + 34.0).clamp(180.0, max_len);
-        let win_h = (cap_len + pad).round() as i32;
+        let max_len = (sh - top_h - 18).max(220) as f32;
+        let cap_len = (total_items as f32 * item_step + 44.0).clamp(196.0, max_len);
+        let win_h = (cap_len + pad).round().min(max_len) as i32;
         let win_w = DOCK_THICKNESS as i32;
-        let y = top_h + ((sh - top_h - win_h) / 2).max(6);
+        let y = top_h + ((sh - top_h - win_h) / 2).max(4);
         (0, y, win_w, win_h)
     } else {
-        let max_len = (sw - 48).min(1140).max(220) as f32;
-        let cap_len = (total_items as f32 * item_step + 34.0).clamp(200.0, max_len);
-        let win_w = (cap_len + pad).round() as i32;
+        let max_len = (sw - 36).min(1220).max(240) as f32;
+        let cap_len = (total_items as f32 * item_step + 44.0).clamp(216.0, max_len);
+        let win_w = (cap_len + pad).round().min(max_len) as i32;
         let win_h = DOCK_THICKNESS as i32;
         let x = (sw - win_w) / 2;
         (x, sh - win_h, win_w, win_h)
     }
+}
+
+/// Returns the screen pixel center (x, y) of a specific window's icon inside the Dock (for macOS Genie Effect!)
+pub fn dock_icon_screen_center(
+    state: &AppState,
+    dock_geo: (i32, i32, i32, i32),
+    is_left: bool,
+    target_hwnd: isize,
+) -> (f32, f32) {
+    let (dx, dy, dw, dh) = dock_geo;
+    let cap_x = if is_left { 8.0 } else { 14.0 };
+    let cap_y = if is_left { 14.0 } else { dh as f32 - 68.0 };
+
+    if state
+        .open_windows
+        .iter()
+        .any(|w| w.hwnd == target_hwnd && w.process_name.eq_ignore_ascii_case("AuraFiles"))
+    {
+        return (dx as f32 + cap_x + 31.0, dy as f32 + cap_y + 31.0);
+    }
+
+    let middle = build_middle_entries(state);
+    if let Some(idx) = middle.iter().position(|e| e.hwnd == target_hwnd) {
+        let pos = idx as f32 * 50.0 - state.dock_scroll;
+        if is_left {
+            let cy = (dy as f32 + cap_y + 68.0 + pos + 21.0).clamp(dy as f32 + 24.0, (dy + dh - 24) as f32);
+            return (dx as f32 + cap_x + 31.0, cy);
+        } else {
+            let cx = (dx as f32 + cap_x + 68.0 + pos + 21.0).clamp(dx as f32 + 24.0, (dx + dw - 24) as f32);
+            return (cx, dy as f32 + cap_y + 31.0);
+        }
+    }
+
+    (dx as f32 + dw as f32 * 0.5, dy as f32 + dh as f32 * 0.5)
+}
+
+/// Resolves a Dock hit ID to its live running window `(hwnd, title)` for Live DWM Preview!
+pub fn dock_preview_target_for_hit(state: &AppState, hit_id: &str) -> Option<(isize, String)> {
+    if hit_id == "dock_files" {
+        return state
+            .open_windows
+            .iter()
+            .find(|w| w.process_name.eq_ignore_ascii_case("AuraFiles"))
+            .map(|w| (w.hwnd, w.title.clone()));
+    }
+    if let Some(raw) = hit_id.strip_prefix("dock_win_") {
+        if let Ok(hw) = raw.parse::<isize>() {
+            if let Some(w) = state.open_windows.iter().find(|w| w.hwnd == hw) {
+                return Some((w.hwnd, w.title.clone()));
+            }
+        }
+    }
+    None
 }
 
 /// Exact compact geometry for the sleek iPhone/Android Home-Indicator Notch ("Muesquita")
@@ -171,10 +266,11 @@ pub fn render_dock(
         .find(|w| w.process_name.eq_ignore_ascii_case("AuraFiles"));
 
     let item_step = 50.0f32;
+    let low_spec = state.settings.performance_mode;
     let (cap_x, cap_y, cap_w, cap_h, slide_dx, slide_dy) = if is_left {
-        (8.0, 6.0, 62.0, (win_h - 12.0).max(160.0), (1.0 - reveal) * -78.0, 0.0)
+        (8.0, 14.0, 62.0, (win_h - 28.0).max(168.0), (1.0 - reveal) * -96.0, 0.0)
     } else {
-        (6.0, win_h - 68.0, (win_w - 12.0).max(180.0), 62.0, 0.0, (1.0 - reveal) * 78.0)
+        (14.0, win_h - 68.0, (win_w - 28.0).max(188.0), 62.0, 0.0, (1.0 - reveal) * 96.0)
     };
 
     ctx.set_transform_scale_origin(1.0, 0.0, 0.0, slide_dx, slide_dy);
@@ -186,6 +282,8 @@ pub fn render_dock(
 
     // 1. TOP/LEFT PINNED: AuraFiles HD
     let f_rect = Rect::new(cap_x + 10.0, cap_y + 10.0, 42.0, 42.0);
+    let f_axis = if is_left { f_rect.y + 21.0 } else { f_rect.x + 21.0 };
+    let f_scale = compute_magnify_scale(f_axis, state.dock_mouse_axis, low_spec);
     let f_action = if let Some(fw) = files_win {
         Action::FocusWindow(fw.hwnd)
     } else {
@@ -196,19 +294,19 @@ pub fn render_dock(
         state,
         "dock_files",
         f_rect,
-        &aurafiles_icon_path(),
+        &resolve_aura_exe("AuraFiles.exe"),
         VectorIcon::Folder,
         files_win.is_some(),
         files_win.map(|w| w.is_active).unwrap_or(false),
         is_left,
-        1.0,
+        f_scale,
     );
     hits.push(HitRegion {
         id: "dock_files".into(),
-        rect: f_rect,
+        rect: f_rect.inset(-4.0, -4.0),
         action: f_action,
         right_action: None,
-        tooltip: Some("AuraFiles · Gestor instantáneo (Alt+E)".into()),
+        tooltip: Some("AuraFiles · Gestor instantáneo (Win+E / Alt+E)".into()),
         slider: None,
     });
 
@@ -219,33 +317,94 @@ pub fn render_dock(
         ctx.draw_line(cap_x + 59.0, cap_y + 17.0, cap_x + 59.0, cap_y + cap_h - 17.0, theme::BORDER, 1.0);
     }
 
-    // 2. MIDDLE SCROLLABLE VIEWPORT (ALL open apps + pinned!)
+    // 2. MIDDLE SCROLLABLE VIEWPORT (ALL open apps + pinned with macOS Parabolic Magnification Wave!)
     let mid_rect = if is_left {
-        Rect::new(cap_x + 2.0, cap_y + 65.0, cap_w - 4.0, (cap_h - 130.0).max(46.0))
+        Rect::new(cap_x - 4.0, cap_y + 65.0, win_w - cap_x + 4.0, (cap_h - 130.0).max(46.0))
     } else {
-        Rect::new(cap_x + 65.0, cap_y + 2.0, (cap_w - 130.0).max(46.0), cap_h - 4.0)
+        Rect::new(cap_x + 65.0, 0.0, (cap_w - 130.0).max(46.0), win_h)
     };
     ctx.push_clip(mid_rect);
 
-    let max_scroll = ((middle.len() as f32 * item_step) - if is_left { mid_rect.h } else { mid_rect.w }).max(0.0);
+    let max_scroll = ((middle.len() as f32 * item_step)
+        - if is_left { mid_rect.h } else { mid_rect.w })
+    .max(0.0);
     let scroll = state.dock_scroll.clamp(0.0, max_scroll);
 
+    // Draw non-hovered items first, then draw the most-magnified hovered tile on top for crisp overlap!
+    let mut deferred_top: Option<(usize, Rect, f32)> = None;
+
     for (idx, item) in middle.iter().enumerate() {
-        let pos = idx as f32 * item_step - scroll;
-        let r = if is_left {
-            Rect::new(cap_x + 10.0, mid_rect.y + 3.0 + pos, 42.0, 42.0)
+        let base_pos = idx as f32 * item_step - scroll;
+        let raw_axis = if is_left {
+            cap_y + 68.0 + base_pos + 21.0
         } else {
-            Rect::new(mid_rect.x + 3.0 + pos, cap_y + 10.0, 42.0, 42.0)
+            cap_x + 68.0 + base_pos + 21.0
+        };
+        let mag_scale = compute_magnify_scale(raw_axis, state.dock_mouse_axis, low_spec);
+        let spring_scale = state
+            .dock_item_scales
+            .get(idx)
+            .map(|s| s.value)
+            .unwrap_or(1.0)
+            .max(mag_scale);
+
+        // Gentle neighbor displacement away from cursor so magnified icons breathe naturally!
+        let nudge = if let Some(m) = state.dock_mouse_axis {
+            let delta = raw_axis - m;
+            let dist = delta.abs();
+            if dist > 4.0 && dist < 130.0 && !low_spec {
+                let push = (1.0 - dist / 130.0).powi(2) * 7.5;
+                if delta > 0.0 { push } else { -push }
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        let r = if is_left {
+            Rect::new(cap_x + 10.0, cap_y + 68.0 + base_pos + nudge, 42.0, 42.0)
+        } else {
+            Rect::new(cap_x + 68.0 + base_pos + nudge, cap_y + 10.0, 42.0, 42.0)
         };
         let visible = if is_left {
-            r.y + r.h >= mid_rect.y && r.y <= mid_rect.y + mid_rect.h
+            r.y + r.h >= cap_y + 56.0 && r.y <= cap_y + cap_h - 56.0
         } else {
-            r.x + r.w >= mid_rect.x && r.x <= mid_rect.x + mid_rect.w
+            r.x + r.w >= cap_x + 56.0 && r.x <= cap_x + cap_w - 56.0
         };
         if !visible {
             continue;
         }
-        let spring_scale = state.dock_item_scales.get(idx).map(|s| s.value).unwrap_or(1.0);
+
+        hits.push(HitRegion {
+            id: item.id.clone(),
+            rect: r.inset(-3.0, -3.0),
+            action: item.action.clone(),
+            right_action: None,
+            tooltip: Some(item.tooltip.clone()),
+            slider: None,
+        });
+
+        if state.hovered_id.as_deref() == Some(item.id.as_str()) {
+            deferred_top = Some((idx, r, spring_scale));
+        } else {
+            draw_dock_tile(
+                ctx,
+                state,
+                &item.id,
+                r,
+                &item.icon_path,
+                item.fallback,
+                item.is_running,
+                item.is_active,
+                is_left,
+                spring_scale,
+            );
+        }
+    }
+
+    if let Some((idx, r, scale)) = deferred_top {
+        let item = &middle[idx];
         draw_dock_tile(
             ctx,
             state,
@@ -256,17 +415,10 @@ pub fn render_dock(
             item.is_running,
             item.is_active,
             is_left,
-            spring_scale,
+            scale,
         );
-        hits.push(HitRegion {
-            id: item.id.clone(),
-            rect: r,
-            action: item.action.clone(),
-            right_action: None,
-            tooltip: Some(item.tooltip.clone()),
-            slider: None,
-        });
     }
+
     ctx.pop_clip();
 
     // Divider 2
@@ -282,6 +434,8 @@ pub fn render_dock(
     } else {
         Rect::new(cap_x + cap_w - 52.0, cap_y + 10.0, 42.0, 42.0)
     };
+    let lp_axis = if is_left { lp_rect.y + 21.0 } else { lp_rect.x + 21.0 };
+    let lp_scale = compute_magnify_scale(lp_axis, state.dock_mouse_axis, low_spec);
     draw_dock_tile(
         ctx,
         state,
@@ -292,14 +446,14 @@ pub fn render_dock(
         false,
         state.launchpad_open,
         is_left,
-        1.0,
+        lp_scale,
     );
     hits.push(HitRegion {
         id: "dock_launchpad".into(),
-        rect: lp_rect,
+        rect: lp_rect.inset(-4.0, -4.0),
         action: Action::ToggleLaunchpad,
         right_action: None,
-        tooltip: Some("Todas las aplicaciones (Launchpad)".into()),
+        tooltip: Some("Todas las aplicaciones (Tecla Win)".into()),
         slider: None,
     });
 
@@ -324,14 +478,14 @@ fn draw_dock_tile(
     let pressed = state.pressed_id.as_deref() == Some(id);
     let scale = if pressed {
         0.95
-    } else if hov {
-        spring_scale.max(1.10)
     } else {
-        spring_scale
+        spring_scale.clamp(0.95, 1.46)
     };
 
-    let cx = r.x + r.w * 0.5;
-    let cy = r.y + r.h * 0.5;
+    // Pop outward toward desktop center as the icon magnifies (classic macOS Dock bounce!)
+    let pop = (scale - 1.0).max(0.0) * 18.0;
+    let cx = r.x + r.w * 0.5 + if is_left { pop } else { 0.0 };
+    let cy = r.y + r.h * 0.5 - if !is_left { pop } else { 0.0 };
     let sw = r.w * scale;
     let sh = r.h * scale;
     let sr = Rect::new(cx - sw * 0.5, cy - sh * 0.5, sw, sh);
@@ -351,9 +505,9 @@ fn draw_dock_tile(
         theme::BORDER
     };
 
-    ctx.fill_card(sr, 13.0, bg, border);
+    ctx.fill_card(sr, 13.0 * scale.min(1.2), bg, border);
 
-    let ic_sz = 26.0 * scale;
+    let ic_sz = 28.0 * scale;
     let ic_rect = Rect::new(cx - ic_sz * 0.5, cy - ic_sz * 0.5, ic_sz, ic_sz);
     if icon_path.is_empty() || !ctx.draw_app_icon(icon_path, ic_rect) {
         let ic_col = if is_active { theme::DARK_INK } else { theme::TEXT_PRIMARY };
@@ -364,10 +518,10 @@ fn draw_dock_tile(
         let dot_col = if is_active { theme::VIOLET } else { theme::TEXT_SECONDARY };
         if is_left {
             let dh = if is_active { 14.0 } else { 6.0 };
-            ctx.fill_rrect(Rect::new(r.x - 6.0, cy - dh * 0.5, 3.5, dh), 1.8, dot_col);
+            ctx.fill_rrect(Rect::new(r.x - 6.0, r.y + r.h * 0.5 - dh * 0.5, 3.5, dh), 1.8, dot_col);
         } else {
             let dw = if is_active { 14.0 } else { 6.0 };
-            ctx.fill_rrect(Rect::new(cx - dw * 0.5, r.y + r.h + 3.0, dw, 3.5), 1.8, dot_col);
+            ctx.fill_rrect(Rect::new(r.x + r.w * 0.5 - dw * 0.5, r.y + r.h + 3.0, dw, 3.5), 1.8, dot_col);
         }
     }
 }

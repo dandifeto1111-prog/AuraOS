@@ -49,7 +49,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist\pkg | Out-Null
           $files = @(
             "AuraShell.exe", "AuraFiles.exe", "AuraPhotos.exe", "AuraPlayer.exe",
-            "AuraNotes.exe", "AuraLock.exe", "AuraSettings.exe", "AuraShell-Setup.exe",
+            "AuraNotes.exe", "AuraLock.exe", "AuraSettings.exe", "AuraTasks.exe", "AuraShell-Setup.exe",
             "AuraShell.ico", "AuraFiles.ico", "AuraShell_256.png", "AuraFiles_256.png",
             "restore-windows.ps1", "APBOptimizer.ps1", "version.json"
           )
@@ -68,7 +68,7 @@ jobs:
             DownloadUrl = "https://github.com/$repo/releases/download/$tag/$zipName"
             SetupUrl = "https://github.com/$repo/releases/download/$tag/AuraShell-Setup.exe"
             Sha256 = $hash
-            Changelog = "AuraOS v$v — Suite 100% Pure-Rust Direct2D (AuraShell, AuraSettings, AuraLock, AuraFiles, AuraPhotos, AuraPlayer, AuraNotes)."
+            Changelog = "AuraOS v$v — Suite 100% Pure-Rust Direct2D (AuraShell, AuraSettings, AuraLock, AuraTasks, AuraFiles, AuraPhotos, AuraPlayer, AuraNotes)."
           }
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
           [System.IO.File]::WriteAllText((Join-Path $PWD "dist\latest.json"), ($manifest | ConvertTo-Json -Depth 4), $utf8NoBom)

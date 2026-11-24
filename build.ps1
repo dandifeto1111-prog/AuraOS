@@ -1,6 +1,6 @@
 ﻿param(
-    [string]$Version = "4.4.0",
-    [string]$Changelog = "v4.4.0: Redimensionado nativo en bordes/esquinas + Aero Snap Windows 11 (mitad izquierda/derecha, 4 esquinas 25%, Win+Flechas, Alt+Flechas, clic derecho en +) en todas las apps AuraOS, cuadricula magnetica inteligente con auto-acoplamiento para widgets de escritorio, y renderizado sin estiramiento (proporcion original exacta) para imagenes verticales 9:16 en AuraFiles y todos los fondos de pantalla."
+    [string]$Version = "4.5.0",
+    [string]$Changelog = "v4.5.0: Reproductor de fondos de video 100% nativo Windows Media Foundation sin FFmpeg (+ fallback HTML5), geolocalizacion automatica de clima/reloj en todo el mundo, AuraTasks.exe (Administrador de Tareas nativo), atajos de Windows integrados (Win -> Apps, Ctrl+Shift+Esc -> AuraTasks, Win+E/I/S), foto de perfil y contrasena en AuraLock, iconos HD incrustados en los 8 ejecutables, magnificacion macOS en Dock + vista previa DWM en vivo + efecto Genio al minimizar/abrir, y optimizacion profunda para PCs modestos."
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,12 +9,12 @@ $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $legacy = Join-Path (Split-Path -Parent $root) "AuraShell"
 
-Write-Host "Compilando AuraOS Suite v$Version (7 binarios 100% Rust + AuraShell-Setup)..." -ForegroundColor Cyan
+Write-Host "Compilando AuraOS Suite v$Version (8 binarios 100% Rust con iconos incrustados + AuraShell-Setup)..." -ForegroundColor Cyan
 Set-Location $root
-cargo build --release --bin AuraShell --bin AuraFiles --bin AuraPhotos --bin AuraPlayer --bin AuraNotes --bin AuraLock --bin AuraSettings
+cargo build --release --bin AuraShell --bin AuraFiles --bin AuraPhotos --bin AuraPlayer --bin AuraNotes --bin AuraLock --bin AuraSettings --bin AuraTasks
 if ($LASTEXITCODE -ne 0) { Write-Error "Falló cargo build --release" }
 
-$bins = @("AuraShell.exe", "AuraFiles.exe", "AuraPhotos.exe", "AuraPlayer.exe", "AuraNotes.exe", "AuraLock.exe", "AuraSettings.exe")
+$bins = @("AuraShell.exe", "AuraFiles.exe", "AuraPhotos.exe", "AuraPlayer.exe", "AuraNotes.exe", "AuraLock.exe", "AuraSettings.exe", "AuraTasks.exe")
 foreach ($b in $bins) {
     Copy-Item (Join-Path $root "target\release\$b") (Join-Path $root $b) -Force
 }

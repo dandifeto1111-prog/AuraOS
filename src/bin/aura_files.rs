@@ -684,7 +684,11 @@ impl FilesRuntime {
                 }
                 return;
             }
-            FileAction::WindowMin => unsafe { let _ = ShowWindow(self.hwnd, SW_MINIMIZE); },
+            FileAction::WindowMin => {
+                if !aura_os::win32_shell::request_genie_minimize(self.hwnd) {
+                    unsafe { let _ = ShowWindow(self.hwnd, SW_MINIMIZE); }
+                }
+            }
             FileAction::WindowMaxRestore => unsafe {
                 self.maximized = !self.maximized;
                 let _ = ShowWindow(self.hwnd, if self.maximized { SW_MAXIMIZE } else { SW_RESTORE });

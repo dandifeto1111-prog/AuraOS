@@ -36,7 +36,7 @@ New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
 
 $bundle = @(
     "AuraShell.exe", "AuraFiles.exe", "AuraPhotos.exe", "AuraPlayer.exe",
-    "AuraNotes.exe", "AuraLock.exe", "AuraSettings.exe", "AuraShell-Setup.exe",
+    "AuraNotes.exe", "AuraLock.exe", "AuraSettings.exe", "AuraTasks.exe", "AuraShell-Setup.exe",
     "AuraShell.ico", "AuraFiles.ico", "AuraShell_256.png", "AuraFiles_256.png",
     "restore-windows.ps1", "APBOptimizer.ps1", "version.json"
 )

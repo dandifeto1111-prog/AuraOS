@@ -14,6 +14,7 @@ pub enum Action {
     LaunchAuraFiles(Option<String>),
     LaunchAuraSettings(Option<String>),
     LaunchAuraLock,
+    LaunchAuraTasks,
     ToggleControlCenter,
     TogglePowerMenu,
     ToggleLaunchpad,
@@ -155,6 +156,7 @@ pub struct AppState {
     pub dock_reveal: Spring, // 1.0 = visible, 0.0 = tucked away
     pub dock_scroll: f32,
     pub dock_hover_idx: Option<usize>,
+    pub dock_mouse_axis: Option<f32>,
     pub dock_item_scales: Vec<Spring>,
     pub dock_tooltip: TooltipGroup,
 
@@ -252,6 +254,7 @@ impl AppState {
             dock_reveal: Spring::drawer(1.0),
             dock_scroll: 0.0,
             dock_hover_idx: None,
+            dock_mouse_axis: None,
             dock_item_scales: Vec::new(),
             dock_tooltip: TooltipGroup::default(),
             add_modal: AddDevWebModal::default(),
@@ -264,7 +267,7 @@ impl AppState {
             dev_ports: Vec::new(),
             tray_apps: Vec::new(),
             drives: Vec::new(),
-            weather: WeatherInfo::default(),
+            weather: crate::system::load_cached_weather().unwrap_or_default(),
             now_playing: NowPlaying::default(),
             master_vol: 50,
             master_muted: false,

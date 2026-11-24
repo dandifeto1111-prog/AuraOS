@@ -264,7 +264,6 @@ fn spawn_playback_session(
     muted: bool,
     start_paused: bool,
 ) -> Option<PlaybackSession> {
-    let ffmpeg = win32_shell::find_ffmpeg_tool("ffmpeg.exe")?;
     let stop = Arc::new(AtomicBool::new(false));
     let paused = Arc::new(AtomicBool::new(start_paused));
     let vol_atom = Arc::new(AtomicU32::new(vol_pct));
@@ -278,6 +277,49 @@ fn spawn_playback_session(
         audio_bars: [0.0; 28],
         eof: false,
     }));
+
+    let Some(ffmpeg) = win32_shell::find_ffmpeg_tool("ffmpeg.exe") else {
+        // Zero-dependency Native Windows Media Foundation fallback when ffmpeg.exe is not installed!
+        if info.has_video {
+            let p_str = path.to_string_lossy().to_string();
+            if let Some(mut mf) = aura_os::video_decoder::NativeVideoStream::spawn(&p_str, 1280, 720, 30) {
+                let stop_mf = stop.clone();
+                let pause_mf = paused.clone();
+                let fr_mf = frame.clone();
+                std::thread::spawn(move || {
+                    let mut seq = 0u64;
+                    let mut scratch = Vec::new();
+                    while !stop_mf.load(Ordering::Relaxed) {
+                        if !pause_mf.load(Ordering::Relaxed) {
+                            if let Some((w, h)) = mf.swap_latest_frame(&mut seq, &mut scratch) {
+                                if let Ok(mut f) = fr_mf.lock() {
+                                    f.w = w;
+                                    f.h = h;
+                                    std::mem::swap(&mut f.bgra, &mut scratch);
+                                    f.seq = f.seq.wrapping_add(1);
+                                }
+                            }
+                        }
+                        std::thread::sleep(Duration::from_millis(16));
+                    }
+                    mf.stop_now();
+                });
+                return Some(PlaybackSession {
+                    stop,
+                    paused,
+                    vol_pct: vol_atom,
+                    muted: mute_atom,
+                    children,
+                    frame,
+                    base_sec: start_sec,
+                    speed,
+                    started_at: Instant::now(),
+                    accum_sec: 0.0,
+                });
+            }
+        }
+        return None;
+    };
 
     let seek_str = format!("{:.3}", start_sec.max(0.0));
 
@@ -1597,7 +1639,9 @@ unsafe extern "system" fn player_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         let _ = ReleaseCapture();
         let _ = SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
     } else if deferred_min {
-        let _ = ShowWindow(hwnd, SW_MINIMIZE);
+        if !win32_shell::request_genie_minimize(hwnd) {
+            let _ = ShowWindow(hwnd, SW_MINIMIZE);
+        }
     } else if deferred_snap.is_some() {
         aura_window::cycle_snap_window(hwnd);
     } else if let Some(max) = deferred_max {

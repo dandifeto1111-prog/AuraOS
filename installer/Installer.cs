@@ -405,6 +405,7 @@ namespace AuraShellInstaller
                 string dstNotes = Path.Combine(InstallDir, "AuraNotes.exe");
                 string dstSettings = Path.Combine(InstallDir, "AuraSettings.exe");
                 string dstLock = Path.Combine(InstallDir, "AuraLock.exe");
+                string dstTasks = Path.Combine(InstallDir, "AuraTasks.exe");
                 string dstShellIco = Path.Combine(InstallDir, "AuraShell.ico");
                 string dstFilesIco = Path.Combine(InstallDir, "AuraFiles.ico");
                 string dstRestore = Path.Combine(InstallDir, "restore-windows.ps1");
@@ -420,6 +421,7 @@ namespace AuraShellInstaller
                 if (File.Exists(Path.Combine(sourceDir, "AuraNotes.exe"))) SafeCopyFileWithRetry(Path.Combine(sourceDir, "AuraNotes.exe"), dstNotes);
                 if (File.Exists(Path.Combine(sourceDir, "AuraSettings.exe"))) SafeCopyFileWithRetry(Path.Combine(sourceDir, "AuraSettings.exe"), dstSettings);
                 if (File.Exists(Path.Combine(sourceDir, "AuraLock.exe"))) SafeCopyFileWithRetry(Path.Combine(sourceDir, "AuraLock.exe"), dstLock);
+                if (File.Exists(Path.Combine(sourceDir, "AuraTasks.exe"))) SafeCopyFileWithRetry(Path.Combine(sourceDir, "AuraTasks.exe"), dstTasks);
                 if (File.Exists(Path.Combine(sourceDir, "AuraShell.ico"))) SafeCopyFileWithRetry(Path.Combine(sourceDir, "AuraShell.ico"), dstShellIco);
                 if (File.Exists(Path.Combine(sourceDir, "AuraFiles.ico"))) SafeCopyFileWithRetry(Path.Combine(sourceDir, "AuraFiles.ico"), dstFilesIco);
                 if (File.Exists(Path.Combine(sourceDir, "AuraShell_256.png"))) SafeCopyFileWithRetry(Path.Combine(sourceDir, "AuraShell_256.png"), Path.Combine(InstallDir, "AuraShell_256.png"));
@@ -507,15 +509,17 @@ namespace AuraShellInstaller
                     if (File.Exists(dstFiles))
                         CreateShortcut(Path.Combine(startFolder, "AuraFiles.lnk"), dstFiles, "", InstallDir, filesIconRef, "Abrir Gestor de Archivos AuraFiles");
                     if (File.Exists(dstPhotos))
-                        CreateShortcut(Path.Combine(startFolder, "AuraPhotos.lnk"), dstPhotos, "", InstallDir, shellIconRef, "Visor de Imágenes GPU AuraPhotos");
+                        CreateShortcut(Path.Combine(startFolder, "AuraPhotos.lnk"), dstPhotos, "", InstallDir, dstPhotos + ",0", "Visor de Imágenes GPU AuraPhotos");
                     if (File.Exists(dstPlayer))
-                        CreateShortcut(Path.Combine(startFolder, "AuraPlayer.lnk"), dstPlayer, "", InstallDir, shellIconRef, "Reproductor de Video y Audio AuraPlayer");
+                        CreateShortcut(Path.Combine(startFolder, "AuraPlayer.lnk"), dstPlayer, "", InstallDir, dstPlayer + ",0", "Reproductor de Video y Audio AuraPlayer");
                     if (File.Exists(dstNotes))
-                        CreateShortcut(Path.Combine(startFolder, "AuraNotes.lnk"), dstNotes, "", InstallDir, shellIconRef, "Editor instantáneo de Texto y Código AuraNotes");
+                        CreateShortcut(Path.Combine(startFolder, "AuraNotes.lnk"), dstNotes, "", InstallDir, dstNotes + ",0", "Editor instantáneo de Texto y Código AuraNotes");
                     if (File.Exists(dstSettings))
-                        CreateShortcut(Path.Combine(startFolder, "Configuración AuraOS.lnk"), dstSettings, "", InstallDir, shellIconRef, "Configuración nativa de sistema, audio, pantalla y red AuraOS");
+                        CreateShortcut(Path.Combine(startFolder, "Configuración AuraOS.lnk"), dstSettings, "", InstallDir, dstSettings + ",0", "Configuración nativa de sistema, audio, pantalla y red AuraOS");
+                    if (File.Exists(dstTasks))
+                        CreateShortcut(Path.Combine(startFolder, "AuraTasks (Tareas).lnk"), dstTasks, "", InstallDir, dstTasks + ",0", "Administrador de Tareas nativo y eficiente AuraTasks (Ctrl+Shift+Esc)");
                     if (File.Exists(dstLock))
-                        CreateShortcut(Path.Combine(startFolder, "AuraLock (Bloquear).lnk"), dstLock, "", InstallDir, shellIconRef, "Pantalla de bloqueo GPU AuraLock con fondos personalizados");
+                        CreateShortcut(Path.Combine(startFolder, "AuraLock (Bloquear).lnk"), dstLock, "", InstallDir, dstLock + ",0", "Pantalla de bloqueo GPU AuraLock con foto de perfil y contraseña");
                     CreateShortcut(Path.Combine(startFolder, "Actualizar o Configurar AuraOS.lnk"), dstSetup, "", InstallDir, shellIconRef, "Actualizar versión, optimizar Windows o desinstalar AuraOS");
                     if (File.Exists(dstApb))
                         CreateShortcut(Path.Combine(startFolder, "Optimizar Windows (APBOptimizer).lnk"), "powershell.exe", "-ExecutionPolicy Bypass -NoProfile -File \"" + dstApb + "\"", InstallDir, shellIconRef, "Abrir APBOptimizer (OptiJuegos) para optimizar Windows");
@@ -771,7 +775,7 @@ namespace AuraShellInstaller
                 try { Registry.CurrentUser.DeleteSubKeyTree(@"Software\Classes\Directory\Background\shell\open_aurafiles", false); } catch { }
                 try { Registry.CurrentUser.DeleteSubKeyTree(UninstallRegKey, false); } catch { }
 
-                foreach (string f in new[] { "AuraShell.exe", "AuraFiles.exe", "AuraPhotos.exe", "AuraPlayer.exe", "AuraNotes.exe", "AuraSettings.exe", "AuraLock.exe", "AuraShell.ico", "AuraFiles.ico", "AuraShell_256.png", "AuraFiles_256.png", "settings.json", "settings_v3.json", "version.json", "AuraShell.log", "restore-windows.ps1", "APBOptimizer.ps1" })
+                foreach (string f in new[] { "AuraShell.exe", "AuraFiles.exe", "AuraPhotos.exe", "AuraPlayer.exe", "AuraNotes.exe", "AuraSettings.exe", "AuraLock.exe", "AuraTasks.exe", "AuraShell.ico", "AuraFiles.ico", "AuraShell_256.png", "AuraFiles_256.png", "settings.json", "settings_v3.json", "version.json", "AuraShell.log", "restore-windows.ps1", "APBOptimizer.ps1" })
                 {
                     string p = Path.Combine(InstallDir, f);
                     try { if (File.Exists(p)) File.Delete(p); } catch { }

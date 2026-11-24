@@ -892,6 +892,46 @@ pub fn launch_aura_lock() {
     power_lock();
 }
 
+pub fn launch_aura_tasks() {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let candidates = [
+        exe_dir.as_ref().map(|d| d.join("AuraTasks.exe")),
+        Some(crate::models::app_data_dir().join("AuraTasks.exe")),
+    ];
+    for c in candidates.iter().flatten() {
+        if c.exists() {
+            launch_target(&c.to_string_lossy(), "");
+            return;
+        }
+    }
+    launch_target("taskmgr.exe", "");
+}
+
+/// Asks running AuraShell.exe to play the macOS Genie Suction effect when minimizing an Aura app!
+/// Returns true if AuraShell handled it (caller should NOT immediately ShowWindow(SW_MINIMIZE)),
+/// or false if AuraShell isn't running so caller should fall back to normal ShowWindow(SW_MINIMIZE).
+pub fn request_genie_minimize(hwnd: HWND) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, PostMessageW, RegisterWindowMessageW,
+    };
+    unsafe {
+        let cls = to_wide("AuraOS_Rust_v3_Wnd");
+        let title = to_wide("AuraTopBar");
+        if let Ok(shell_hw) = FindWindowW(PCWSTR(cls.as_ptr()), PCWSTR(title.as_ptr())) {
+            if !shell_hw.is_invalid() {
+                let m = to_wide("WM_AURAOS_GENIE_MINIMIZE");
+                let msg = RegisterWindowMessageW(PCWSTR(m.as_ptr()));
+                if msg != 0 && PostMessageW(shell_hw, msg, WPARAM(hwnd.0 as usize), LPARAM(0)).is_ok() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Broadcasts live settings reload signal to running AuraShell.exe (zero restart!)
 pub fn notify_shell_settings_changed() {
     use windows::Win32::UI::WindowsAndMessaging::{RegisterWindowMessageW, SendNotifyMessageW, HWND_BROADCAST};

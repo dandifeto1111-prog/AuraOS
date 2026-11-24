@@ -2,6 +2,9 @@
 #![allow(dead_code)]
 
 mod audio;
+mod dock_preview;
+mod genie;
+mod hotkey_hook;
 mod models;
 mod motion;
 mod radios;
@@ -18,6 +21,7 @@ mod ui_state;
 mod ui_topbar;
 mod ui_widgets;
 mod updater;
+mod video_decoder;
 mod wallpaper;
 mod win32_shell;
 mod window_styler;
@@ -66,6 +70,7 @@ const HK_OVERVIEW: i32 = 1001;
 const HK_FILES: i32 = 1002;
 const HK_RESTORE: i32 = 1003;
 const HK_LOCK: i32 = 1004;
+const HK_TASKS: i32 = 1005;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WinKind {
@@ -108,6 +113,8 @@ struct ShellRuntime {
     cpu: system::CpuTracker,
     boost: system::GameBoost,
     wallpaper: wallpaper::WallpaperEngine,
+    dock_preview: dock_preview::DockPreviewPopup,
+    genie: genie::GenieAnimator,
     startup_rx: Option<Receiver<StartupCatalog>>,
     weather_rx: Option<Receiver<WeatherInfo>>,
     radio_rx: Option<Receiver<RadioStates>>,
@@ -149,6 +156,9 @@ struct ShellRuntime {
     last_frame: Instant,
     wm_activate_existing: u32,
     wm_settings_changed: u32,
+    wm_aura_shortcut: u32,
+    wm_dock_preview_click: u32,
+    wm_genie_minimize: u32,
     last_dock_hover_exit: Instant,
     mouse_in_dock: bool,
     mouse_in_notch: bool,
@@ -156,6 +166,12 @@ struct ShellRuntime {
     notch_visible: bool,
     dock_geo: (i32, i32, i32, i32),
     slow_tick_count: u32,
+    fast_tick_count: u32,
+    anim_interval_ms: u32,
+    music_anim_accum: f32,
+    last_clock_min: u32,
+    last_fg_hwnd_seen: isize,
+    last_topbar_sig: String,
     telemetry: TelemetryWorker,
     update_rx: Receiver<UpdateInfo>,
     auto_update_triggered: bool,
@@ -262,6 +278,7 @@ fn run_shell() -> windows::core::Result<()> {
 
     // Initialize integrated lightweight Wallpaper Engine (behind desktop icons!)
     let mut wp_engine = wallpaper::WallpaperEngine::new(&gpu, sw, sh);
+    wp_engine.set_performance_mode(state.settings.performance_mode);
     let init_wp = state.settings.wallpaper_id.clone();
     wp_engine.set_wallpaper(&mut gpu, &init_wp);
 
@@ -332,12 +349,13 @@ fn run_shell() -> windows::core::Result<()> {
         win32_shell::refresh_maximized_windows();
     }
 
-    // Global hotkeys (Alt+Space, Alt+E, Ctrl+Alt+W, Ctrl+Alt+L for AuraLock!)
+    // Global hotkeys (Alt+Space, Alt+E, Ctrl+Alt+W, Ctrl+Alt+L for AuraLock, Ctrl+Alt+T for AuraTasks!)
     unsafe {
         let _ = RegisterHotKey(hwnd_topbar, HK_OVERVIEW, MOD_ALT, VK_SPACE.0 as u32);
         let _ = RegisterHotKey(hwnd_topbar, HK_FILES, MOD_ALT, 'E' as u32);
         let _ = RegisterHotKey(hwnd_topbar, HK_RESTORE, MOD_CONTROL | MOD_ALT, 'W' as u32);
         let _ = RegisterHotKey(hwnd_topbar, HK_LOCK, MOD_CONTROL | MOD_ALT, 'L' as u32);
+        let _ = RegisterHotKey(hwnd_topbar, HK_TASKS, MOD_CONTROL | MOD_ALT, 'T' as u32);
     }
 
     let surf_topbar = WindowSurface::new(&gpu, hwnd_topbar, sw as u32, top_h as u32)?;
@@ -356,6 +374,24 @@ fn run_shell() -> windows::core::Result<()> {
         let m = win32_shell::to_wide("WM_AURAOS_SETTINGS_CHANGED");
         RegisterWindowMessageW(PCWSTR(m.as_ptr()))
     };
+    let wm_shortcut = unsafe {
+        let m = win32_shell::to_wide("WM_AURAOS_SHORTCUT_V45");
+        RegisterWindowMessageW(PCWSTR(m.as_ptr()))
+    };
+    let wm_preview_click = unsafe {
+        let m = win32_shell::to_wide("WM_AURAOS_DOCK_PREVIEW_CLICK_V45");
+        RegisterWindowMessageW(PCWSTR(m.as_ptr()))
+    };
+    let wm_genie_min = unsafe {
+        let m = win32_shell::to_wide("WM_AURAOS_GENIE_MINIMIZE");
+        RegisterWindowMessageW(PCWSTR(m.as_ptr()))
+    };
+
+    // Install lightweight WH_KEYBOARD_LL shortcut bridge (solo Win -> Launchpad, Ctrl+Shift+Esc -> AuraTasks, Win+E/I/S!)
+    hotkey_hook::install(hwnd_topbar, wm_shortcut, state.settings.intercept_win_hotkeys);
+
+    let dock_preview = dock_preview::DockPreviewPopup::new(hwnd_topbar, wm_preview_click);
+    let genie = genie::GenieAnimator::new(&gpu, sw, sh);
 
     let upd_settings = state.settings.clone();
     let mut rt = ShellRuntime {
@@ -364,6 +400,8 @@ fn run_shell() -> windows::core::Result<()> {
         cpu: system::CpuTracker::new(),
         boost: system::GameBoost::new(),
         wallpaper: wp_engine,
+        dock_preview,
+        genie,
         startup_rx: Some(cat_rx),
         weather_rx: Some(w_rx),
         radio_rx: Some(r_rx),
@@ -400,6 +438,9 @@ fn run_shell() -> windows::core::Result<()> {
         last_frame: Instant::now(),
         wm_activate_existing: wm_act,
         wm_settings_changed: wm_cfg,
+        wm_aura_shortcut: wm_shortcut,
+        wm_dock_preview_click: wm_preview_click,
+        wm_genie_minimize: wm_genie_min,
         last_dock_hover_exit: Instant::now(),
         mouse_in_dock: false,
         mouse_in_notch: false,
@@ -407,6 +448,12 @@ fn run_shell() -> windows::core::Result<()> {
         notch_visible: false,
         dock_geo: (dx, dy, dw, dh),
         slow_tick_count: 0,
+        fast_tick_count: 0,
+        anim_interval_ms: 16,
+        music_anim_accum: 0.0,
+        last_clock_min: u32::MAX,
+        last_fg_hwnd_seen: 0,
+        last_topbar_sig: String::new(),
         telemetry: TelemetryWorker::spawn(),
         update_rx: updater::spawn_update_watcher(upd_settings),
         auto_update_triggered: false,
@@ -445,9 +492,15 @@ fn run_shell() -> windows::core::Result<()> {
         let _ = UnregisterHotKey(hwnd_topbar, HK_FILES);
         let _ = UnregisterHotKey(hwnd_topbar, HK_RESTORE);
         let _ = UnregisterHotKey(hwnd_topbar, HK_LOCK);
+        let _ = UnregisterHotKey(hwnd_topbar, HK_TASKS);
     }
 
-    with_rt(|rt| rt.wallpaper.shutdown());
+    hotkey_hook::uninstall();
+    with_rt(|rt| {
+        rt.dock_preview.shutdown();
+        rt.genie.shutdown();
+        rt.wallpaper.shutdown();
+    });
     RUNTIME.with(|cell| {
         if let Ok(mut g) = cell.try_borrow_mut() {
             *g = None;
@@ -615,6 +668,8 @@ impl ShellRuntime {
     }
 
     fn hide_dock_show_notch(&mut self) {
+        self.dock_preview.hide();
+        self.state.dock_mouse_axis = None;
         if self.dock_hwnd_visible {
             unsafe { let _ = ShowWindow(self.hwnd_dock, SW_HIDE); }
             self.dock_hwnd_visible = false;
@@ -1137,6 +1192,10 @@ impl ShellRuntime {
                 self.close_all_overlays();
                 win32_shell::launch_aura_lock();
             }
+            Action::LaunchAuraTasks => {
+                self.close_all_overlays();
+                win32_shell::launch_aura_tasks();
+            }
             Action::CloseAllOverlays => self.close_all_overlays(),
             Action::FocusSearchBar => {
                 if self.state.overview_open {
@@ -1165,7 +1224,15 @@ impl ShellRuntime {
                 window_styler::close_active_window(self.state.active_user_hwnd);
             }
             Action::ActiveWinMin => {
-                window_styler::minimize_active_window(self.state.active_user_hwnd);
+                let target = self.state.active_user_hwnd;
+                if target != 0 && !self.state.settings.performance_mode {
+                    let is_left = !self.state.settings.dock_position.eq_ignore_ascii_case("Bottom");
+                    let (gx, gy) = ui_dock::dock_icon_screen_center(&self.state, self.dock_geo, is_left, target);
+                    self.genie.start_minimize(target, gx, gy, is_left);
+                    self.wake_anim_timer();
+                } else {
+                    window_styler::minimize_active_window(target);
+                }
             }
             Action::ActiveWinMaxToggle => {
                 window_styler::toggle_maximize_active_window(self.state.active_user_hwnd);
@@ -1302,8 +1369,26 @@ impl ShellRuntime {
                 win32_shell::launch_target(&t, "");
             }
             Action::FocusWindow(hwnd) => {
+                self.dock_preview.hide();
                 self.close_all_overlays();
-                win32_shell::toggle_or_focus_window(hwnd);
+                let is_left = !self.state.settings.dock_position.eq_ignore_ascii_case("Bottom");
+                let (gx, gy) = ui_dock::dock_icon_screen_center(&self.state, self.dock_geo, is_left, hwnd);
+                let hw = HWND(hwnd as *mut _);
+                let is_iconic = unsafe { windows::Win32::UI::WindowsAndMessaging::IsIconic(hw).as_bool() };
+                let is_fg = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() == hw };
+
+                if !self.state.settings.performance_mode && is_iconic {
+                    if self.genie.start_restore(hwnd, gx, gy, is_left) {
+                        self.wake_anim_timer();
+                    } else {
+                        win32_shell::toggle_or_focus_window(hwnd);
+                    }
+                } else if !self.state.settings.performance_mode && is_fg {
+                    self.genie.start_minimize(hwnd, gx, gy, is_left);
+                    self.wake_anim_timer();
+                } else {
+                    win32_shell::toggle_or_focus_window(hwnd);
+                }
             }
             Action::KillBackgroundApp(key) => {
                 system::kill_process_by_name(&key);
@@ -1327,8 +1412,8 @@ impl ShellRuntime {
                 self.spawn_file_picker(
                     FilePickKind::CustomWallpaper,
                     "Seleccionar video, imagen o web para Fondo de Pantalla",
-                    "Fondos (*.mp4;*.webm;*.jpg;*.png;*.webp;*.html)",
-                    "*.mp4;*.webm;*.mkv;*.jpg;*.jpeg;*.png;*.webp;*.html",
+                    "Fondos (*.mp4;*.webm;*.mkv;*.mov;*.m4v;*.wmv;*.avi;*.jpg;*.png;*.webp;*.html)",
+                    "*.mp4;*.webm;*.mkv;*.mov;*.m4v;*.wmv;*.avi;*.jpg;*.jpeg;*.png;*.webp;*.bmp;*.html",
                 );
             }
             Action::ToggleWidget(kind) => {
@@ -1387,6 +1472,9 @@ impl ShellRuntime {
                 }
             }
             Action::RestoreWindowsAndExit => {
+                hotkey_hook::uninstall();
+                self.dock_preview.shutdown();
+                self.genie.shutdown();
                 self.wallpaper.shutdown();
                 win32_shell::restore_windows_safely();
                 unsafe { PostQuitMessage(0); }
@@ -1746,7 +1834,8 @@ impl ShellRuntime {
                     }
                     FilePickKind::CustomWallpaper => {
                         let low = path.to_lowercase();
-                        let prefix = if low.ends_with(".mp4") || low.ends_with(".webm") || low.ends_with(".mkv") || low.ends_with(".mov") {
+                        let is_vid = video_decoder::is_video_ext(&low);
+                        let prefix = if is_vid {
                             "video"
                         } else if low.ends_with(".html") || low.ends_with(".htm") {
                             "web"
@@ -1754,21 +1843,29 @@ impl ShellRuntime {
                             "image"
                         };
                         let wp_id = format!("{}:{}", prefix, path);
-                        self.state.custom_items.custom_wallpapers.push(CustomEntry {
-                            id: format!("wp_{}", ts_id),
-                            name,
-                            target: path,
-                            subtitle: "Fondo personalizado".into(),
-                            category: "Wallpaper".into(),
-                            cover_path: None,
-                        });
-                        save_custom_items(&self.state.custom_items);
+                        let cover_path = if is_vid {
+                            video_decoder::extract_video_thumbnail(&path)
+                        } else {
+                            None
+                        };
+                        if !self.state.custom_items.custom_wallpapers.iter().any(|w| w.target.eq_ignore_ascii_case(&path)) {
+                            self.state.custom_items.custom_wallpapers.push(CustomEntry {
+                                id: format!("wp_{}", ts_id),
+                                name,
+                                target: path,
+                                subtitle: "Fondo personalizado".into(),
+                                category: "Wallpaper".into(),
+                                cover_path,
+                            });
+                            save_custom_items(&self.state.custom_items);
+                        }
                         self.state.wallpapers = wallpaper::scan_wallpapers(&self.state.custom_items);
                         self.state.settings.wallpaper_id = wp_id.clone();
                         save_settings(&self.state.settings);
                         self.wallpaper.set_wallpaper(&mut self.gpu, &wp_id);
                         self.state.mode = ShellMode::Studio;
                         self.state.overview_tab_pill_x.snap(3.0);
+                        self.wake_anim_timer();
                     }
                 }
             }
@@ -1873,73 +1970,135 @@ impl ShellRuntime {
             self.redraw_dock();
         }
 
-        // 8. Animated Desktop Music Visualizer (paused while Launchpad/Overview covers desktop!)
+        // 8. Animated Desktop Music Visualizer (throttled to 24 FPS; skipped in performance_mode or covered desktop!)
         let music_enabled = self.state.settings.show_desktop_widgets
+            && !self.state.settings.performance_mode
             && self.state.widgets.get(WidgetKind::Music).map(|w| w.enabled).unwrap_or(false);
         let fullscreen_overlay = self.state.launchpad_open || self.state.overview_open;
+        let mut music_animating = false;
         if music_enabled && !self.desktop_covered && !self.hidden_for_fullscreen && !fullscreen_overlay {
             let target_energy = if self.state.now_playing.is_playing { 1.0 } else { 0.0 };
             let diff = target_energy - self.state.music_energy;
             if self.state.now_playing.is_playing || diff.abs() > 0.015 {
+                music_animating = true;
                 self.state.music_energy += diff * (dt_sec * 6.0).min(1.0);
                 self.state.music_wave_phase += dt_sec * 1.8;
                 if self.state.music_wave_phase > 1000.0 {
                     self.state.music_wave_phase -= 1000.0;
                 }
-                self.redraw_widget(WidgetKind::Music);
+                self.music_anim_accum += dt_sec;
+                if self.music_anim_accum >= 0.042 {
+                    self.music_anim_accum = 0.0;
+                    self.redraw_widget(WidgetKind::Music);
+                }
             }
         }
 
-        // 9. Integrated Wallpaper Engine (Video/Web/GPU Presets)
-        // Keeps live preview running inside Studio tab, pauses behind Launchpad to give 100% GPU to scrolling!
+        // 9. macOS Genie Effect (36-Strip Curved Suction / Un-Suction!)
+        let genie_running = self.genie.tick(&mut self.gpu);
+
+        // 10. Integrated Wallpaper Engine (Video/Web/GPU Presets)
         if !self.state.launchpad_open {
             self.wallpaper.tick(&mut self.gpu, dt_sec);
         }
+
+        // 11. Dynamic Adaptive Frame Pacing (cuts idle CPU wakeups by ~90% on modest PCs!)
+        let ui_animating = genie_running
+            || self.state.overview_anim.is_moving()
+            || self.state.overview_tab_pill_x.is_moving()
+            || self.state.tab_content_anim.is_moving()
+            || self.state.cc_anim.is_moving()
+            || self.state.power_anim.is_moving()
+            || self.state.launchpad_anim.is_moving()
+            || self.state.dock_reveal.is_moving()
+            || self.state.dock_item_scales.iter().any(|s| s.is_moving())
+            || self.state.dock_mouse_axis.is_some()
+            || (self.state.launchpad_open && (self.state.launchpad_scroll_target - self.state.launchpad_scroll).abs() > 0.35)
+            || (self.state.overview_open && self.state.mode == ShellMode::Studio && (self.state.wallpaper_scroll_target - self.state.wallpaper_scroll).abs() > 0.35);
+
+        let desired_ms = if ui_animating {
+            16
+        } else if !self.state.launchpad_open && self.wallpaper.needs_fast_tick() {
+            if self.wallpaper.active_kind == WallpaperKind::Video { 33 } else { 48 }
+        } else if music_animating {
+            42
+        } else {
+            160
+        };
+        if desired_ms != self.anim_interval_ms {
+            self.anim_interval_ms = desired_ms;
+            unsafe {
+                SetTimer(self.hwnd_topbar, TIMER_ANIM, desired_ms, None);
+            }
+        }
+    }
+
+    fn wake_anim_timer(&mut self) {
+        if self.anim_interval_ms != 16 {
+            self.anim_interval_ms = 16;
+            unsafe {
+                SetTimer(self.hwnd_topbar, TIMER_ANIM, 16, None);
+            }
+        }
+    }
+
+    fn spawn_weather_refresh(&mut self) {
+        let city = self.state.settings.weather_city.clone();
+        let (w_tx, w_rx) = mpsc::channel();
+        self.weather_rx = Some(w_rx);
+        std::thread::spawn(move || {
+            let _ = w_tx.send(system::fetch_weather_for_city(&city));
+        });
     }
 
     fn tick_fast_120ms(&mut self) {
-        if self.state.settings.hide_windows_taskbar {
-            win32_shell::enforce_taskbar_suppressed();
-        }
-
+        self.fast_tick_count = self.fast_tick_count.wrapping_add(1);
         let any_overlay = self.state.overview_open || self.state.cc_open || self.state.power_open || self.state.launchpad_open;
-        let is_fs = !any_overlay && win32_shell::is_fullscreen_app_active();
 
-        // Auto-pause Wallpaper Engine & Music Visualizer whenever a maximized/fullscreen window covers the desktop!
-        let covered = !any_overlay && win32_shell::is_any_maximized_window_visible();
-        self.desktop_covered = covered;
-        if self.state.settings.wallpaper_auto_pause {
-            self.wallpaper.set_paused(covered || is_fs);
-        }
+        // Throttle heavy Win32 EnumWindows scans to every 360ms (-67% CPU overhead on modest PCs!)
+        if self.fast_tick_count % 3 == 1 {
+            if self.state.settings.hide_windows_taskbar {
+                win32_shell::enforce_taskbar_suppressed();
+            }
 
-        if is_fs && !self.hidden_for_fullscreen {
-            self.hidden_for_fullscreen = true;
-            unsafe {
-                let _ = ShowWindow(self.hwnd_topbar, SW_HIDE);
-                let _ = ShowWindow(self.hwnd_dock, SW_HIDE);
-                let _ = ShowWindow(self.hwnd_notch, SW_HIDE);
+            let is_fs = !any_overlay && win32_shell::is_fullscreen_app_active();
+            hotkey_hook::set_fullscreen_bypass(is_fs);
+
+            let covered = !any_overlay && win32_shell::is_any_maximized_window_visible();
+            self.desktop_covered = covered;
+            if self.state.settings.wallpaper_auto_pause {
+                self.wallpaper.set_paused(covered || is_fs);
             }
-            self.dock_hwnd_visible = false;
-            self.notch_visible = false;
-            return;
-        } else if !is_fs && self.hidden_for_fullscreen {
-            self.hidden_for_fullscreen = false;
-            unsafe {
-                let _ = ShowWindow(self.hwnd_topbar, SW_SHOWNOACTIVATE);
-            }
-            win32_shell::ensure_topmost(self.hwnd_topbar);
-            if self.state.dock_hidden {
-                self.hide_dock_show_notch();
-            } else {
-                self.show_dock_hide_notch();
+
+            if is_fs && !self.hidden_for_fullscreen {
+                self.hidden_for_fullscreen = true;
+                self.dock_preview.hide();
+                unsafe {
+                    let _ = ShowWindow(self.hwnd_topbar, SW_HIDE);
+                    let _ = ShowWindow(self.hwnd_dock, SW_HIDE);
+                    let _ = ShowWindow(self.hwnd_notch, SW_HIDE);
+                }
+                self.dock_hwnd_visible = false;
+                self.notch_visible = false;
+                return;
+            } else if !is_fs && self.hidden_for_fullscreen {
+                self.hidden_for_fullscreen = false;
+                unsafe {
+                    let _ = ShowWindow(self.hwnd_topbar, SW_SHOWNOACTIVATE);
+                }
+                win32_shell::ensure_topmost(self.hwnd_topbar);
+                if self.state.dock_hidden {
+                    self.hide_dock_show_notch();
+                } else {
+                    self.show_dock_hide_notch();
+                }
             }
         }
         if self.hidden_for_fullscreen {
             return;
         }
 
-        // Zero-Interference Dock Auto-Hide + iPhone/Android Muesquita Trigger!
-        // ONLY reveals when hovering the exact compact Notch rect (never random screen edges!)
+        // Zero-Interference Dock Auto-Hide + iPhone/Android Muesquita Trigger + Live Preview Hover Guard!
         let is_left = !self.state.settings.dock_position.eq_ignore_ascii_case("Bottom");
         let (cx, cy) = win32_shell::cursor_pos();
         let (nx, ny, nw, nh) = ui_dock::notch_geometry(self.screen_w, self.screen_h, is_left);
@@ -1951,26 +2110,32 @@ impl ShellRuntime {
             && cx <= dx + dw
             && cy >= dy
             && cy <= dy + dh;
+        let in_preview = self.dock_preview.contains_point(cx, cy);
+
+        // Hide live preview popup if cursor left BOTH the Dock and the preview card
+        if self.dock_preview.visible && !in_dock_tight && !in_preview && !self.mouse_in_dock {
+            self.dock_preview.hide();
+        }
 
         let want_hidden = if !self.state.settings.dock_auto_hide || any_overlay {
             false
-        } else if in_notch || in_dock_tight || self.mouse_in_dock || self.mouse_in_notch {
+        } else if in_notch || in_dock_tight || in_preview || self.mouse_in_dock || self.mouse_in_notch {
             self.last_dock_hover_exit = Instant::now();
             false
         } else if !self.state.dock_hidden && self.last_dock_hover_exit.elapsed().as_millis() < 340 {
             false
         } else {
-            // Whenever Auto-Hide is active and the user isn't hovering the Dock or Notch,
-            // fully hide hwnd_dock (SW_HIDE = 0 blocked clicks!) leaving ONLY the minimal muesquita!
             true
         };
 
         if want_hidden != self.state.dock_hidden {
             self.state.dock_hidden = want_hidden;
+            self.wake_anim_timer();
             if !want_hidden {
                 self.show_dock_hide_notch();
                 self.state.dock_reveal.set_target(1.0);
             } else {
+                self.dock_preview.hide();
                 self.state.dock_reveal.set_target(0.0);
             }
         } else if want_hidden && self.dock_hwnd_visible && self.state.dock_reveal.value <= 0.03 {
@@ -1979,10 +2144,12 @@ impl ShellRuntime {
     }
 
     fn tick_slow_1s(&mut self) {
+        let mut weather_changed = false;
         if let Some(rx) = &self.weather_rx {
             if let Ok(w) = rx.try_recv() {
                 self.state.weather = w;
                 self.weather_rx = None;
+                weather_changed = true;
                 self.redraw_widget(WidgetKind::Clock);
                 self.redraw_widget(WidgetKind::Weather);
             }
@@ -1999,12 +2166,17 @@ impl ShellRuntime {
         self.state.keyboard_lang = win32_shell::get_keyboard_layout_short();
         self.slow_tick_count = self.slow_tick_count.wrapping_add(1);
 
+        // Periodic automatic weather refresh every 15 minutes (900 ticks)
+        if self.slow_tick_count > 0 && self.slow_tick_count % 900 == 0 && self.weather_rx.is_none() {
+            self.spawn_weather_refresh();
+        }
+
         let new_wins = win32_shell::get_open_user_windows();
         let dock_changed = new_wins.len() != self.state.open_windows.len()
             || new_wins.iter().zip(self.state.open_windows.iter()).any(|(a, b)| a.hwnd != b.hwnd || a.is_active != b.is_active);
         self.state.open_windows = new_wins;
 
-        // Continuously apply AuraOS Drool Dark Mode DWM styling to ALL Windows applications (Edge, etc.)!
+        // Cached DWM styling (only touches newly created or active-changed standard Win32 windows!)
         if self.state.settings.style_windows_apps {
             window_styler::apply_aura_style_to_windows(&self.state.open_windows);
         }
@@ -2013,8 +2185,33 @@ impl ShellRuntime {
             self.state.dock_item_scales.resize(self.state.open_windows.len() + 6, Spring::dock_hover(1.0));
         }
 
+        let cur_min = unsafe {
+            let st = windows::Win32::System::SystemInformation::GetLocalTime();
+            (st.wHour as u32) * 60 + (st.wMinute as u32)
+        };
+        let min_changed = cur_min != self.last_clock_min;
+        if min_changed {
+            self.last_clock_min = cur_min;
+        }
+
         if !self.hidden_for_fullscreen {
-            self.redraw_topbar();
+            let sig = format!(
+                "{}|{}|{}|{:.1}|{}|{}|{}|{}|{}|{}",
+                cur_min,
+                self.state.active_window_label,
+                self.state.cpu_pct.round() as i32,
+                self.state.ram_used_gb,
+                self.state.master_vol,
+                self.state.master_muted,
+                self.state.keyboard_lang,
+                self.state.weather.temp_c,
+                self.state.weather.city,
+                self.state.now_playing.is_playing
+            );
+            if sig != self.last_topbar_sig || weather_changed {
+                self.last_topbar_sig = sig;
+                self.redraw_topbar();
+            }
             if dock_changed {
                 self.sync_dock_tight_bounds();
                 if self.dock_hwnd_visible {
@@ -2025,15 +2222,22 @@ impl ShellRuntime {
         if self.state.overview_open && self.state.mode == ShellMode::PC && !self.state.overview_settings_view {
             self.redraw_overview();
         }
+        // Smart dirty-checked Desktop Widgets (only redraw what ACTUALLY changed -> saves massive GPU on modest PCs!)
         if self.state.settings.show_desktop_widgets && !self.desktop_covered {
-            self.redraw_widget(WidgetKind::Clock);
-            self.redraw_widget(WidgetKind::Weather);
-            self.redraw_widget(WidgetKind::Monitor);
-            if !self.state.now_playing.is_playing {
-                self.redraw_widget(WidgetKind::Music);
+            if min_changed || weather_changed {
+                self.redraw_widget(WidgetKind::Clock);
             }
-            for w in &self.widget_wins {
-                win32_shell::send_to_desktop_bottom(w.hwnd);
+            if weather_changed {
+                self.redraw_widget(WidgetKind::Weather);
+            }
+            if !self.state.settings.performance_mode || self.slow_tick_count % 2 == 0 {
+                self.redraw_widget(WidgetKind::Monitor);
+            }
+            if self.state.active_user_hwnd != self.last_fg_hwnd_seen {
+                self.last_fg_hwnd_seen = self.state.active_user_hwnd;
+                for w in &self.widget_wins {
+                    win32_shell::send_to_desktop_bottom(w.hwnd);
+                }
             }
         }
     }
@@ -2090,8 +2294,13 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         if msg == rt.wm_settings_changed && rt.wm_settings_changed != 0 {
             let prev_wp = rt.state.settings.wallpaper_id.clone();
             let prev_hide = rt.state.settings.hide_windows_taskbar;
+            let prev_city = rt.state.settings.weather_city.clone();
             rt.state.settings = load_settings();
+            rt.state.custom_items = load_custom_items();
+            rt.state.wallpapers = wallpaper::scan_wallpapers(&rt.state.custom_items);
             rt.state.widgets = load_widgets(rt.screen_w, rt.screen_h);
+            rt.wallpaper.set_performance_mode(rt.state.settings.performance_mode);
+            hotkey_hook::set_enabled(rt.state.settings.intercept_win_hotkeys);
             if rt.state.settings.hide_windows_taskbar != prev_hide {
                 win32_shell::set_taskbar_visibility(!rt.state.settings.hide_windows_taskbar);
                 win32_shell::apply_full_work_area(TOPBAR_HEIGHT as i32, rt.state.settings.hide_windows_taskbar);
@@ -2100,11 +2309,51 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 let next_wp = rt.state.settings.wallpaper_id.clone();
                 rt.wallpaper.set_wallpaper(&mut rt.gpu, &next_wp);
             }
+            if rt.state.settings.weather_city != prev_city {
+                rt.spawn_weather_refresh();
+            }
             rt.sync_dock_tight_bounds();
             rt.sync_widget_windows_visibility();
             rt.redraw_topbar();
             rt.redraw_dock();
             rt.redraw_all_widgets();
+            rt.wake_anim_timer();
+            return true;
+        }
+        if msg == rt.wm_aura_shortcut && rt.wm_aura_shortcut != 0 {
+            rt.wake_anim_timer();
+            match wparam.0 {
+                hotkey_hook::SHORTCUT_LAUNCHPAD => rt.execute(Action::ToggleLaunchpad),
+                hotkey_hook::SHORTCUT_TASKS => rt.execute(Action::LaunchAuraTasks),
+                hotkey_hook::SHORTCUT_FILES => rt.execute(Action::LaunchAuraFiles(None)),
+                hotkey_hook::SHORTCUT_SETTINGS => rt.execute(Action::LaunchAuraSettings(None)),
+                hotkey_hook::SHORTCUT_OVERVIEW => rt.execute(Action::ToggleOverview),
+                _ => {}
+            }
+            return true;
+        }
+        if msg == rt.wm_dock_preview_click && rt.wm_dock_preview_click != 0 {
+            let target_hwnd = lparam.0;
+            rt.dock_preview.hide();
+            if wparam.0 == 1 {
+                window_styler::close_active_window(target_hwnd);
+            } else {
+                rt.execute(Action::FocusWindow(target_hwnd));
+            }
+            return true;
+        }
+        if msg == rt.wm_genie_minimize && rt.wm_genie_minimize != 0 {
+            let target_hwnd = wparam.0 as isize;
+            if target_hwnd != 0 {
+                if !rt.state.settings.performance_mode {
+                    let is_left = !rt.state.settings.dock_position.eq_ignore_ascii_case("Bottom");
+                    let (gx, gy) = ui_dock::dock_icon_screen_center(&rt.state, rt.dock_geo, is_left, target_hwnd);
+                    rt.genie.start_minimize(target_hwnd, gx, gy, is_left);
+                    rt.wake_anim_timer();
+                } else {
+                    window_styler::minimize_active_window(target_hwnd);
+                }
+            }
             return true;
         }
 
@@ -2121,11 +2370,13 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 true
             }
             WM_HOTKEY => {
+                rt.wake_anim_timer();
                 match wparam.0 as i32 {
                     HK_OVERVIEW => rt.execute(Action::ToggleOverview),
                     HK_FILES => rt.execute(Action::LaunchAuraFiles(None)),
                     HK_RESTORE => rt.execute(Action::RestoreWindowsAndExit),
                     HK_LOCK => rt.execute(Action::LaunchAuraLock),
+                    HK_TASKS => rt.execute(Action::LaunchAuraTasks),
                     _ => {}
                 }
                 true
@@ -2182,6 +2433,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     // Instant zero-latency reveal the moment cursor touches the sleek iPhone/Android muesquita!
                     rt.mouse_in_notch = true;
                     rt.last_dock_hover_exit = Instant::now();
+                    rt.wake_anim_timer();
                     if rt.state.dock_hidden {
                         rt.state.dock_hidden = false;
                         rt.show_dock_hide_notch();
@@ -2191,6 +2443,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 }
                 if kind == WinKind::Dock {
                     rt.mouse_in_dock = true;
+                    rt.last_dock_hover_exit = Instant::now();
+                    let is_left = !rt.state.settings.dock_position.eq_ignore_ascii_case("Bottom");
+                    let axis = if is_left { py } else { px };
+                    rt.state.dock_mouse_axis = Some(axis);
+                    rt.wake_anim_timer();
                 }
                 if let WinKind::Widget(wk) = kind {
                     let mut changed = false;
@@ -2209,12 +2466,42 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     return true;
                 }
 
-                let new_hov = rt
+                let new_hov_hit = rt
                     .hits_for(kind)
                     .iter()
                     .rev()
                     .find(|h| h.rect.contains(px, py))
-                    .map(|h| h.id.clone());
+                    .cloned();
+                let new_hov = new_hov_hit.as_ref().map(|h| h.id.clone());
+
+                // Live DWM Window Preview Popup when hovering any running app icon in AuraDock!
+                if kind == WinKind::Dock {
+                    if let Some(hit) = &new_hov_hit {
+                        if let Some((target_hw, title)) = ui_dock::dock_preview_target_for_hit(&rt.state, &hit.id) {
+                            let is_left = !rt.state.settings.dock_position.eq_ignore_ascii_case("Bottom");
+                            let (dx, dy, _dw, _dh) = rt.dock_geo;
+                            let (prx, pry) = if is_left {
+                                (
+                                    dx + 90,
+                                    dy + (hit.rect.y + hit.rect.h * 0.5) as i32 - dock_preview::PREVIEW_H / 2,
+                                )
+                            } else {
+                                (
+                                    dx + (hit.rect.x + hit.rect.w * 0.5) as i32 - dock_preview::PREVIEW_W / 2,
+                                    dy - dock_preview::PREVIEW_H - 6,
+                                )
+                            };
+                            rt.dock_preview.show_for_window(target_hw, &title, prx, pry, rt.screen_w, rt.screen_h);
+                        } else {
+                            rt.dock_preview.hide();
+                        }
+                    } else {
+                        rt.dock_preview.hide();
+                    }
+                    rt.state.hovered_id = new_hov;
+                    rt.redraw_dock();
+                    return true;
+                }
 
                 if new_hov != rt.state.hovered_id {
                     rt.state.hovered_id = new_hov;
@@ -2230,7 +2517,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 }
                 if kind == WinKind::Dock {
                     rt.mouse_in_dock = false;
+                    rt.state.dock_mouse_axis = None;
                     rt.last_dock_hover_exit = Instant::now();
+                    let (cx, cy) = win32_shell::cursor_pos();
+                    if !rt.dock_preview.contains_point(cx, cy) {
+                        rt.dock_preview.hide();
+                    }
+                    rt.state.hovered_id = None;
+                    rt.redraw_dock();
+                    return true;
                 }
                 if let WinKind::Widget(wk) = kind {
                     if let Some(w) = rt.widget_wins.iter_mut().find(|w| w.kind == wk) {
@@ -2251,6 +2546,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 let py = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
                 let hit = rt.hits_for(kind).iter().rev().find(|h| h.rect.contains(px, py)).cloned();
                 if let Some(h) = hit {
+                    rt.wake_anim_timer();
                     rt.state.pressed_id = Some(h.id.clone());
                     if let Some(sl) = h.slider {
                         rt.state.active_slider = Some(sl);
@@ -2319,11 +2615,13 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         rt.redraw_cc();
                     }
                     WinKind::Launchpad => {
+                        rt.wake_anim_timer();
                         let max_s = (rt.lp_content_h - (rt.surf_launchpad.height as f32 - 180.0)).max(0.0);
                         rt.state.launchpad_scroll_target = (rt.state.launchpad_scroll_target + step * 2.2).clamp(0.0, max_s);
                     }
                     WinKind::Overview => {
                         if rt.state.mode == ShellMode::Studio {
+                            rt.wake_anim_timer();
                             let rows = ((rt.state.wallpapers.len() + 2) / 3) as f32;
                             let max_s = (rows * 164.0 - 440.0).max(0.0);
                             rt.state.wallpaper_scroll_target = (rt.state.wallpaper_scroll_target + step * 1.9).clamp(0.0, max_s);

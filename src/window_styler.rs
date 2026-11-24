@@ -7,7 +7,7 @@
 //!   border lines EVER appear outside transparent shadow margins or custom rounded cards!
 
 use crate::models::RunningWindow;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
@@ -28,7 +28,7 @@ const COLOR_TEXT_WHITE: u32 = 0x00FAF5F5;       // #F5F5FA (Crisp AuraOS White)
 const COLOR_BORDER_ACTIVE: u32 = 0x00463236;    // #363246 (Subtle refined dark-slate border, zero purple halo!)
 const COLOR_BORDER_INACTIVE: u32 = 0x002E2424;  // #24242E (Discreet matte obsidian border)
 
-static STYLED_HWNDS: Mutex<Option<HashSet<isize>>> = Mutex::new(None);
+static STYLED_HWNDS: Mutex<Option<HashMap<isize, (bool, bool)>>> = Mutex::new(None);
 
 fn is_aura_own_process(proc_name: &str) -> bool {
     let low = proc_name.to_lowercase();
@@ -38,6 +38,9 @@ fn is_aura_own_process(proc_name: &str) -> bool {
         || low == "auraphotos"
         || low == "auraplayer"
         || low == "auranotes"
+        || low == "aurasettings"
+        || low == "auralock"
+        || low == "auratasks"
         || low.starts_with("aurashell")
 }
 
@@ -190,37 +193,41 @@ fn reset_single_hwnd(hwnd: HWND) {
 }
 
 /// Apply AuraOS Drool Dark Mode DWM styling ONLY to genuine standard framed Windows apps!
+/// Cached per-HWND (active, zoomed) so DWM is ONLY touched on window creation or state changes!
 pub fn apply_aura_style_to_windows(windows: &[RunningWindow]) {
     let fg = unsafe { GetForegroundWindow().0 as isize };
-    let mut set_guard = STYLED_HWNDS.lock().unwrap_or_else(|e| e.into_inner());
-    let set = set_guard.get_or_insert_with(HashSet::new);
+    let mut map_guard = STYLED_HWNDS.lock().unwrap_or_else(|e| e.into_inner());
+    let map = map_guard.get_or_insert_with(HashMap::new);
 
     // Prune closed windows cleanly
-    set.retain(|&h| unsafe { IsWindow(HWND(h as *mut _)).as_bool() });
+    map.retain(|&h, _| unsafe { IsWindow(HWND(h as *mut _)).as_bool() });
 
     for w in windows {
         let hwnd = HWND(w.hwnd as *mut _);
         if !is_eligible_standard_window(hwnd, &w.process_name) {
-            // If an earlier version applied a purple border to AuraShell-Setup or a frameless window, clear it!
-            if is_aura_own_process(&w.process_name) || set.remove(&w.hwnd) {
+            if map.remove(&w.hwnd).is_some() {
                 clear_border_on_frameless(hwnd);
             }
             continue;
         }
         let is_active = w.hwnd == fg || w.is_active;
-        style_single_hwnd(hwnd, is_active);
-        set.insert(w.hwnd);
+        let is_zoomed = unsafe { IsZoomed(hwnd).as_bool() };
+        let state = (is_active, is_zoomed);
+        if map.get(&w.hwnd).copied() != Some(state) {
+            style_single_hwnd(hwnd, is_active);
+            map.insert(w.hwnd, state);
+        }
     }
 }
 
 /// 100% Reversible restore: resets all styled Windows app frames back to Windows defaults
 pub fn restore_all_styled_windows() {
-    let mut set_guard = STYLED_HWNDS.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(set) = set_guard.as_mut() {
-        for &h in set.iter() {
+    let mut map_guard = STYLED_HWNDS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(map) = map_guard.as_mut() {
+        for &h in map.keys() {
             reset_single_hwnd(HWND(h as *mut _));
         }
-        set.clear();
+        map.clear();
     }
 }
 

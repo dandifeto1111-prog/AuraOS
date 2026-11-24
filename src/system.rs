@@ -13,8 +13,8 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::FILETIME;
 use windows::Win32::Networking::WinHttp::{
     WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryDataAvailable,
-    WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-    WINHTTP_FLAG_SECURE,
+    WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetTimeouts,
+    WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_FLAG_SECURE,
 };
 use windows::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetLogicalDrives};
 use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -135,11 +135,11 @@ pub fn get_local_drives() -> Vec<DriveInfo> {
     drives
 }
 
-// ==================== NATIVE WINHTTP WEATHER (OPEN-METEO) ====================
+// ==================== NATIVE WINHTTP AUTO-GEOLOCATION & OPEN-METEO WEATHER ====================
 
-fn winhttp_get_https(host: &str, path: &str) -> Option<String> {
+fn winhttp_get(host: &str, port: u16, path: &str, secure: bool) -> Option<String> {
     unsafe {
-        let ua = to_wide("AuraOS/3.0");
+        let ua = to_wide("AuraOS/4.5");
         let h_sess = WinHttpOpen(
             PCWSTR(ua.as_ptr()),
             WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -150,14 +150,20 @@ fn winhttp_get_https(host: &str, path: &str) -> Option<String> {
         if h_sess.is_null() {
             return None;
         }
+        let _ = WinHttpSetTimeouts(h_sess, 5000, 6000, 6000, 7000);
         let whost = to_wide(host);
-        let h_conn = WinHttpConnect(h_sess, PCWSTR(whost.as_ptr()), 443, 0);
+        let h_conn = WinHttpConnect(h_sess, PCWSTR(whost.as_ptr()), port, 0);
         if h_conn.is_null() {
             let _ = WinHttpCloseHandle(h_sess);
             return None;
         }
         let verb = to_wide("GET");
         let wpath = to_wide(path);
+        let flags = if secure {
+            WINHTTP_FLAG_SECURE
+        } else {
+            windows::Win32::Networking::WinHttp::WINHTTP_OPEN_REQUEST_FLAGS(0)
+        };
         let h_req = WinHttpOpenRequest(
             h_conn,
             PCWSTR(verb.as_ptr()),
@@ -165,7 +171,7 @@ fn winhttp_get_https(host: &str, path: &str) -> Option<String> {
             PCWSTR::null(),
             PCWSTR::null(),
             std::ptr::null(),
-            WINHTTP_FLAG_SECURE,
+            flags,
         );
         if h_req.is_null() {
             let _ = WinHttpCloseHandle(h_conn);
@@ -206,23 +212,180 @@ fn winhttp_get_https(host: &str, path: &str) -> Option<String> {
     }
 }
 
-pub fn fetch_weather_blocking() -> WeatherInfo {
-    let mut info = WeatherInfo::default();
-    let path = "/v1/forecast?latitude=10.9685&longitude=-74.7813&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m&timezone=auto";
-    if let Some(body) = winhttp_get_https("api.open-meteo.com", path) {
+fn winhttp_get_https(host: &str, path: &str) -> Option<String> {
+    winhttp_get(host, 443, path, true)
+}
+
+fn url_encode_query(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.as_bytes() {
+        let c = *b as char;
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
+            out.push(c);
+        } else if c == ' ' {
+            out.push_str("%20");
+        } else {
+            out.push_str(&format!("%{:02X}", b));
+        }
+    }
+    out
+}
+
+fn parse_json_f64(val: &serde_json::Value, key: &str) -> Option<f64> {
+    let v = val.get(key)?;
+    if let Some(f) = v.as_f64() {
+        Some(f)
+    } else if let Some(s) = v.as_str() {
+        s.trim().parse::<f64>().ok()
+    } else {
+        None
+    }
+}
+
+pub fn geocode_city_debug(city_name: &str) -> Result<(String, f64, f64), String> {
+    let q = url_encode_query(city_name.trim());
+    let path = format!("/v1/search?name={}&count=1&language=es&format=json", q);
+    let body = winhttp_get_https("geocoding-api.open-meteo.com", &path)
+        .ok_or_else(|| format!("http_none path={}", path))?;
+    let val: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("json_err={} body={}", e, &body[..body.len().min(200)]))?;
+    let first = val
+        .get("results")
+        .and_then(|r| r.as_array())
+        .and_then(|a| a.first())
+        .ok_or_else(|| format!("no_results body={}", &body[..body.len().min(200)]))?;
+    let name = first.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let lat = parse_json_f64(first, "latitude").ok_or("no_lat")?;
+    let lon = parse_json_f64(first, "longitude").ok_or("no_lon")?;
+    if name.is_empty() || !lat.is_finite() || !lon.is_finite() {
+        return Err("invalid_fields".into());
+    }
+    Ok((name, lat, lon))
+}
+
+fn geocode_city(city_name: &str) -> Option<(String, f64, f64)> {
+    geocode_city_debug(city_name).ok()
+}
+
+fn detect_location_by_ip() -> Option<(String, f64, f64)> {
+    // Provider 1: ipwho.is (HTTPS, clean UTF-8 city names worldwide, no API key)
+    if let Some(body) = winhttp_get_https("ipwho.is", "/") {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+            if v.get("success").and_then(|x| x.as_bool()).unwrap_or(true) {
+                if let (Some(city), Some(lat), Some(lon)) = (
+                    v.get("city").and_then(|x| x.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+                    parse_json_f64(&v, "latitude"),
+                    parse_json_f64(&v, "longitude"),
+                ) {
+                    return Some((city, lat, lon));
+                }
+            }
+        }
+    }
+    // Provider 2: get.geojs.io (HTTPS, very fast, no strict rate limits)
+    if let Some(body) = winhttp_get_https("get.geojs.io", "/v1/ip/geo.json") {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+            if let (Some(city), Some(lat), Some(lon)) = (
+                v.get("city").and_then(|x| x.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+                parse_json_f64(&v, "latitude"),
+                parse_json_f64(&v, "longitude"),
+            ) {
+                return Some((city, lat, lon));
+            }
+        }
+    }
+    // Provider 3: ipapi.co (HTTPS)
+    if let Some(body) = winhttp_get_https("ipapi.co", "/json/") {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+            if let (Some(city), Some(lat), Some(lon)) = (
+                v.get("city").and_then(|x| x.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+                parse_json_f64(&v, "latitude"),
+                parse_json_f64(&v, "longitude"),
+            ) {
+                return Some((city, lat, lon));
+            }
+        }
+    }
+    // Provider 4: ip-api.com (HTTP fallback)
+    if let Some(body) = winhttp_get("ip-api.com", 80, "/json/?fields=status,city,lat,lon", false) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+            if v.get("status").and_then(|x| x.as_str()) == Some("success") {
+                if let (Some(city), Some(lat), Some(lon)) = (
+                    v.get("city").and_then(|x| x.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+                    parse_json_f64(&v, "lat"),
+                    parse_json_f64(&v, "lon"),
+                ) {
+                    return Some((city, lat, lon));
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn load_cached_weather() -> Option<WeatherInfo> {
+    let p = crate::models::app_data_dir().join("weather_cache.json");
+    let raw = std::fs::read_to_string(p).ok()?;
+    let w: WeatherInfo = serde_json::from_str(&raw).ok()?;
+    if w.loaded && !w.city.trim().is_empty() {
+        Some(w)
+    } else {
+        None
+    }
+}
+
+fn save_cached_weather(info: &WeatherInfo) {
+    if !info.loaded || info.city.trim().is_empty() {
+        return;
+    }
+    let dir = crate::models::app_data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(json) = serde_json::to_string_pretty(info) {
+        let _ = std::fs::write(dir.join("weather_cache.json"), json);
+    }
+}
+
+pub fn fetch_weather_for_city(override_city: &str) -> WeatherInfo {
+    let mut info = if override_city.trim().is_empty() {
+        load_cached_weather().unwrap_or_default()
+    } else {
+        WeatherInfo::default()
+    };
+    let loc = if !override_city.trim().is_empty() {
+        geocode_city(override_city).or_else(detect_location_by_ip)
+    } else {
+        detect_location_by_ip()
+    };
+
+    let Some((city, lat, lon)) = loc else {
+        return info;
+    };
+
+    let path = format!(
+        "/v1/forecast?latitude={:.4}&longitude={:.4}&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m&timezone=auto",
+        lat, lon
+    );
+    if let Some(body) = winhttp_get_https("api.open-meteo.com", &path) {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
             if let Some(cur) = val.get("current") {
-                info.temp_c = cur.get("temperature_2m").and_then(|v| v.as_f64()).unwrap_or(27.0).round() as i32;
+                info.city = city;
+                info.temp_c = cur.get("temperature_2m").and_then(|v| v.as_f64()).unwrap_or(20.0).round() as i32;
                 info.feels_like_c = cur.get("apparent_temperature").and_then(|v| v.as_f64()).unwrap_or(info.temp_c as f64).round() as i32;
-                info.humidity_pct = cur.get("relative_humidity_2m").and_then(|v| v.as_f64()).unwrap_or(75.0).round() as i32;
-                info.wind_kmh = cur.get("wind_speed_10m").and_then(|v| v.as_f64()).unwrap_or(11.0).round() as i32;
+                info.humidity_pct = cur.get("relative_humidity_2m").and_then(|v| v.as_f64()).unwrap_or(65.0).round() as i32;
+                info.wind_kmh = cur.get("wind_speed_10m").and_then(|v| v.as_f64()).unwrap_or(10.0).round() as i32;
                 info.weather_code = cur.get("weather_code").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
                 info.condition = wmo_condition(info.weather_code).to_string();
                 info.loaded = true;
+                save_cached_weather(&info);
             }
         }
     }
     info
+}
+
+pub fn fetch_weather_blocking() -> WeatherInfo {
+    let settings = crate::models::load_settings();
+    fetch_weather_for_city(&settings.weather_city)
 }
 
 fn wmo_condition(code: i32) -> &'static str {

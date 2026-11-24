@@ -1,6 +1,6 @@
 [package]
 name = "aura_os"
-version = "4.4.0"
+version = "4.5.0"
 edition = "2021"
 
 [[bin]]
@@ -30,6 +30,10 @@ path = "src/bin/aura_lock.rs"
 [[bin]]
 name = "AuraSettings"
 path = "src/bin/aura_settings.rs"
+
+[[bin]]
+name = "AuraTasks"
+path = "src/bin/aura_tasks.rs"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -79,6 +83,7 @@ features = [
     "Win32_System_LibraryLoader",
     "Win32_System_DataExchange",
     "Win32_System_Shutdown",
+    "Win32_System_Services",
     "Win32_Networking_WinHttp",
     "Win32_Networking_WinSock",
     "Win32_NetworkManagement_IpHelper",

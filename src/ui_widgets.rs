@@ -170,9 +170,13 @@ fn render_clock_widget(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32) 
         theme::rgba(235, 236, 248, 0.88),
     );
 
-    let pill = Rect::new((w - 224.0) * 0.5, 132.0, 224.0, 28.0);
+    let pill = Rect::new((w - 270.0) * 0.5, 132.0, 270.0, 28.0);
     ctx.fill_card(pill, 14.0, theme::rgba(18, 18, 28, 0.80), theme::rgba(124, 92, 255, 0.30));
-    let w_txt = format!("{}°C  ·  {}  ·  {}", state.weather.temp_c, state.weather.condition, state.weather.city);
+    let w_txt = if state.weather.loaded && !state.weather.city.is_empty() {
+        format!("{}°C  ·  {}  ·  {}", state.weather.temp_c, state.weather.condition, state.weather.city)
+    } else {
+        "Detectando ubicación y clima...".to_string()
+    };
     ctx.draw_text_center(&w_txt, pill, TextStyle::Body11Med, theme::TEXT_PRIMARY);
 }
 
@@ -362,9 +366,19 @@ fn render_weather_widget(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32
         if state.weather.weather_code <= 1 { theme::AMBER } else { theme::TEXT_PRIMARY },
     );
 
+    let city_lbl = if state.weather.loaded && !state.weather.city.is_empty() {
+        state.weather.city.as_str()
+    } else {
+        "Ubicando..."
+    };
+    let temp_lbl = if state.weather.loaded {
+        format!("{}°", state.weather.temp_c)
+    } else {
+        "--°".to_string()
+    };
     ctx.draw_text("CLIMA EN VIVO", Rect::new(card.x + 64.0, card.y + 33.0, 120.0, 14.0), TextStyle::Small9Reg, theme::rgba(240, 235, 255, 0.85));
-    ctx.draw_text(&state.weather.city, Rect::new(card.x + 64.0, card.y + 48.0, 140.0, 20.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
-    ctx.draw_text_right(&format!("{}°", state.weather.temp_c), Rect::new(card.x + card.w - 84.0, card.y + 28.0, 68.0, 44.0), TextStyle::HeroTemp34Bold, theme::TEXT_PRIMARY);
+    ctx.draw_text(city_lbl, Rect::new(card.x + 64.0, card.y + 48.0, 140.0, 20.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
+    ctx.draw_text_right(&temp_lbl, Rect::new(card.x + card.w - 84.0, card.y + 28.0, 68.0, 44.0), TextStyle::HeroTemp34Bold, theme::TEXT_PRIMARY);
 
     let pw = (card.w - 44.0) / 3.0;
     let pills = [

@@ -5,7 +5,7 @@ use crate::theme::{self, VectorIcon};
 use crate::ui_state::{Action, AppState, HitRegion};
 
 pub const POWER_MENU_W: f32 = 256.0;
-pub const POWER_MENU_H: f32 = 294.0;
+pub const POWER_MENU_H: f32 = 338.0;
 
 pub fn render_power_menu(ctx: &mut DrawCtx<'_>, state: &AppState, hits: &mut Vec<HitRegion>) {
     hits.clear();
@@ -54,7 +54,8 @@ pub fn render_power_menu(ctx: &mut DrawCtx<'_>, state: &AppState, hits: &mut Vec
     ctx.draw_text("ENERGÍA DEL SISTEMA", Rect::new(72.0, 17.0, 160.0, 18.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
 
     let mut y = 42.0;
-    let rows: [(&str, &str, &str, VectorIcon, windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F, Action); 5] = [
+    let rows: [(&str, &str, &str, VectorIcon, windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F, Action); 6] = [
+        ("pwr_tasks", "Administrador de Tareas", "AuraTasks nativo (Ctrl+Shift+Esc)", VectorIcon::Sparkle, theme::EMERALD, Action::LaunchAuraTasks),
         ("pwr_sleep", "Suspender", "Ahorro rápido de energía", VectorIcon::Sleep, theme::VIOLET, Action::PowerSleep),
         ("pwr_lock", "Bloquear con AuraLock", "Pantalla de bloqueo Aura (Ctrl+Alt+L)", VectorIcon::Lock, theme::BLUE, Action::LaunchAuraLock),
         (
@@ -77,7 +78,7 @@ pub fn render_power_menu(ctx: &mut DrawCtx<'_>, state: &AppState, hits: &mut Vec
     ];
 
     for (idx, (id, title, sub, icon, accent, action)) in rows.into_iter().enumerate() {
-        if idx == 4 {
+        if idx == 5 {
             ctx.draw_line(22.0, y + 2.0, POWER_MENU_W - 22.0, y + 2.0, theme::BORDER, 1.0);
             y += 10.0;
         }
