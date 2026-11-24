@@ -23,6 +23,8 @@ pub const SHORTCUT_TASKS: usize = 2;
 pub const SHORTCUT_FILES: usize = 3;
 pub const SHORTCUT_SETTINGS: usize = 4;
 pub const SHORTCUT_OVERVIEW: usize = 5;
+pub const SHORTCUT_CLIPBOARD: usize = 6;
+pub const SHORTCUT_SCREENSHOT: usize = 7;
 
 static HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
 static TARGET_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -139,6 +141,12 @@ unsafe extern "system" fn ll_keyboard_proc(code: i32, wparam: WPARAM, lparam: LP
         }
     }
 
+    // 1B. PrintScreen (VK_SNAPSHOT = 0x2C) -> Launch AuraShot.exe (<25ms Screen Snipping Studio!)
+    if is_down && vk == 0x2C && !FULLSCREEN_BYPASS.load(Ordering::Relaxed) {
+        post_shortcut(SHORTCUT_SCREENSHOT);
+        return LRESULT(1);
+    }
+
     // Bypass Win-key interception while a fullscreen game is active
     if FULLSCREEN_BYPASS.load(Ordering::Relaxed) {
         if vk == VK_LWIN.0 || vk == VK_RWIN.0 {
@@ -187,6 +195,18 @@ unsafe extern "system" fn ll_keyboard_proc(code: i32, wparam: WPARAM, lparam: LP
                     post_shortcut(SHORTCUT_OVERVIEW);
                     return LRESULT(1);
                 }
+                if vk == b'V' as u16 {
+                    WIN_COMBO_USED.store(true, Ordering::SeqCst);
+                    suppress_start_menu_mask();
+                    post_shortcut(SHORTCUT_CLIPBOARD);
+                    return LRESULT(1);
+                }
+            } else if is_vk_down(VK_SHIFT) && !is_vk_down(VK_CONTROL) && !is_vk_down(VK_MENU) && vk == b'S' as u16 {
+                // Win + Shift + S -> AuraShot.exe!
+                WIN_COMBO_USED.store(true, Ordering::SeqCst);
+                suppress_start_menu_mask();
+                post_shortcut(SHORTCUT_SCREENSHOT);
+                return LRESULT(1);
             }
             // Any other Win+<key> (Win+Arrows, Win+D, Win+Shift+S, Win+V, Win+Tab, Win+R, Win+L):
             // mark combo used and pass straight through to Windows 100% natively!

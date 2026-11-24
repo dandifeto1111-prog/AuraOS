@@ -1,6 +1,6 @@
 [package]
 name = "aura_os"
-version = "4.5.0"
+version = "5.0.0"
 edition = "2021"
 
 [[bin]]
@@ -35,6 +35,18 @@ path = "src/bin/aura_settings.rs"
 name = "AuraTasks"
 path = "src/bin/aura_tasks.rs"
 
+[[bin]]
+name = "AuraPDF"
+path = "src/bin/aura_pdf.rs"
+
+[[bin]]
+name = "AuraShot"
+path = "src/bin/aura_shot.rs"
+
+[[bin]]
+name = "AuraAgent"
+path = "src/bin/aura_agent.rs"
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -48,6 +60,9 @@ features = [
     "Foundation_Collections",
     "Foundation_Numerics",
     "Devices_Radios",
+    "Data_Pdf",
+    "Storage",
+    "Storage_Streams",
     "Media_Control",
     "Win32_Foundation",
     "Win32_Media_MediaFoundation",

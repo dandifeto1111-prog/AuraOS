@@ -30,9 +30,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
-    FileOpenDialog, IFileOpenDialog, IShellLinkW, SHAppBarMessage, ShellExecuteW, ShellLink,
-    ABM_GETSTATE, ABM_NEW, ABM_QUERYPOS, ABM_REMOVE, ABM_SETPOS, ABM_SETSTATE, ABS_AUTOHIDE,
-    ABE_TOP, APPBARDATA, FOS_FILEMUSTEXIST, FOS_NOCHANGEDIR, SIGDN_FILESYSPATH,
+    FileOpenDialog, FileSaveDialog, IFileOpenDialog, IFileSaveDialog, IShellLinkW, SHAppBarMessage,
+    ShellExecuteW, ShellLink, ABM_GETSTATE, ABM_NEW, ABM_QUERYPOS, ABM_REMOVE, ABM_SETPOS,
+    ABM_SETSTATE, ABS_AUTOHIDE, ABE_TOP, APPBARDATA, FOS_FILEMUSTEXIST, FOS_NOCHANGEDIR,
+    FOS_OVERWRITEPROMPT, SIGDN_FILESYSPATH,
 };
 use windows::Win32::System::Shutdown::LockWorkStation;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -1016,6 +1017,203 @@ pub fn pick_file_dialog(title: &str, filter_label: &str, filter_spec: &str) -> O
     }
 }
 
+/// Native Windows 11 File Save Dialog (used by AuraPDF, AuraPhotos Studio & AuraShot!)
+pub fn save_file_dialog(
+    title: &str,
+    filter_label: &str,
+    filter_spec: &str,
+    default_ext: &str,
+    default_name: &str,
+) -> Option<String> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let dialog: IFileSaveDialog = CoCreateInstance(&FileSaveDialog, None, CLSCTX_ALL).ok()?;
+        let w_title = to_wide(title);
+        let _ = dialog.SetTitle(PCWSTR(w_title.as_ptr()));
+        let w_label = to_wide(filter_label);
+        let w_spec = to_wide(filter_spec);
+        let specs = [COMDLG_FILTERSPEC {
+            pszName: PCWSTR(w_label.as_ptr()),
+            pszSpec: PCWSTR(w_spec.as_ptr()),
+        }];
+        let _ = dialog.SetFileTypes(&specs);
+        let w_ext = to_wide(default_ext);
+        let _ = dialog.SetDefaultExtension(PCWSTR(w_ext.as_ptr()));
+        let w_name = to_wide(default_name);
+        let _ = dialog.SetFileName(PCWSTR(w_name.as_ptr()));
+        if let Ok(opts) = dialog.GetOptions() {
+            let _ = dialog.SetOptions(opts | FOS_OVERWRITEPROMPT | FOS_NOCHANGEDIR);
+        }
+        dialog.Show(HWND::default()).ok()?;
+        let item = dialog.GetResult().ok()?;
+        let pwstr: PWSTR = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = pwstr.to_string().ok();
+        windows::Win32::System::Com::CoTaskMemFree(Some(pwstr.0 as *const _));
+        path
+    }
+}
+
+/// Copies UTF-8 text into the native Win32 Clipboard (`CF_UNICODETEXT`).
+pub fn copy_text_to_clipboard(text: &str) -> bool {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GlobalAlloc(uFlags: u32, dwBytes: usize) -> *mut core::ffi::c_void;
+        fn GlobalLock(hMem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+        fn GlobalUnlock(hMem: *mut core::ffi::c_void) -> i32;
+    }
+    const GMEM_MOVEABLE: u32 = 0x0002;
+    const CF_UNICODETEXT: u32 = 13;
+
+    let wide = to_wide(text);
+    let byte_len = wide.len() * 2;
+    unsafe {
+        if OpenClipboard(HWND::default()).is_err() {
+            return false;
+        }
+        let _ = EmptyClipboard();
+        let hmem = GlobalAlloc(GMEM_MOVEABLE, byte_len);
+        if hmem.is_null() {
+            let _ = CloseClipboard();
+            return false;
+        }
+        let dst = GlobalLock(hmem);
+        if dst.is_null() {
+            let _ = CloseClipboard();
+            return false;
+        }
+        std::ptr::copy_nonoverlapping(wide.as_ptr() as *const u8, dst as *mut u8, byte_len);
+        GlobalUnlock(hmem);
+        let ok = SetClipboardData(CF_UNICODETEXT, HANDLE(hmem)).is_ok();
+        let _ = CloseClipboard();
+        ok
+    }
+}
+
+/// Reads current UTF-8 text from Win32 Clipboard (`CF_UNICODETEXT`), if present.
+pub fn read_clipboard_text() -> Option<String> {
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+    };
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GlobalLock(hMem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+        fn GlobalUnlock(hMem: *mut core::ffi::c_void) -> i32;
+    }
+    const CF_UNICODETEXT: u32 = 13;
+    unsafe {
+        if IsClipboardFormatAvailable(CF_UNICODETEXT).is_err() {
+            return None;
+        }
+        if OpenClipboard(HWND::default()).is_err() {
+            return None;
+        }
+        let res = if let Ok(h) = GetClipboardData(CF_UNICODETEXT) {
+            let ptr = GlobalLock(h.0) as *const u16;
+            if !ptr.is_null() {
+                let mut len = 0usize;
+                while len < 65536 && *ptr.add(len) != 0 {
+                    len += 1;
+                }
+                let s = String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len));
+                GlobalUnlock(h.0);
+                Some(s)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let _ = CloseClipboard();
+        res.filter(|s| !s.trim().is_empty())
+    }
+}
+
+/// Copies a 32-bit BGRA image buffer directly into the Win32 Clipboard (`CF_DIB`) for 1-click paste!
+pub fn copy_bgra_to_clipboard(width: u32, height: u32, bgra: &[u8]) -> bool {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Graphics::Gdi::{BITMAPINFOHEADER, BI_RGB};
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GlobalAlloc(uFlags: u32, dwBytes: usize) -> *mut core::ffi::c_void;
+        fn GlobalLock(hMem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+        fn GlobalUnlock(hMem: *mut core::ffi::c_void) -> i32;
+    }
+    const GMEM_MOVEABLE: u32 = 0x0002;
+    const CF_DIB: u32 = 8;
+
+    if width == 0 || height == 0 || bgra.len() < (width as usize * height as usize * 4) {
+        return false;
+    }
+    let hdr_sz = std::mem::size_of::<BITMAPINFOHEADER>();
+    let px_bytes = width as usize * height as usize * 4;
+    let total = hdr_sz + px_bytes;
+
+    let hdr = BITMAPINFOHEADER {
+        biSize: hdr_sz as u32,
+        biWidth: width as i32,
+        biHeight: height as i32, // bottom-up DIB for maximum compatibility across Discord/Paint/Browsers!
+        biPlanes: 1,
+        biBitCount: 32,
+        biCompression: BI_RGB.0,
+        biSizeImage: px_bytes as u32,
+        ..Default::default()
+    };
+
+    unsafe {
+        if OpenClipboard(HWND::default()).is_err() {
+            return false;
+        }
+        let _ = EmptyClipboard();
+        let hmem = GlobalAlloc(GMEM_MOVEABLE, total);
+        if hmem.is_null() {
+            let _ = CloseClipboard();
+            return false;
+        }
+        let dst = GlobalLock(hmem) as *mut u8;
+        if dst.is_null() {
+            let _ = CloseClipboard();
+            return false;
+        }
+        std::ptr::copy_nonoverlapping(&hdr as *const _ as *const u8, dst, hdr_sz);
+        let row_bytes = width as usize * 4;
+        for y in 0..height as usize {
+            let src_row = &bgra[(height as usize - 1 - y) * row_bytes..(height as usize - y) * row_bytes];
+            std::ptr::copy_nonoverlapping(src_row.as_ptr(), dst.add(hdr_sz + y * row_bytes), row_bytes);
+        }
+        GlobalUnlock(hmem);
+        let ok = SetClipboardData(CF_DIB, HANDLE(hmem)).is_ok();
+        let _ = CloseClipboard();
+        ok
+    }
+}
+
+pub fn is_pdf_ext(ext: &str) -> bool {
+    ext.eq_ignore_ascii_case("pdf")
+}
+
+pub fn launch_aura_pdf(file: Option<&str>) {
+    if !launch_aura_app("AuraPDF.exe", file) {
+        if let Some(f) = file {
+            launch_target(f, "");
+        }
+    }
+}
+
+pub fn launch_aura_shot() {
+    let _ = launch_aura_app("AuraShot.exe", None);
+}
+
+pub fn launch_aura_agent(arg: Option<&str>) {
+    let _ = launch_aura_app("AuraAgent.exe", arg);
+}
+
 // ==================== AURAOS v4.0 NATIVE SUITE ROUTER ====================
 
 pub fn is_image_ext(ext: &str) -> bool {
@@ -1082,6 +1280,9 @@ pub fn launch_aura_app(exe_name: &str, file_arg: Option<&str>) -> bool {
 pub fn open_path_with_aura_suite(path: &Path) {
     let path_str = path.to_string_lossy().to_string();
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if is_pdf_ext(ext) && launch_aura_app("AuraPDF.exe", Some(&path_str)) {
+        return;
+    }
     if is_image_ext(ext) && launch_aura_app("AuraPhotos.exe", Some(&path_str)) {
         return;
     }

@@ -180,6 +180,7 @@ enum SetAct {
     TestAuraLock,
     // Startup & Apps
     RemoveStartupEntry(String),
+    UninstallProgram(String),
     LaunchSuiteExe(&'static str),
     LaunchApbOptimizer,
     // Updates
@@ -513,6 +514,7 @@ struct SettingsRuntime {
     wallpapers: Vec<WallpaperItem>,
     drives: Vec<DriveInfo>,
     startup_entries: Vec<StartupEntry>,
+    installed_programs: Vec<system::InstalledProgramEntry>,
     disp_w: u32,
     disp_h: u32,
     disp_hz: u32,
@@ -1056,9 +1058,14 @@ impl SettingsRuntime {
                     self.show_toast(format!("'{}' quitado del inicio de Windows", name), true);
                 }
             }
+            SetAct::UninstallProgram(cmd) => {
+                let _ = std::process::Command::new("cmd.exe")
+                    .args(["/C", &cmd])
+                    .spawn();
+                self.show_toast("Desinstalador iniciado en segundo plano", true);
+            }
             SetAct::LaunchSuiteExe(exe) => {
-                let p = app_data_dir().join(exe);
-                if p.exists() {
+                if let Some(p) = win32_shell::resolve_aura_app_path(exe) {
                     win32_shell::launch_target(&p.to_string_lossy(), "");
                 } else {
                     self.show_toast(format!("No se encontró {}", exe), false);
@@ -1117,6 +1124,7 @@ impl SettingsRuntime {
             wallpapers: &self.wallpapers,
             drives: &self.drives,
             startup_entries: &self.startup_entries,
+            installed_programs: &self.installed_programs,
             disp_w: self.disp_w,
             disp_h: self.disp_h,
             disp_hz: self.disp_hz,
@@ -1150,6 +1158,12 @@ impl SettingsRuntime {
         self.surf.draw(&mut self.gpu, |ctx| {
             render_settings_ui(ctx, &snap, &mut hits);
         });
+        let nodes: Vec<(String, String, f32, f32, f32, f32)> = hits
+            .iter()
+            .take(120)
+            .map(|h| (h.id.clone(), h.id.clone(), h.rect.x, h.rect.y, h.rect.w, h.rect.h))
+            .collect();
+        aura_os::agent_bridge::publish_ui_tree("AuraSettings", self.hwnd, &nodes);
         self.hits = hits;
     }
 }
@@ -1165,6 +1179,7 @@ struct SettingsSnap<'a> {
     wallpapers: &'a [WallpaperItem],
     drives: &'a [DriveInfo],
     startup_entries: &'a [StartupEntry],
+    installed_programs: &'a [system::InstalledProgramEntry],
     disp_w: u32,
     disp_h: u32,
     disp_hz: u32,
@@ -1255,7 +1270,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
 
     ctx.draw_text("Configuración de AuraOS", Rect::new(82.0, 0.0, 240.0, TOP_H), TextStyle::Title14Semi, theme::TEXT_PRIMARY);
     ctx.draw_text_right(
-        &format!("{} · {} · v4.5.0 Rust", s.username, s.hostname),
+        &format!("{} · {} · v5.0.0 Rust", s.username, s.hostname),
         Rect::new(w - 340.0, 0.0, 322.0, TOP_H),
         TextStyle::Small10Med,
         theme::TEXT_TERTIARY,
@@ -1758,25 +1773,31 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             }
         }
         Tab::StartupAndApps => {
-            ctx.draw_text("SUITE NATIVA AURAOS (100% RUST)", Rect::new(cx, y, cw, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
+            ctx.draw_text("SUITE NATIVA AURAOS v5.0 (100% RUST + GPU)", Rect::new(cx, y, cw, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
             y += 22.0;
             let suite = [
                 ("st_af", "AuraFiles", "AuraFiles.exe"),
-                ("st_at", "AuraTasks", "AuraTasks.exe"),
-                ("st_ap", "AuraPhotos", "AuraPhotos.exe"),
+                ("st_pdf", "AuraPDF Studio", "AuraPDF.exe"),
+                ("st_ap", "AuraPhotos Studio", "AuraPhotos.exe"),
+                ("st_sh", "AuraShot Capturas", "AuraShot.exe"),
+                ("st_at", "AuraTasks Monitor", "AuraTasks.exe"),
                 ("st_av", "AuraPlayer", "AuraPlayer.exe"),
                 ("st_an", "AuraNotes", "AuraNotes.exe"),
                 ("st_al", "AuraLock", "AuraLock.exe"),
+                ("st_ai", "AuraAgent Test IA", "AuraAgent.exe"),
             ];
-            let sw = (cw - 40.0) / 5.0;
+            let cols = 3usize;
+            let sw = (cw - 20.0) / cols as f32;
             for (i, (id, lbl, exe)) in suite.into_iter().enumerate() {
-                let r = Rect::new(cx + i as f32 * (sw + 10.0), y, sw, 42.0);
+                let col_i = (i % cols) as f32;
+                let row_i = (i / cols) as f32;
+                let r = Rect::new(cx + col_i * (sw + 10.0), y + row_i * 46.0, sw, 38.0);
                 let hov = s.hovered == Some(id);
-                ctx.fill_card(r, 12.0, if hov { theme::VIOLET } else { theme::CARD_BG }, theme::VIOLET_BORDER);
+                ctx.fill_card(r, 11.0, if hov { theme::VIOLET } else { theme::CARD_BG }, theme::VIOLET_BORDER);
                 ctx.draw_text_center(lbl, r, TextStyle::Body11Med, theme::TEXT_PRIMARY);
                 hits.push(Hit { id: id.into(), rect: r, act: SetAct::LaunchSuiteExe(exe), slider: None });
             }
-            y += 58.0;
+            y += 3.0 * 46.0 + 10.0;
 
             let apb_r = Rect::new(cx, y, cw, 46.0);
             ctx.fill_card(apb_r, 13.0, theme::VIOLET_TINT, theme::VIOLET_LIGHT);
@@ -1784,31 +1805,69 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             ctx.draw_text("Reduce servicios innecesarios y mejora latencia en juegos", Rect::new(apb_r.x + 14.0, apb_r.y + 24.0, apb_r.w - 130.0, 15.0), TextStyle::Small9Reg, theme::TEXT_SECONDARY);
             ctx.draw_text_right("Ejecutar →", Rect::new(apb_r.x + apb_r.w - 108.0, apb_r.y, 92.0, 46.0), TextStyle::Body11Med, theme::VIOLET_LIGHT);
             hits.push(Hit { id: "st_apb".into(), rect: apb_r, act: SetAct::LaunchApbOptimizer, slider: None });
-            y += 62.0;
+            y += 60.0;
 
             ctx.draw_text("APLICACIONES AL INICIO DE WINDOWS (HKCU\\Run)", Rect::new(cx, y, cw, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
             y += 22.0;
             for (i, entry) in s.startup_entries.iter().enumerate() {
-                let er = Rect::new(cx, y, cw, 46.0);
+                let er = Rect::new(cx, y, cw, 44.0);
                 ctx.fill_card(er, 12.0, theme::CARD_BG, theme::BORDER);
-                ctx.draw_text(&entry.name, Rect::new(er.x + 14.0, er.y + 6.0, er.w - 120.0, 18.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
-                ctx.draw_text(&entry.cmd, Rect::new(er.x + 14.0, er.y + 24.0, er.w - 120.0, 15.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
+                ctx.draw_text(&entry.name, Rect::new(er.x + 14.0, er.y + 5.0, er.w - 120.0, 18.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
+                ctx.draw_text(&entry.cmd, Rect::new(er.x + 14.0, er.y + 23.0, er.w - 120.0, 15.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
                 if !entry.name.eq_ignore_ascii_case("AuraShell") {
-                    let rm = Rect::new(er.x + er.w - 92.0, er.y + 10.0, 80.0, 26.0);
+                    let rm = Rect::new(er.x + er.w - 92.0, er.y + 9.0, 80.0, 26.0);
                     ctx.fill_rrect(rm, 8.0, theme::CORAL_BG);
                     ctx.draw_text_center("Quitar", rm, TextStyle::Small10Bold, theme::CORAL);
                     hits.push(Hit { id: format!("rm_run_{}", i), rect: rm, act: SetAct::RemoveStartupEntry(entry.name.clone()), slider: None });
                 } else {
-                    ctx.draw_text_right("Activo ✓", Rect::new(er.x + er.w - 92.0, er.y, 78.0, 46.0), TextStyle::Small10Bold, theme::EMERALD);
+                    ctx.draw_text_right("Activo ✓", Rect::new(er.x + er.w - 92.0, er.y, 78.0, 44.0), TextStyle::Small10Bold, theme::EMERALD);
                 }
+                y += 50.0;
+            }
+            y += 12.0;
+
+            // Fast Native Installed Windows Programs Uninstaller (replaces slow `appwiz.cpl`!)
+            ctx.draw_text(
+                &format!("PROGRAMAS INSTALADOS EN WINDOWS ({} DETECTADOS · DESINSTALADOR RÁPIDO)", s.installed_programs.len()),
+                Rect::new(cx, y, cw, 16.0),
+                TextStyle::Small10Bold,
+                theme::TEXT_TERTIARY,
+            );
+            y += 22.0;
+            for (pi, prog) in s.installed_programs.iter().take(45).enumerate() {
+                let pr = Rect::new(cx, y, cw, 46.0);
+                ctx.fill_card(pr, 12.0, theme::CARD_BG, theme::BORDER);
+                let ic_r = Rect::new(pr.x + 10.0, pr.y + 11.0, 24.0, 24.0);
+                if prog.icon_path.is_empty() || !ctx.draw_app_icon(&prog.icon_path, ic_r) {
+                    ctx.draw_vector_icon(VectorIcon::AppGrid, ic_r.x + 12.0, ic_r.y + 12.0, 13.0, theme::VIOLET_LIGHT);
+                }
+                ctx.draw_text(&prog.name, Rect::new(pr.x + 42.0, pr.y + 6.0, pr.w - 180.0, 18.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
+                let sub = format!(
+                    "{}{}{}",
+                    if prog.publisher.is_empty() { "Aplicación Windows" } else { &prog.publisher },
+                    if prog.version.is_empty() { String::new() } else { format!(" · v{}", prog.version) },
+                    prog.size_mb.map(|m| format!(" · {:.1} MB", m)).unwrap_or_default()
+                );
+                ctx.draw_text(&sub, Rect::new(pr.x + 42.0, pr.y + 24.0, pr.w - 180.0, 15.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
+
+                let ub = Rect::new(pr.x + pr.w - 108.0, pr.y + 9.0, 96.0, 28.0);
+                let uhov = s.hovered == Some(&format!("uninst_{}", pi));
+                ctx.fill_card(ub, 8.0, if uhov { theme::CORAL } else { theme::CORAL_BG }, theme::CORAL);
+                ctx.draw_text_center("Desinstalar", ub, TextStyle::Small10Bold, if uhov { theme::DARK_INK } else { theme::CORAL });
+                hits.push(Hit {
+                    id: format!("uninst_{}", pi),
+                    rect: ub,
+                    act: SetAct::UninstallProgram(prog.uninstall_cmd.clone()),
+                    slider: None,
+                });
                 y += 52.0;
             }
         }
         Tab::Updates => {
             let uc = Rect::new(cx, y, cw, 92.0);
             ctx.fill_card(uc, 16.0, theme::SURFACE, theme::VIOLET_BORDER);
-            ctx.draw_text("AuraOS v4.3.0 (Suite Pure-Rust)", Rect::new(uc.x + 16.0, uc.y + 14.0, 360.0, 24.0), TextStyle::Title16Semi, theme::TEXT_PRIMARY);
-            ctx.draw_text("AuraShell · AuraSettings · AuraLock · AuraFiles · AuraPhotos · AuraPlayer · AuraNotes", Rect::new(uc.x + 16.0, uc.y + 42.0, cw - 32.0, 18.0), TextStyle::Body11Reg, theme::TEXT_SECONDARY);
+            ctx.draw_text("AuraOS v5.0.0 (Suite Completa IA + Productividad Rust)", Rect::new(uc.x + 16.0, uc.y + 14.0, 460.0, 24.0), TextStyle::Title16Semi, theme::TEXT_PRIMARY);
+            ctx.draw_text("AuraShell · AuraPDF · AuraPhotos · AuraShot · AuraTasks · AuraFiles · AuraAgent · AuraLock", Rect::new(uc.x + 16.0, uc.y + 42.0, cw - 32.0, 18.0), TextStyle::Body11Reg, theme::TEXT_SECONDARY);
             ctx.draw_text("Actualizaciones automáticas silenciosas compatibles con GitHub Releases y Discord", Rect::new(uc.x + 16.0, uc.y + 63.0, cw - 32.0, 16.0), TextStyle::Small10Med, theme::VIOLET_LIGHT);
             y += 108.0;
 
@@ -2085,6 +2144,7 @@ fn capture_settings_png(out_png: &Path, tab: Tab) {
     let wallpapers = wallpaper::scan_wallpapers(&custom);
     let drives = system::get_local_drives();
     let startup_entries = list_hkcu_run_entries();
+    let installed_programs = system::scan_installed_programs();
     let (dw, dh, dhz, drates) = get_display_info();
     let (ru, rt_gb, rp) = system::get_ram_stats();
     let (mv, mm) = audio::get_master_volume();
@@ -2105,6 +2165,7 @@ fn capture_settings_png(out_png: &Path, tab: Tab) {
         wallpapers: &wallpapers,
         drives: &drives,
         startup_entries: &startup_entries,
+        installed_programs: &installed_programs,
         disp_w: dw,
         disp_h: dh,
         disp_hz: dhz,
@@ -2213,6 +2274,7 @@ fn main() {
     gpu.prewarm_images(wallpapers.iter().filter_map(|wp| wp.preview_path.clone()));
     let drives = system::get_local_drives();
     let startup_entries = list_hkcu_run_entries();
+    let installed_programs = system::scan_installed_programs();
     let (disp_w, disp_h, disp_hz, disp_rates) = get_display_info();
     let (ram_used, ram_total, ram_pct) = system::get_ram_stats();
     let win_dark_mode = read_hkcu_dword(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "AppsUseLightTheme", 0) == 0;
@@ -2242,6 +2304,7 @@ fn main() {
         wallpapers,
         drives,
         startup_entries,
+        installed_programs,
         disp_w,
         disp_h,
         disp_hz,

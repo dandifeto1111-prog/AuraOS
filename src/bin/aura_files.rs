@@ -8,11 +8,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![allow(dead_code)]
 
+use aura_os::agent_bridge;
 use aura_os::aura_window::{self, SnapZone};
 use aura_os::disk_analyzer::{
     self, DiskTree, ScanHandle, ScanUpdate, TreemapRender, EXT_PALETTE,
 };
 use aura_os::models::{app_data_dir, DriveInfo};
+use aura_os::pdf_engine::{self, RenderedPdfPage};
 use aura_os::renderer::{DrawCtx, GpuEngine, Rect, TextStyle, WindowSurface};
 use aura_os::system::get_local_drives;
 use aura_os::theme::{self, VectorIcon};
@@ -123,6 +125,9 @@ enum FileAction {
     AnalyzerToggleExtFilter(String),
     AnalyzerOpenParent(String),
     AnalyzerDeleteNode(usize),
+    OpenInAuraPdf(String),
+    OpenInAuraPhotos(String),
+    ToggleQuickLook,
     FocusSearch,
     ClearSearch,
 }
@@ -210,11 +215,27 @@ struct FilesRuntime {
     maximized: bool,
     width: f32,
     height: f32,
+    quicklook_open: bool,
     analyzer: AnalyzerState,
 }
 
 thread_local! {
     static FILES_RT: RefCell<Option<FilesRuntime>> = RefCell::new(None);
+    static PDF_QL_CACHE: RefCell<Option<(String, Option<RenderedPdfPage>)>> = const { RefCell::new(None) };
+}
+
+fn get_cached_pdf_preview(path: &str) -> Option<RenderedPdfPage> {
+    PDF_QL_CACHE.with(|c| {
+        let mut guard = c.borrow_mut();
+        if let Some((ref k, ref rp)) = *guard {
+            if k == path {
+                return rp.clone();
+            }
+        }
+        let rendered = pdf_engine::render_pdf_page_bgra(Path::new(path), 0, 720);
+        *guard = Some((path.to_string(), rendered.clone()));
+        rendered
+    })
 }
 
 fn main() {
@@ -334,6 +355,7 @@ fn run_aurafiles(start_dir: PathBuf) -> windows::core::Result<()> {
         maximized: false,
         width: w as f32,
         height: h as f32,
+        quicklook_open: false,
         analyzer: AnalyzerState::default(),
     };
 
@@ -1024,6 +1046,16 @@ impl FilesRuntime {
                 }
                 self.redraw();
             }
+            FileAction::OpenInAuraPdf(path) => {
+                aura_os::win32_shell::launch_aura_pdf(Some(&path));
+            }
+            FileAction::OpenInAuraPhotos(path) => {
+                let _ = aura_os::win32_shell::launch_aura_app("AuraPhotos.exe", Some(&path));
+            }
+            FileAction::ToggleQuickLook => {
+                self.quicklook_open = !self.quicklook_open;
+                self.redraw();
+            }
             FileAction::ClearSearch => {
                 self.search.clear();
                 self.search_entries.clear();
@@ -1060,11 +1092,18 @@ impl FilesRuntime {
             sort_asc: self.sort_asc,
             hovered: self.hovered.as_deref(),
             toast: self.toast.as_ref().map(|(s, ok, _)| (s.as_str(), *ok)),
+            quicklook_open: self.quicklook_open,
             analyzer: &self.analyzer,
         };
         self.surf.draw(&mut self.gpu, |ctx| {
             tm_rect = render_files_ui(ctx, &snap, w, h, &mut hits);
         });
+        let raw_nodes: Vec<(String, String, f32, f32, f32, f32)> = hits
+            .iter()
+            .take(120)
+            .map(|h| (h.id.clone(), h.id.clone(), h.rect.x, h.rect.y, h.rect.w, h.rect.h))
+            .collect();
+        agent_bridge::publish_ui_tree("AuraFiles", self.hwnd, &raw_nodes);
         self.hits = hits;
         self.analyzer.treemap_rect = tm_rect;
     }
@@ -1084,6 +1123,7 @@ struct RenderSnap<'a> {
     sort_asc: bool,
     hovered: Option<&'a str>,
     toast: Option<(&'a str, bool)>,
+    quicklook_open: bool,
     analyzer: &'a AnalyzerState,
 }
 
@@ -1397,9 +1437,9 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
 
     // Status bar
     let status_txt = if !s.search.trim().is_empty() {
-        format!("{} coincidencias (incl. subcarpetas) · AuraFiles v4.4 Rust", total_rows)
+        format!("{} coincidencias (incl. subcarpetas) · AuraFiles v5.0 Rust", total_rows)
     } else {
-        format!("{} elementos · AuraFiles v4.4 Rust", total_rows)
+        format!("{} elementos · AuraFiles v5.0 Rust", total_rows)
     };
     ctx.draw_text(&status_txt, Rect::new(main_x + 14.0, h - 24.0, 380.0, 18.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
     } // end normal explorer mode
@@ -1418,31 +1458,70 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
             let iw = insp_w - 28.0;
             let ilx = ix + 14.0;
 
-            // Preview card (real image preview for png/jpg/webp/bmp!)
-            let pv = Rect::new(ilx, iy, iw, 150.0);
+            // Preview card (real image preview + real native PDF Page-1 preview!)
+            let pv = Rect::new(ilx, iy, iw, 156.0);
             ctx.fill_card(pv, 16.0, theme::CARD_BG, theme::BORDER);
             let is_img = matches!(e.ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp" | "ico");
-            let mut drew_img = false;
+            let is_pdf = e.ext == "pdf";
+            let mut drew_preview = false;
+            let mut pdf_pages_cnt: Option<u32> = None;
+
             if is_img {
                 ctx.push_clip(pv.inset(8.0, 8.0));
-                drew_img = ctx.draw_image_file_contain(&e.path, pv.inset(10.0, 10.0), 1.0);
+                drew_preview = ctx.draw_image_file_contain(&e.path, pv.inset(10.0, 10.0), 1.0);
                 ctx.pop_clip();
-            }
-            if !drew_img {
-                let ic_r = Rect::new(pv.x + (pv.w - 64.0) * 0.5, pv.y + 42.0, 64.0, 64.0);
-                if !ctx.draw_app_icon(&e.path, ic_r) {
-                    ctx.draw_vector_icon(VectorIcon::Folder, pv.x + pv.w * 0.5, pv.y + 75.0, 36.0, theme::VIOLET_LIGHT);
+            } else if is_pdf {
+                if let Some(rp) = get_cached_pdf_preview(&e.path) {
+                    pdf_pages_cnt = Some(rp.page_count);
+                    let box_r = pv.inset(10.0, 10.0);
+                    let ar = rp.width.max(1) as f32 / rp.height.max(1) as f32;
+                    let (dw, dh) = if box_r.w / box_r.h > ar {
+                        (box_r.h * ar, box_r.h)
+                    } else {
+                        (box_r.w, box_r.w / ar)
+                    };
+                    let dst = Rect::new(box_r.x + (box_r.w - dw) * 0.5, box_r.y + (box_r.h - dh) * 0.5, dw, dh);
+                    ctx.draw_bgra_live("ql_pdf_insp", rp.width, rp.height, &rp.bgra, dst);
+                    drew_preview = true;
                 }
             }
-            iy += 162.0;
+
+            if !drew_preview {
+                let ic_r = Rect::new(pv.x + (pv.w - 64.0) * 0.5, pv.y + 44.0, 64.0, 64.0);
+                if !ctx.draw_app_icon(&e.path, ic_r) {
+                    ctx.draw_vector_icon(
+                        if is_pdf { VectorIcon::FileText } else { VectorIcon::Folder },
+                        pv.x + pv.w * 0.5,
+                        pv.y + 78.0,
+                        36.0,
+                        if is_pdf { theme::CORAL } else { theme::VIOLET_LIGHT },
+                    );
+                }
+            }
+            hits.push(Hit {
+                id: "ql_card_toggle".into(),
+                rect: pv,
+                action: FileAction::ToggleQuickLook,
+                dbl_action: None,
+            });
+            iy += 166.0;
 
             ctx.draw_text(&e.name, Rect::new(ilx, iy, iw, 22.0), TextStyle::Title14Semi, theme::TEXT_PRIMARY);
             iy += 22.0;
-            let meta_s = format!(
-                "{} · {}",
-                if e.is_dir { "Carpeta".to_string() } else { e.ext.to_uppercase() },
-                e.size_bytes.map(format_size).unwrap_or_else(|| "Calculando...".into())
-            );
+            let meta_s = if let Some(pc) = pdf_pages_cnt {
+                format!(
+                    "PDF · {} pág{} · {}",
+                    pc,
+                    if pc == 1 { "" } else { "s" },
+                    e.size_bytes.map(format_size).unwrap_or_default()
+                )
+            } else {
+                format!(
+                    "{} · {}",
+                    if e.is_dir { "Carpeta".to_string() } else { e.ext.to_uppercase() },
+                    e.size_bytes.map(format_size).unwrap_or_else(|| "Calculando...".into())
+                )
+            };
             ctx.draw_text(&meta_s, Rect::new(ilx, iy, iw, 18.0), TextStyle::Small10Med, theme::VIOLET_LIGHT);
             iy += 26.0;
 
@@ -1475,10 +1554,16 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
             iy += 22.0;
 
             let mut acts: Vec<(&str, String, FileAction, bool)> = Vec::new();
-            if is_img {
-                acts.push(("qa_rembg", "Quitar fondo con IA (rembg)".into(), FileAction::QuickRemoveBg(e.path.clone()), true));
+            if is_pdf {
+                acts.push(("qa_pdf", "Abrir y editar en AuraPDF".into(), FileAction::OpenInAuraPdf(e.path.clone()), true));
+                acts.push(("qa_ql", "Vista rápida grande (Espacio)".into(), FileAction::ToggleQuickLook, false));
+            } else if is_img {
+                acts.push(("qa_edit_img", "Editar en AuraPhotos Studio".into(), FileAction::OpenInAuraPhotos(e.path.clone()), true));
+                acts.push(("qa_rembg", "Quitar fondo con IA (rembg)".into(), FileAction::QuickRemoveBg(e.path.clone()), false));
                 acts.push(("qa_rot", "Rotar imagen 90°".into(), FileAction::QuickRotate90(e.path.clone()), false));
                 acts.push(("qa_conv", if e.ext == "png" { "Convertir a JPG".into() } else { "Convertir a PNG".into() }, FileAction::QuickConvertImg(e.path.clone()), false));
+            } else if !e.is_dir {
+                acts.push(("qa_ql", "Vista rápida (Espacio)".into(), FileAction::ToggleQuickLook, true));
             }
             acts.push(("qa_zip", if e.ext == "zip" { "Extraer archivo ZIP".into() } else { "Comprimir en ZIP".into() }, FileAction::QuickZipOrUnzip(e.path.clone()), false));
             if !e.is_dir {
@@ -1515,6 +1600,61 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
             TextStyle::Body11Reg,
             theme::TEXT_TERTIARY,
         );
+    }
+
+    // macOS `Space` Quick Look Large Modal Overlay!
+    if s.quicklook_open {
+        if let Some(vis_i) = s.tabs[s.active_tab].selected_idx {
+            if let Some(&real_i) = s.filtered.get(vis_i) {
+                let e = &s.entries[real_i];
+                ctx.fill_rrect(win_r, corner_r, theme::rgba(8, 8, 14, 0.76));
+                let mw = (w * 0.72).clamp(520.0, 960.0);
+                let mh = (h * 0.78).clamp(400.0, 720.0);
+                let modal = Rect::new((w - mw) * 0.5, (h - mh) * 0.5, mw, mh);
+                ctx.fill_card(modal, 20.0, theme::SURFACE, theme::VIOLET_LIGHT);
+
+                ctx.draw_text(
+                    &format!("Vista Rápida · {}", e.name),
+                    Rect::new(modal.x + 20.0, modal.y + 14.0, modal.w - 150.0, 24.0),
+                    TextStyle::Title14Semi,
+                    theme::CRISP_WHITE,
+                );
+                let close_r = Rect::new(modal.x + modal.w - 110.0, modal.y + 11.0, 94.0, 28.0);
+                ctx.fill_card(close_r, 9.0, theme::ELEVATED, theme::BORDER);
+                ctx.draw_text_center("Cerrar (Esc)", close_r, TextStyle::Body11Med, theme::TEXT_PRIMARY);
+                hits.push(Hit { id: "ql_close".into(), rect: close_r, action: FileAction::ToggleQuickLook, dbl_action: None });
+
+                let body_ql = Rect::new(modal.x + 20.0, modal.y + 48.0, modal.w - 40.0, modal.h - 68.0);
+                ctx.fill_card(body_ql, 14.0, theme::CARD_BG, theme::BORDER);
+                let inner_ql = body_ql.inset(14.0, 14.0);
+                if matches!(e.ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp" | "ico") {
+                    let _ = ctx.draw_image_file_contain(&e.path, inner_ql, 1.0);
+                } else if e.ext == "pdf" {
+                    if let Some(rp) = get_cached_pdf_preview(&e.path) {
+                        let ar = rp.width.max(1) as f32 / rp.height.max(1) as f32;
+                        let (dw, dh) = if inner_ql.w / inner_ql.h > ar {
+                            (inner_ql.h * ar, inner_ql.h)
+                        } else {
+                            (inner_ql.w, inner_ql.w / ar)
+                        };
+                        let dst = Rect::new(inner_ql.x + (inner_ql.w - dw) * 0.5, inner_ql.y + (inner_ql.h - dh) * 0.5, dw, dh);
+                        ctx.draw_bgra_live("ql_pdf_modal", rp.width, rp.height, &rp.bgra, dst);
+                    }
+                } else if aura_os::win32_shell::is_text_code_ext(&e.ext) {
+                    if let Ok(raw) = std::fs::read_to_string(&e.path) {
+                        let preview_txt: String = raw.lines().take(26).collect::<Vec<_>>().join("\n");
+                        ctx.draw_text_wrap(&preview_txt, inner_ql, TextStyle::Mono11Med, theme::TEXT_PRIMARY);
+                    }
+                } else {
+                    ctx.draw_text_center(
+                        "Pulsa Enter para abrir con la aplicación nativa de AuraOS",
+                        inner_ql,
+                        TextStyle::Body12Med,
+                        theme::TEXT_SECONDARY,
+                    );
+                }
+            }
+        }
     }
 
     // Toast notification pill at bottom center
@@ -2188,6 +2328,10 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                 } else if ctrl && vk == 'W' as u16 {
                     let cur = rt.active_tab;
                     rt.execute(FileAction::CloseTab(cur));
+                } else if vk == VK_ESCAPE.0 && rt.quicklook_open {
+                    rt.execute(FileAction::ToggleQuickLook);
+                } else if vk == 0x20 && !rt.search_focused {
+                    rt.execute(FileAction::ToggleQuickLook);
                 } else if vk == VK_ESCAPE.0 && (!rt.search.is_empty() || rt.search_focused) {
                     rt.search_focused = false;
                     rt.execute(FileAction::ClearSearch);
@@ -2231,6 +2375,9 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                     return true;
                 }
                 if let Some(ch) = char::from_u32(wparam.0 as u32) {
+                    if ch == ' ' && !rt.search_focused {
+                        return true;
+                    }
                     if !ch.is_control() {
                         rt.search_focused = true;
                         rt.search.push(ch);
@@ -2300,6 +2447,7 @@ fn capture_aurafiles_png(out_png: &Path, dir: PathBuf, analyzer_mode: bool) {
         sort_asc: true,
         hovered: None,
         toast: None,
+        quicklook_open: false,
         analyzer: &analyzer,
     };
     let _ = gpu.render_to_png(1240, 760, out_png, |ctx| {

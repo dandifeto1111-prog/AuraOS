@@ -218,6 +218,9 @@ fn main() {
         "AuraSettings",
         "AuraLock",
         "AuraTasks",
+        "AuraPDF",
+        "AuraShot",
+        "AuraAgent",
     ];
 
     for bin in bins {

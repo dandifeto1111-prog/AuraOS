@@ -160,26 +160,40 @@ pub fn render_topbar(ctx: &mut DrawCtx<'_>, state: &AppState, width: f32, hits: 
         });
     }
 
-    // ==================== CENTER CLUSTER (Clock + Weather) ====================
+    // ==================== CENTER CLUSTER (Clock + Weather + Pomodoro -> AuraCalendar Flyout!) ====================
     let clock_str = format_top_clock();
-    let center_str = if state.weather.loaded && !state.weather.city.is_empty() {
-        format!("{}  ·  {}°C {}", clock_str, state.weather.temp_c, state.weather.city)
+    let pomo_suffix = if state.pomodoro_active {
+        format!(
+            "  ·  ⏱ {:02}:{:02}",
+            state.pomodoro_secs_left / 60,
+            state.pomodoro_secs_left % 60
+        )
     } else {
-        clock_str
+        String::new()
     };
-    let cw = 304.0;
+    let center_str = if state.weather.loaded && !state.weather.city.is_empty() {
+        format!(
+            "{}  ·  {}°C {}{}",
+            clock_str, state.weather.temp_c, state.weather.city, pomo_suffix
+        )
+    } else {
+        format!("{}{}", clock_str, pomo_suffix)
+    };
+    let cw = if state.pomodoro_active { 356.0 } else { 304.0 };
     let cx = (width - cw) * 0.5;
     let center_rect = Rect::new(cx, 4.0, cw, 26.0);
-    if state.hovered_id.as_deref() == Some("top_clock") {
+    if state.calendar_open {
+        ctx.fill_card(center_rect, 11.0, theme::VIOLET_TINT, theme::VIOLET_BORDER);
+    } else if state.hovered_id.as_deref() == Some("top_clock") {
         ctx.fill_rrect(center_rect, 11.0, theme::ELEVATED);
     }
     ctx.draw_text_center(&center_str, center_rect, TextStyle::Body12Semi, theme::TEXT_PRIMARY);
     hits.push(HitRegion {
         id: "top_clock".into(),
         rect: center_rect,
-        action: Action::ToggleOverview,
-        right_action: None,
-        tooltip: Some("Abrir Vista de Actividades".into()),
+        action: Action::ToggleCalendar,
+        right_action: Some(Action::ToggleOverview),
+        tooltip: Some("Calendario Mensual y Temporizador Pomodoro".into()),
         slider: None,
     });
 

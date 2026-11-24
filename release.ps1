@@ -36,13 +36,16 @@ New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
 
 $bundle = @(
     "AuraShell.exe", "AuraFiles.exe", "AuraPhotos.exe", "AuraPlayer.exe",
-    "AuraNotes.exe", "AuraLock.exe", "AuraSettings.exe", "AuraTasks.exe", "AuraShell-Setup.exe",
-    "AuraShell.ico", "AuraFiles.ico", "AuraShell_256.png", "AuraFiles_256.png",
+    "AuraNotes.exe", "AuraLock.exe", "AuraSettings.exe", "AuraTasks.exe",
+    "AuraPDF.exe", "AuraShot.exe", "AuraAgent.exe", "AuraShell-Setup.exe",
     "restore-windows.ps1", "APBOptimizer.ps1", "version.json"
 )
 foreach ($f in $bundle) {
     $fp = Join-Path $root $f
     if (Test-Path $fp) { Copy-Item $fp (Join-Path $pkgDir $f) -Force }
+}
+Get-ChildItem $root -File | Where-Object { $_.Extension -in ".ico", ".png" -and $_.Name -like "Aura*" } | ForEach-Object {
+    Copy-Item $_.FullName (Join-Path $pkgDir $_.Name) -Force
 }
 
 $zipName = "AuraOS-$tag-Windows-x64.zip"

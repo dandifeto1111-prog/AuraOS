@@ -65,15 +65,28 @@ impl SnapZone {
     }
 }
 
-/// Binds the executable's embedded resource icon (ID = 1) to the window so Alt+Tab, Taskbar,
-/// and AuraDock ALWAYS display the crisp native AuraOS squircle icon instead of a blank icon!
+/// Binds the executable's embedded resource icon (ID = 1) + explicit AppUserModelID to the window
+/// so Alt+Tab, Taskbar, Explorer, and AuraDock ALWAYS display the crisp native AuraOS squircle icon!
 pub fn apply_app_icon(hwnd: HWND) {
     unsafe {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(stem) = exe.file_stem().and_then(|s| s.to_str()) {
+                let aumid = format!("AuraOS.{}\0", stem);
+                let wide: Vec<u16> = aumid.encode_utf16().collect();
+                let _ = windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(PCWSTR(
+                    wide.as_ptr(),
+                ));
+            }
+        }
         if let Ok(hinst) = GetModuleHandleW(None) {
             let res_id = PCWSTR(1usize as *const u16);
-            if let Ok(big) = LoadImageW(hinst, res_id, IMAGE_ICON, 48, 48, LR_SHARED) {
+            if let Ok(big) = LoadImageW(hinst, res_id, IMAGE_ICON, 256, 256, LR_SHARED) {
                 if !big.is_invalid() {
                     let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(big.0 as isize));
+                }
+            } else if let Ok(big48) = LoadImageW(hinst, res_id, IMAGE_ICON, 48, 48, LR_SHARED) {
+                if !big48.is_invalid() {
+                    let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(big48.0 as isize));
                 }
             }
             if let Ok(small) = LoadImageW(hinst, res_id, IMAGE_ICON, 16, 16, LR_SHARED | LR_DEFAULTSIZE) {

@@ -1,10 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![allow(dead_code)]
 
+mod agent_bridge;
 mod audio;
+mod aura_window;
 mod dock_preview;
 mod genie;
 mod hotkey_hook;
+mod math_eval;
 mod models;
 mod motion;
 mod radios;
@@ -12,6 +15,8 @@ mod renderer;
 mod system;
 mod telemetry_worker;
 mod theme;
+mod ui_calendar;
+mod ui_clipboard;
 mod ui_control_center;
 mod ui_dock;
 mod ui_launchpad;
@@ -36,6 +41,8 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Instant;
+use ui_calendar::{CAL_HEIGHT, CAL_WIDTH};
+use ui_clipboard::{ClipItem, CLIP_HEIGHT, CLIP_WIDTH, OSD_HEIGHT, OSD_WIDTH};
 use ui_control_center::{CC_MAX_H, CC_WIDTH};
 use ui_dock::DOCK_THICKNESS;
 use ui_power_menu::{POWER_MENU_H, POWER_MENU_W};
@@ -79,6 +86,9 @@ enum WinKind {
     DockNotch,
     ControlCenter,
     PowerMenu,
+    Calendar,
+    Clipboard,
+    VolumeOsd,
     Launchpad,
     Overview,
     Widget(WidgetKind),
@@ -125,6 +135,9 @@ struct ShellRuntime {
     hwnd_notch: HWND,
     hwnd_cc: HWND,
     hwnd_power: HWND,
+    hwnd_calendar: HWND,
+    hwnd_clipboard: HWND,
+    hwnd_osd: HWND,
     hwnd_launchpad: HWND,
     hwnd_overview: HWND,
 
@@ -133,6 +146,9 @@ struct ShellRuntime {
     surf_notch: WindowSurface,
     surf_cc: WindowSurface,
     surf_power: WindowSurface,
+    surf_calendar: WindowSurface,
+    surf_clipboard: WindowSurface,
+    surf_osd: WindowSurface,
     surf_launchpad: WindowSurface,
     surf_overview: WindowSurface,
 
@@ -144,6 +160,8 @@ struct ShellRuntime {
     hits_dock: Vec<HitRegion>,
     hits_cc: Vec<HitRegion>,
     hits_power: Vec<HitRegion>,
+    hits_calendar: Vec<HitRegion>,
+    hits_clipboard: Vec<HitRegion>,
     hits_launchpad: Vec<HitRegion>,
     hits_overview: Vec<HitRegion>,
 
@@ -301,6 +319,7 @@ fn run_shell() -> windows::core::Result<()> {
     let body_h = (sh - top_h).max(400);
 
     let hwnd_topbar = create_layered_window(&cls_name, "AuraTopBar", 0, 0, sw, top_h, true, true)?;
+    aura_window::apply_app_icon(hwnd_topbar);
     let (dx, dy, dw, dh) = ui_dock::dock_tight_geometry(&state, sw, sh, is_left);
     let hwnd_dock = create_layered_window(&cls_name, "AuraDock", dx, dy, dw, dh, true, true)?;
     let (nx, ny, nw, nh) = ui_dock::notch_geometry(sw, sh, is_left);
@@ -308,6 +327,14 @@ fn run_shell() -> windows::core::Result<()> {
     let cc_h = (sh - top_h - 18).min(CC_MAX_H as i32);
     let hwnd_cc = create_layered_window(&cls_name, "AuraControlCenter", sw - CC_WIDTH as i32 - 10, top_h + 6, CC_WIDTH as i32, cc_h, true, false)?;
     let hwnd_power = create_layered_window(&cls_name, "AuraPowerMenu", sw - POWER_MENU_W as i32 - 10, top_h + 6, POWER_MENU_W as i32, POWER_MENU_H as i32, true, false)?;
+    let cal_x = (sw - CAL_WIDTH as i32) / 2;
+    let hwnd_calendar = create_layered_window(&cls_name, "AuraCalendar", cal_x, top_h + 6, CAL_WIDTH as i32, CAL_HEIGHT as i32, true, false)?;
+    let clip_x = (sw - CLIP_WIDTH as i32) / 2;
+    let clip_y = ((sh - CLIP_HEIGHT as i32) / 2).max(top_h + 16);
+    let hwnd_clipboard = create_layered_window(&cls_name, "AuraClipboard", clip_x, clip_y, CLIP_WIDTH as i32, CLIP_HEIGHT as i32, true, false)?;
+    let osd_x = (sw - OSD_WIDTH as i32) / 2;
+    let osd_y = sh - 138;
+    let hwnd_osd = create_layered_window(&cls_name, "AuraOSD", osd_x, osd_y, OSD_WIDTH as i32, OSD_HEIGHT as i32, true, true)?;
     let hwnd_launchpad = create_layered_window(&cls_name, "AuraLaunchpad", 0, top_h, sw, body_h, true, false)?;
     let hwnd_overview = create_layered_window(&cls_name, "AuraOverview", 0, top_h, sw, body_h, true, false)?;
 
@@ -363,6 +390,9 @@ fn run_shell() -> windows::core::Result<()> {
     let surf_notch = WindowSurface::new(&gpu, hwnd_notch, nw as u32, nh as u32)?;
     let surf_cc = WindowSurface::new(&gpu, hwnd_cc, CC_WIDTH as u32, cc_h as u32)?;
     let surf_power = WindowSurface::new(&gpu, hwnd_power, POWER_MENU_W as u32, POWER_MENU_H as u32)?;
+    let surf_calendar = WindowSurface::new(&gpu, hwnd_calendar, CAL_WIDTH as u32, CAL_HEIGHT as u32)?;
+    let surf_clipboard = WindowSurface::new(&gpu, hwnd_clipboard, CLIP_WIDTH as u32, CLIP_HEIGHT as u32)?;
+    let surf_osd = WindowSurface::new(&gpu, hwnd_osd, OSD_WIDTH as u32, OSD_HEIGHT as u32)?;
     let surf_launchpad = WindowSurface::new(&gpu, hwnd_launchpad, sw as u32, body_h as u32)?;
     let surf_overview = WindowSurface::new(&gpu, hwnd_overview, sw as u32, body_h as u32)?;
 
@@ -411,6 +441,9 @@ fn run_shell() -> windows::core::Result<()> {
         hwnd_notch,
         hwnd_cc,
         hwnd_power,
+        hwnd_calendar,
+        hwnd_clipboard,
+        hwnd_osd,
         hwnd_launchpad,
         hwnd_overview,
         surf_topbar,
@@ -418,6 +451,9 @@ fn run_shell() -> windows::core::Result<()> {
         surf_notch,
         surf_cc,
         surf_power,
+        surf_calendar,
+        surf_clipboard,
+        surf_osd,
         surf_launchpad,
         surf_overview,
         widget_wins,
@@ -427,6 +463,8 @@ fn run_shell() -> windows::core::Result<()> {
         hits_dock: Vec::new(),
         hits_cc: Vec::new(),
         hits_power: Vec::new(),
+        hits_calendar: Vec::new(),
+        hits_clipboard: Vec::new(),
         hits_launchpad: Vec::new(),
         hits_overview: Vec::new(),
         cc_content_h: 600.0,
@@ -573,6 +611,9 @@ impl ShellRuntime {
         if hwnd == self.hwnd_notch { return Some(WinKind::DockNotch); }
         if hwnd == self.hwnd_cc { return Some(WinKind::ControlCenter); }
         if hwnd == self.hwnd_power { return Some(WinKind::PowerMenu); }
+        if hwnd == self.hwnd_calendar { return Some(WinKind::Calendar); }
+        if hwnd == self.hwnd_clipboard { return Some(WinKind::Clipboard); }
+        if hwnd == self.hwnd_osd { return Some(WinKind::VolumeOsd); }
         if hwnd == self.hwnd_launchpad { return Some(WinKind::Launchpad); }
         if hwnd == self.hwnd_overview { return Some(WinKind::Overview); }
         for w in &self.widget_wins {
@@ -587,9 +628,11 @@ impl ShellRuntime {
         match kind {
             WinKind::TopBar => &self.hits_topbar,
             WinKind::Dock => &self.hits_dock,
-            WinKind::DockNotch => &[],
+            WinKind::DockNotch | WinKind::VolumeOsd => &[],
             WinKind::ControlCenter => &self.hits_cc,
             WinKind::PowerMenu => &self.hits_power,
+            WinKind::Calendar => &self.hits_calendar,
+            WinKind::Clipboard => &self.hits_clipboard,
             WinKind::Launchpad => &self.hits_launchpad,
             WinKind::Overview => &self.hits_overview,
             WinKind::Widget(wk) => self
@@ -608,6 +651,9 @@ impl ShellRuntime {
             WinKind::DockNotch => self.redraw_notch(),
             WinKind::ControlCenter => self.redraw_cc(),
             WinKind::PowerMenu => self.redraw_power(),
+            WinKind::Calendar => self.redraw_calendar(),
+            WinKind::Clipboard => self.redraw_clipboard(),
+            WinKind::VolumeOsd => self.redraw_osd(),
             WinKind::Launchpad => self.redraw_launchpad(),
             WinKind::Overview => self.redraw_overview(),
             WinKind::Widget(wk) => self.redraw_widget(wk),
@@ -619,6 +665,21 @@ impl ShellRuntime {
         let state = &self.state;
         let hits = &mut self.hits_topbar;
         self.surf_topbar.draw(&mut self.gpu, |ctx| ui_topbar::render_topbar(ctx, state, w, hits));
+        let nodes: Vec<(String, String, f32, f32, f32, f32)> = self
+            .hits_topbar
+            .iter()
+            .map(|h| {
+                (
+                    h.id.clone(),
+                    h.tooltip.clone().unwrap_or_else(|| h.id.clone()),
+                    h.rect.x,
+                    h.rect.y,
+                    h.rect.w,
+                    h.rect.h,
+                )
+            })
+            .collect();
+        agent_bridge::publish_ui_tree("AuraTopBar", self.hwnd_topbar, &nodes);
     }
 
     fn redraw_dock(&mut self) {
@@ -628,6 +689,21 @@ impl ShellRuntime {
         let state = &self.state;
         let hits = &mut self.hits_dock;
         self.surf_dock.draw(&mut self.gpu, |ctx| ui_dock::render_dock(ctx, state, w, h, is_left, hits));
+        let nodes: Vec<(String, String, f32, f32, f32, f32)> = self
+            .hits_dock
+            .iter()
+            .map(|h| {
+                (
+                    h.id.clone(),
+                    h.tooltip.clone().unwrap_or_else(|| h.id.clone()),
+                    h.rect.x,
+                    h.rect.y,
+                    h.rect.w,
+                    h.rect.h,
+                )
+            })
+            .collect();
+        agent_bridge::publish_ui_tree("AuraDock", self.hwnd_dock, &nodes);
     }
 
     fn redraw_notch(&mut self) {
@@ -698,6 +774,32 @@ impl ShellRuntime {
         let state = &self.state;
         let hits = &mut self.hits_power;
         self.surf_power.draw(&mut self.gpu, |ctx| ui_power_menu::render_power_menu(ctx, state, hits));
+    }
+
+    fn redraw_calendar(&mut self) {
+        let state = &self.state;
+        let hits = &mut self.hits_calendar;
+        self.surf_calendar.draw(&mut self.gpu, |ctx| ui_calendar::render_calendar(ctx, state, hits));
+    }
+
+    fn redraw_clipboard(&mut self) {
+        let state = &self.state;
+        let hits = &mut self.hits_clipboard;
+        self.surf_clipboard.draw(&mut self.gpu, |ctx| ui_clipboard::render_clipboard(ctx, state, hits));
+    }
+
+    fn redraw_osd(&mut self) {
+        let state = &self.state;
+        self.surf_osd.draw(&mut self.gpu, |ctx| ui_clipboard::render_volume_osd(ctx, state));
+    }
+
+    fn trigger_volume_osd(&mut self) {
+        self.state.osd_until = Some(Instant::now() + std::time::Duration::from_millis(1450));
+        self.redraw_osd();
+        unsafe {
+            let _ = ShowWindow(self.hwnd_osd, SW_SHOWNOACTIVATE);
+        }
+        win32_shell::ensure_topmost(self.hwnd_osd);
     }
 
     fn redraw_launchpad(&mut self) {
@@ -989,12 +1091,20 @@ impl ShellRuntime {
         self.close_overview();
         self.close_cc();
         self.close_power();
+        self.close_calendar();
+        self.close_clipboard();
         self.close_launchpad();
     }
 
     fn open_overview(&mut self, settings_view: bool) {
+        self.open_overview_ex(settings_view, false);
+    }
+
+    fn open_overview_ex(&mut self, settings_view: bool, instant_kbd: bool) {
         self.close_cc();
         self.close_power();
+        self.close_calendar();
+        self.close_clipboard();
         self.close_launchpad();
         let was_closed = !self.state.overview_open;
         self.state.overview_open = true;
@@ -1005,14 +1115,104 @@ impl ShellRuntime {
         self.state.open_windows = win32_shell::get_open_user_windows();
         let _ = self.telemetry.tx.send(TelemetryCmd::RefreshOverview);
         if was_closed {
-            self.state.overview_anim.snap(0.01);
-            self.state.overview_anim.animate_to(1.0, 170.0, CubicBezier::EASE_OUT);
+            if instant_kbd || self.state.settings.performance_mode {
+                // Emil Kowalski Rule #1: Keyboard actions snap instantaneously (0ms Raycast feel!)
+                self.state.overview_anim.snap(1.0);
+            } else {
+                self.state.overview_anim.snap(0.18);
+                self.state.overview_anim.animate_to(1.0, 155.0, CubicBezier::EASE_OUT);
+            }
             self.state.tab_content_anim.snap(1.0);
         }
         self.redraw_overview();
         self.redraw_topbar();
         win32_shell::bring_to_front(self.hwnd_overview);
         win32_shell::ensure_topmost(self.hwnd_topbar);
+    }
+
+    fn open_calendar(&mut self) {
+        self.close_overview();
+        self.close_cc();
+        self.close_power();
+        self.close_clipboard();
+        self.close_launchpad();
+        let st = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+        if self.state.cal_year == 0 {
+            self.state.cal_year = st.wYear as i32;
+            self.state.cal_month = st.wMonth as i32;
+        }
+        self.state.calendar_open = true;
+        self.state.calendar_anim.snap(0.15);
+        self.state.calendar_anim.animate_to(1.0, 155.0, CubicBezier::EASE_OUT);
+        self.redraw_calendar();
+        self.redraw_topbar();
+        win32_shell::bring_to_front(self.hwnd_calendar);
+    }
+
+    fn close_calendar(&mut self) {
+        if !self.state.calendar_open {
+            return;
+        }
+        self.state.calendar_open = false;
+        self.state.calendar_last_closed = Some(Instant::now());
+        self.state.calendar_anim.animate_to(0.0, 115.0, CubicBezier::EASE_OUT);
+        self.redraw_topbar();
+    }
+
+    fn open_clipboard(&mut self) {
+        self.state.clip_target_hwnd = win32_shell::get_active_user_hwnd();
+        self.poll_clipboard_history();
+        self.close_overview();
+        self.close_cc();
+        self.close_power();
+        self.close_calendar();
+        self.close_launchpad();
+        self.state.clipboard_open = true;
+        self.state.clipboard_anim.snap(1.0); // Keyboard Win+V opens instantaneously!
+        self.redraw_clipboard();
+        win32_shell::bring_to_front(self.hwnd_clipboard);
+    }
+
+    fn close_clipboard(&mut self) {
+        if !self.state.clipboard_open {
+            return;
+        }
+        self.state.clipboard_open = false;
+        self.state.clipboard_last_closed = Some(Instant::now());
+        self.state.clipboard_anim.animate_to(0.0, 110.0, CubicBezier::EASE_OUT);
+    }
+
+    fn poll_clipboard_history(&mut self) {
+        let seq = ui_clipboard::get_clipboard_seq();
+        if seq == self.state.last_clip_seq {
+            return;
+        }
+        self.state.last_clip_seq = seq;
+        if let Some(txt) = win32_shell::read_clipboard_text() {
+            let trimmed = txt.trim().to_string();
+            if trimmed.is_empty() {
+                return;
+            }
+            if let Some(pos) = self.state.clipboard_items.iter().position(|c| c.text == trimmed) {
+                let existing = self.state.clipboard_items.remove(pos);
+                self.state.clipboard_items.insert(0, existing);
+            } else {
+                let chars_len = trimmed.chars().count();
+                self.state.clipboard_items.insert(
+                    0,
+                    ClipItem {
+                        text: trimmed,
+                        pinned: false,
+                        chars_len,
+                    },
+                );
+                if self.state.clipboard_items.len() > 25 {
+                    if let Some(unpinned) = self.state.clipboard_items.iter().rposition(|c| !c.pinned) {
+                        self.state.clipboard_items.remove(unpinned);
+                    }
+                }
+            }
+        }
     }
 
     fn close_overview(&mut self) {
@@ -1030,6 +1230,8 @@ impl ShellRuntime {
     fn open_cc(&mut self) {
         self.close_overview();
         self.close_power();
+        self.close_calendar();
+        self.close_clipboard();
         self.close_launchpad();
         // 0ms UI-THREAD OPEN: renders immediately from warm MTA background cache!
         // Zero COM / WinRT / process-snapshot blocking even during heavy games or Spotify!
@@ -1064,6 +1266,8 @@ impl ShellRuntime {
     fn open_power(&mut self) {
         self.close_overview();
         self.close_cc();
+        self.close_calendar();
+        self.close_clipboard();
         self.close_launchpad();
         self.state.power_confirm = None;
         self.state.power_open = true;
@@ -1089,6 +1293,8 @@ impl ShellRuntime {
         self.close_overview();
         self.close_cc();
         self.close_power();
+        self.close_calendar();
+        self.close_clipboard();
         self.state.launchpad_query.clear();
         self.state.launchpad_scroll = 0.0;
         self.state.launchpad_scroll_target = 0.0;
@@ -1196,6 +1402,119 @@ impl ShellRuntime {
                 self.close_all_overlays();
                 win32_shell::launch_aura_tasks();
             }
+            Action::LaunchAuraShot => {
+                self.close_all_overlays();
+                win32_shell::launch_aura_shot();
+            }
+            Action::LaunchAuraPdf => {
+                self.close_all_overlays();
+                win32_shell::launch_aura_pdf(None);
+            }
+            Action::LaunchAuraAgentAudit => {
+                self.close_all_overlays();
+                win32_shell::launch_aura_agent(Some("--audit-all"));
+            }
+            Action::ToggleCalendar => {
+                if self.state.calendar_open || AppState::was_just_closed(self.state.calendar_last_closed) {
+                    self.close_calendar();
+                } else {
+                    self.open_calendar();
+                }
+            }
+            Action::CalPrevMonth => {
+                if self.state.cal_month <= 1 {
+                    self.state.cal_month = 12;
+                    self.state.cal_year -= 1;
+                } else {
+                    self.state.cal_month -= 1;
+                }
+                self.redraw_calendar();
+            }
+            Action::CalNextMonth => {
+                if self.state.cal_month >= 12 {
+                    self.state.cal_month = 1;
+                    self.state.cal_year += 1;
+                } else {
+                    self.state.cal_month += 1;
+                }
+                self.redraw_calendar();
+            }
+            Action::CalToday => {
+                let st = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+                self.state.cal_year = st.wYear as i32;
+                self.state.cal_month = st.wMonth as i32;
+                self.redraw_calendar();
+            }
+            Action::PomodoroToggle => {
+                self.state.pomodoro_active = !self.state.pomodoro_active;
+                if self.state.pomodoro_secs_left == 0 {
+                    self.state.pomodoro_secs_left = if self.state.pomodoro_is_break { 5 * 60 } else { 25 * 60 };
+                }
+                self.redraw_calendar();
+                self.redraw_topbar();
+            }
+            Action::PomodoroMode(is_brk) => {
+                self.state.pomodoro_is_break = is_brk;
+                self.state.pomodoro_secs_left = if is_brk { 5 * 60 } else { 25 * 60 };
+                self.state.pomodoro_active = false;
+                self.redraw_calendar();
+                self.redraw_topbar();
+            }
+            Action::ToggleClipboard => {
+                if self.state.clipboard_open || AppState::was_just_closed(self.state.clipboard_last_closed) {
+                    self.close_clipboard();
+                } else {
+                    self.open_clipboard();
+                }
+            }
+            Action::PasteClip(idx) => {
+                if let Some(item) = self.state.clipboard_items.get(idx).cloned() {
+                    let target_hw = self.state.clip_target_hwnd;
+                    self.close_clipboard();
+                    win32_shell::copy_text_to_clipboard(&item.text);
+                    self.state.last_clip_seq = ui_clipboard::get_clipboard_seq();
+                    if target_hw != 0 {
+                        win32_shell::bring_to_front(HWND(target_hw as *mut _));
+                        // Simulate Ctrl+V into target window after restoring foreground focus!
+                        unsafe {
+                            use windows::Win32::UI::Input::KeyboardAndMouse::{
+                                keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+                            };
+                            keybd_event(0x11, 0, KEYBD_EVENT_FLAGS(0), 0); // VK_CONTROL
+                            keybd_event(b'V', 0, KEYBD_EVENT_FLAGS(0), 0);
+                            keybd_event(b'V', 0, KEYEVENTF_KEYUP, 0);
+                            keybd_event(0x11, 0, KEYEVENTF_KEYUP, 0);
+                        }
+                    }
+                }
+            }
+            Action::PinClip(idx) => {
+                if let Some(item) = self.state.clipboard_items.get_mut(idx) {
+                    item.pinned = !item.pinned;
+                    self.redraw_clipboard();
+                }
+            }
+            Action::DeleteClip(idx) => {
+                if idx < self.state.clipboard_items.len() {
+                    self.state.clipboard_items.remove(idx);
+                    self.redraw_clipboard();
+                }
+            }
+            Action::ClearClips => {
+                self.state.clipboard_items.retain(|c| c.pinned);
+                self.redraw_clipboard();
+            }
+            Action::CopyTextAndClose(txt) => {
+                win32_shell::copy_text_to_clipboard(&txt);
+                self.state.last_clip_seq = ui_clipboard::get_clipboard_seq();
+                self.close_all_overlays();
+            }
+            Action::RunShellCommand(cmd) => {
+                self.close_all_overlays();
+                let _ = std::process::Command::new("cmd.exe")
+                    .args(["/C", "start", "", &cmd])
+                    .spawn();
+            }
             Action::CloseAllOverlays => self.close_all_overlays(),
             Action::FocusSearchBar => {
                 if self.state.overview_open {
@@ -1267,6 +1586,7 @@ impl ShellRuntime {
                 self.state.master_muted = audio::toggle_master_mute();
                 self.redraw_topbar();
                 if self.state.cc_open { self.redraw_cc(); }
+                self.trigger_volume_osd();
             }
             Action::SetMasterVolume(p) => {
                 let p = p.clamp(0, 100);
@@ -1275,6 +1595,7 @@ impl ShellRuntime {
                 self.state.master_muted = false;
                 self.redraw_topbar();
                 if self.state.cc_open { self.redraw_cc(); }
+                self.trigger_volume_osd();
             }
             Action::SwitchAudioDeviceTab(mics) => {
                 self.state.cc_showing_mics = mics;
@@ -1916,13 +2237,35 @@ impl ShellRuntime {
             }
         }
 
-        // 5. Power Menu Apple Circular Reveal
+        // 5. Power Menu, Calendar & Clipboard Popovers + Volume OSD
         if self.state.power_anim.is_moving() {
             let moving = self.state.power_anim.step(dt_ms);
             if !moving && !self.state.power_open && self.state.power_anim.value <= 0.02 {
                 unsafe { let _ = ShowWindow(self.hwnd_power, SW_HIDE); }
             } else {
                 self.redraw_power();
+            }
+        }
+        if self.state.calendar_anim.is_moving() {
+            let moving = self.state.calendar_anim.step(dt_ms);
+            if !moving && !self.state.calendar_open && self.state.calendar_anim.value <= 0.02 {
+                unsafe { let _ = ShowWindow(self.hwnd_calendar, SW_HIDE); }
+            } else {
+                self.redraw_calendar();
+            }
+        }
+        if self.state.clipboard_anim.is_moving() {
+            let moving = self.state.clipboard_anim.step(dt_ms);
+            if !moving && !self.state.clipboard_open && self.state.clipboard_anim.value <= 0.02 {
+                unsafe { let _ = ShowWindow(self.hwnd_clipboard, SW_HIDE); }
+            } else {
+                self.redraw_clipboard();
+            }
+        }
+        if let Some(until) = self.state.osd_until {
+            if Instant::now() >= until {
+                self.state.osd_until = None;
+                unsafe { let _ = ShowWindow(self.hwnd_osd, SW_HIDE); }
             }
         }
 
@@ -2009,6 +2352,9 @@ impl ShellRuntime {
             || self.state.tab_content_anim.is_moving()
             || self.state.cc_anim.is_moving()
             || self.state.power_anim.is_moving()
+            || self.state.calendar_anim.is_moving()
+            || self.state.clipboard_anim.is_moving()
+            || self.state.osd_until.is_some()
             || self.state.launchpad_anim.is_moving()
             || self.state.dock_reveal.is_moving()
             || self.state.dock_item_scales.iter().any(|s| s.is_moving())
@@ -2053,7 +2399,12 @@ impl ShellRuntime {
 
     fn tick_fast_120ms(&mut self) {
         self.fast_tick_count = self.fast_tick_count.wrapping_add(1);
-        let any_overlay = self.state.overview_open || self.state.cc_open || self.state.power_open || self.state.launchpad_open;
+        let any_overlay = self.state.overview_open
+            || self.state.cc_open
+            || self.state.power_open
+            || self.state.calendar_open
+            || self.state.clipboard_open
+            || self.state.launchpad_open;
 
         // Throttle heavy Win32 EnumWindows scans to every 360ms (-67% CPU overhead on modest PCs!)
         if self.fast_tick_count % 3 == 1 {
@@ -2166,6 +2517,28 @@ impl ShellRuntime {
         self.state.keyboard_lang = win32_shell::get_keyboard_layout_short();
         self.slow_tick_count = self.slow_tick_count.wrapping_add(1);
 
+        // Zero-overhead Clipboard History tracking (`GetClipboardSequenceNumber` < 0.001ms!)
+        self.poll_clipboard_history();
+
+        // Live Pomodoro Focus Timer 1s countdown
+        let mut pomo_ticked = false;
+        if self.state.pomodoro_active {
+            if self.state.pomodoro_secs_left > 0 {
+                self.state.pomodoro_secs_left -= 1;
+                pomo_ticked = true;
+            } else {
+                self.state.pomodoro_is_break = !self.state.pomodoro_is_break;
+                self.state.pomodoro_secs_left = if self.state.pomodoro_is_break { 5 * 60 } else { 25 * 60 };
+                pomo_ticked = true;
+            }
+        }
+        if self.state.calendar_open {
+            self.redraw_calendar();
+        }
+        if pomo_ticked && !self.hidden_for_fullscreen {
+            self.redraw_topbar();
+        }
+
         // Periodic automatic weather refresh every 15 minutes (900 ticks)
         if self.slow_tick_count > 0 && self.slow_tick_count % 900 == 0 && self.weather_rx.is_none() {
             self.spawn_weather_refresh();
@@ -2277,6 +2650,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 Some(WinKind::TopBar)
                     | Some(WinKind::Dock)
                     | Some(WinKind::DockNotch)
+                    | Some(WinKind::VolumeOsd)
                     | Some(WinKind::Widget(_))
             )
         })
@@ -2327,7 +2701,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 hotkey_hook::SHORTCUT_TASKS => rt.execute(Action::LaunchAuraTasks),
                 hotkey_hook::SHORTCUT_FILES => rt.execute(Action::LaunchAuraFiles(None)),
                 hotkey_hook::SHORTCUT_SETTINGS => rt.execute(Action::LaunchAuraSettings(None)),
-                hotkey_hook::SHORTCUT_OVERVIEW => rt.execute(Action::ToggleOverview),
+                hotkey_hook::SHORTCUT_OVERVIEW => {
+                    if rt.state.overview_open {
+                        rt.close_overview();
+                    } else {
+                        rt.open_overview_ex(false, true);
+                    }
+                }
+                hotkey_hook::SHORTCUT_CLIPBOARD => rt.execute(Action::ToggleClipboard),
+                hotkey_hook::SHORTCUT_SCREENSHOT => rt.execute(Action::LaunchAuraShot),
                 _ => {}
             }
             return true;
@@ -2372,7 +2754,13 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             WM_HOTKEY => {
                 rt.wake_anim_timer();
                 match wparam.0 as i32 {
-                    HK_OVERVIEW => rt.execute(Action::ToggleOverview),
+                    HK_OVERVIEW => {
+                        if rt.state.overview_open {
+                            rt.close_overview();
+                        } else {
+                            rt.open_overview_ex(false, true);
+                        }
+                    }
                     HK_FILES => rt.execute(Action::LaunchAuraFiles(None)),
                     HK_RESTORE => rt.execute(Action::RestoreWindowsAndExit),
                     HK_LOCK => rt.execute(Action::LaunchAuraLock),
@@ -2387,6 +2775,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     match kind {
                         WinKind::ControlCenter => rt.close_cc(),
                         WinKind::PowerMenu => rt.close_power(),
+                        WinKind::Calendar => rt.close_calendar(),
+                        WinKind::Clipboard => rt.close_clipboard(),
                         WinKind::Launchpad => rt.close_launchpad(),
                         WinKind::Overview => {
                             if !rt.state.add_modal.open {
@@ -2868,5 +3258,46 @@ fn run_visual_capture(out_dir: &PathBuf) {
         ui_dock::render_dock_notch(ctx, nw_l as f32, nh_l as f32, true, true);
         ctx.reset_transform();
         ui_topbar::render_topbar(ctx, &state, 1600.0, &mut h_tb);
+    });
+
+    // 6. Capture v5.0 Calendar + Pomodoro Flyout + Volume OSD!
+    state.calendar_open = true;
+    state.calendar_anim.snap(1.0);
+    state.pomodoro_active = true;
+    state.pomodoro_secs_left = 24 * 60 + 42;
+    let _ = gpu.render_to_png(CAL_WIDTH as u32, CAL_HEIGHT as u32, &out_dir.join("v50_calendar_pomodoro.png"), |ctx| {
+        let mut h = Vec::new();
+        ctx.fill_rrect(Rect::new(0.0, 0.0, CAL_WIDTH, CAL_HEIGHT), 0.0, theme::CANVAS);
+        ui_calendar::render_calendar(ctx, &state, &mut h);
+    });
+
+    // 7. Capture v5.0 AuraClip (`Win + V`) Clipboard History Manager!
+    state.calendar_open = false;
+    state.clipboard_open = true;
+    state.clipboard_anim.snap(1.0);
+    state.clipboard_items = vec![
+        ClipItem { text: "https://github.com/dandifeto1111-prog/AuraOS".into(), pinned: true, chars_len: 44 },
+        ClipItem { text: "cargo build --release --bins".into(), pinned: false, chars_len: 28 },
+        ClipItem { text: "AuraOS v5.0 — Suite nativa PDF, Fotos, Capturas e IA".into(), pinned: false, chars_len: 52 },
+    ];
+    let _ = gpu.render_to_png(CLIP_WIDTH as u32, CLIP_HEIGHT as u32, &out_dir.join("v50_clipboard.png"), |ctx| {
+        let mut h = Vec::new();
+        ctx.fill_rrect(Rect::new(0.0, 0.0, CLIP_WIDTH, CLIP_HEIGHT), 0.0, theme::CANVAS);
+        ui_clipboard::render_clipboard(ctx, &state, &mut h);
+    });
+
+    // 8. Capture v5.0 Spotlight Math Calculator (`245 * 18` -> `= 4410`)!
+    state.clipboard_open = false;
+    state.overview_open = true;
+    state.overview_anim.snap(1.0);
+    state.search_query = "245 * 18".into();
+    let _ = gpu.render_to_png(1600, 900, &out_dir.join("v50_spotlight_calc.png"), |ctx| {
+        let mut h1 = Vec::new();
+        let mut h2 = Vec::new();
+        wallpaper::draw_wallpaper_frame(ctx, WallpaperKind::Preset, "aura_obsidian_flow", 1600.0, 900.0, 2.0);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 0.0, TOPBAR_HEIGHT);
+        ui_overview::render_overview(ctx, &state, 1600.0, 900.0 - TOPBAR_HEIGHT, &mut h1);
+        ctx.reset_transform();
+        ui_topbar::render_topbar(ctx, &state, 1600.0, &mut h2);
     });
 }

@@ -1,6 +1,6 @@
 ﻿param(
-    [string]$Version = "4.5.0",
-    [string]$Changelog = "v4.5.0: Reproductor de fondos de video 100% nativo Windows Media Foundation sin FFmpeg (+ fallback HTML5), geolocalizacion automatica de clima/reloj en todo el mundo, AuraTasks.exe (Administrador de Tareas nativo), atajos de Windows integrados (Win -> Apps, Ctrl+Shift+Esc -> AuraTasks, Win+E/I/S), foto de perfil y contrasena en AuraLock, iconos HD incrustados en los 8 ejecutables, magnificacion macOS en Dock + vista previa DWM en vivo + efecto Genio al minimizar/abrir, y optimizacion profunda para PCs modestos."
+    [string]$Version = "5.0.0",
+    [string]$Changelog = "v5.0.0: AuraPDF Studio (visor, previsualizador Quick-Look y editor PDF nativo en Rust), AuraPhotos Studio (editor GPU de color, recorte, volteo, anotacion y censura), AuraShot (<25ms capturas con anotacion y portapapeles), AuraAgent IA (cursor autonomo + integracion triple agent-desktop + puente JSON), Calendario Mensual + Pomodoro en reloj superior, AuraClip (Win+V historial de portapapeles), Calculadora instantanea en Spotlight, Desinstalador rapido de apps en AuraSettings, e iconos HD 256px en los 11 binarios."
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,18 +9,29 @@ $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $legacy = Join-Path (Split-Path -Parent $root) "AuraShell"
 
-Write-Host "Compilando AuraOS Suite v$Version (8 binarios 100% Rust con iconos incrustados + AuraShell-Setup)..." -ForegroundColor Cyan
+Write-Host "Compilando AuraOS Suite v$Version (11 binarios 100% Rust con iconos incrustados + AuraShell-Setup)..." -ForegroundColor Cyan
 Set-Location $root
-cargo build --release --bin AuraShell --bin AuraFiles --bin AuraPhotos --bin AuraPlayer --bin AuraNotes --bin AuraLock --bin AuraSettings --bin AuraTasks
+cargo build --release --bin AuraShell --bin AuraFiles --bin AuraPhotos --bin AuraPlayer --bin AuraNotes --bin AuraLock --bin AuraSettings --bin AuraTasks --bin AuraPDF --bin AuraShot --bin AuraAgent
 if ($LASTEXITCODE -ne 0) { Write-Error "Falló cargo build --release" }
 
-$bins = @("AuraShell.exe", "AuraFiles.exe", "AuraPhotos.exe", "AuraPlayer.exe", "AuraNotes.exe", "AuraLock.exe", "AuraSettings.exe", "AuraTasks.exe")
+$bins = @(
+    "AuraShell.exe", "AuraFiles.exe", "AuraPhotos.exe", "AuraPlayer.exe",
+    "AuraNotes.exe", "AuraLock.exe", "AuraSettings.exe", "AuraTasks.exe",
+    "AuraPDF.exe", "AuraShot.exe", "AuraAgent.exe"
+)
 foreach ($b in $bins) {
     Copy-Item (Join-Path $root "target\release\$b") (Join-Path $root $b) -Force
 }
 
-# Sync HD icons and safe restore script if missing
-foreach ($asset in @("AuraShell.ico", "AuraFiles.ico", "AuraShell_256.png", "AuraFiles_256.png", "restore-windows.ps1")) {
+# Copy ALL 11 `.ico` and `*_256.png` companion icons from assets/icons into root so Setup/Update ships 100% of icons!
+$iconsDir = Join-Path $root "assets\icons"
+if (Test-Path $iconsDir) {
+    Get-ChildItem $iconsDir -File | Where-Object { $_.Extension -in ".ico", ".png" } | ForEach-Object {
+        Copy-Item $_.FullName (Join-Path $root $_.Name) -Force
+    }
+}
+
+foreach ($asset in @("restore-windows.ps1")) {
     $src = Join-Path $legacy $asset
     $dst = Join-Path $root $asset
     if ((Test-Path $src) -and (-not (Test-Path $dst))) {
@@ -28,7 +39,7 @@ foreach ($asset in @("AuraShell.ico", "AuraFiles.ico", "AuraShell_256.png", "Aur
     }
 }
 
-# Build upgraded AuraShell-Setup.exe (v4.0 Suite + APBOptimizer + HKCU file associations!)
+# Build upgraded AuraShell-Setup.exe (v5.0 Complete Suite + Icons + Associations + APBOptimizer!)
 $instSrc = Join-Path $root "installer\Installer.cs"
 $outSetup = Join-Path $root "AuraShell-Setup.exe"
 $shellIco = Join-Path $root "AuraShell.ico"
@@ -36,7 +47,7 @@ $fxDir = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319"
 $csc = Join-Path $fxDir "csc.exe"
 $wpfDir = Join-Path $fxDir "WPF"
 if ((Test-Path $instSrc) -and (Test-Path $csc)) {
-    Write-Host "Compilando AuraShell-Setup.exe v$Version (Suite AuraOS + APBOptimizer)..." -ForegroundColor Cyan
+    Write-Host "Compilando AuraShell-Setup.exe v$Version (Suite AuraOS v5.0)..." -ForegroundColor Cyan
     $refs = @(
         "/r:$wpfDir\PresentationCore.dll",
         "/r:$wpfDir\PresentationFramework.dll",

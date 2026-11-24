@@ -1,5 +1,18 @@
 # Historial de Versiones — AuraOS
 
+## v5.0.0 (2026-11-23)
+- **`AuraPDF Studio` (`AuraPDF.exe` + Vista Previa en `AuraFiles`):** Visor, previsualizador estilo macOS Quick-Look y editor de documentos PDF 100% en Rust + `Windows.Data.Pdf` + Direct2D (cero librerías externas C/C++). Incluye miniaturas laterales, zoom fluido, Modo Lectura Nocturna, rotación 90°, reordenamiento y eliminación de páginas, combinación de PDFs (`+ Combinar`), anotaciones vectoriales en vivo (**Resaltador**, **Pluma / Firma**, **Recuadro**, **Notas de texto**) y exportación a `.pdf` estándar compatible con todos los lectores.
+- **Vista Rápida Quick-Look con `Espacio` y Previsualizador PDF en `AuraFiles`:** Al seleccionar cualquier `.pdf` en `AuraFiles` se renderiza su página 1 en alta definición + conteo de páginas en el panel derecho, y al pulsar la barra espaciadora se abre un modal Quick-Look estilo macOS para imágenes, PDFs y código/texto.
+- **`AuraPhotos Studio` (`AuraPhotos.exe`):** Evolucionado de visor a **Visor + Estudio de Edición GPU en tiempo real**: deslizadores no destructivos de **Brillo, Contraste, Saturación y Calidez**, filtros 1-clic (`Auto`, `B&N`, `Sepia`), **Recorte con proporciones** (`Libre`, `1:1`, `16:9`, `9:16`), **Volteo H/V**, **Pincel / Flecha / Recuadro / Resaltador**, **Pixelado / Censura de privacidad** y exportación directa a PNG/JPG o portapapeles (`CF_DIB`).
+- **`AuraShot` (`AuraShot.exe` — Capturas y Anotación en `<25 ms`):** Reemplazo instantáneo de Recortes de Windows (`Impr Pant` / `Win + Shift + S` / Centro de Control) con congelamiento nativo de pantalla, recorte por región o pantalla completa, flechas, recuadros, resaltador, pixelado, copia en 1 clic al portapapeles y guardado automático en `Pictures\AuraShots\`.
+- **Integración Triple `agent-desktop` + `AuraAgent.exe` (Cursor Autónomo IA):** Puente nativo JSON (`agent_bridge.rs` en `%LocalAppData%\AuraShell\ui_trees\`), integración CLI con `vercel-labs/agent-desktop` y cursor fantasma animado DirectComposition (`AuraAICursor`) capaz de inspeccionar y auditar todo el escritorio en segundo plano sin robar el ratón físico.
+- **Utilidades diarias macOS/Windows integradas en `AuraShell` y `AuraSettings`:**
+  - **Calendario Mensual + Temporizador Pomodoro (`25m / 5m`)** al hacer clic en el reloj superior.
+  - **Historial de Portapapeles `AuraClip` (`Win + V`)** con fijado de favoritos (`★`) y auto-pegado.
+  - **Calculadora Matemática, Porcentajes y Conversor de Unidades** instantáneos en `Alt + Espacio` / `Win + S` + ejecutor `> comando` + **OSD flotante de volumen**.
+  - **Desinstalador Rápido de Programas de Windows** en `AuraSettings → Apps e Inicio`.
+  - **11 iconos HD de 256 px (`_256.png` + `.ico` COFF `.rsrc` + `AppUserModelID`)** garantizados en todas las ventanas, Dock, Launchpad, Alt+Tab y Menú Inicio, más apertura instantánea `0 ms` por teclado (`emil-design-eng`).
+
 ## v4.5.0 (2026-11-23)
 - **Fondos de pantalla de video 100% nativos en cualquier PC sin FFmpeg:** Nuevo motor `video_decoder.rs` con decodificación nativa **Windows Media Foundation (`IMFSourceReader`)** (0 dependencias externas, funciona directo en cualquier Windows 10/11 limpio con `.mp4`, `.m4v`, `.mov`, `.wmv`, `.avi`), fallback automático a `ffmpeg.exe` si existe y fallback universal HTML5 `<video>` en `WorkerW` para codecs exóticos VP9/AV1, más extracción automática de miniaturas para videos personalizados.
 - **Geolocalización automática de Clima y Reloj (cero ciudades fijas):** Eliminadas las coordenadas fijas de Barranquilla; ahora detecta automáticamente la ciudad real del usuario en todo el mundo (Bogotá, Medellín, Madrid, CDMX, etc.) mediante múltiples proveedores WinHTTP + Open-Meteo, caché local y opción de ciudad manual en `AuraSettings`.

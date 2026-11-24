@@ -386,6 +386,26 @@ pub fn render_control_center(ctx: &mut DrawCtx<'_>, state: &AppState, win_h: f32
             Action::ClickModeTab(ShellMode::Studio),
             Some(Action::LaunchTarget("ms-settings:apps-volume".into())),
         ),
+        (
+            "cc_q_shot",
+            "Capturar Pantalla",
+            "AuraShot (Impr Pant)".to_string(),
+            VectorIcon::Maximize,
+            false,
+            theme::VIOLET_LIGHT,
+            Action::LaunchAuraShot,
+            None,
+        ),
+        (
+            "cc_q_clip",
+            "Portapapeles",
+            format!("{} clips (Win+V)", state.clipboard_items.len()),
+            VectorIcon::FileText,
+            state.clipboard_open,
+            theme::CORAL,
+            Action::ToggleClipboard,
+            None,
+        ),
     ];
 
     for (idx, (id, title, sub, icon, is_on, accent, act, right_act)) in tiles.into_iter().enumerate() {
@@ -471,7 +491,7 @@ pub fn render_control_center(ctx: &mut DrawCtx<'_>, state: &AppState, win_h: f32
             slider: None,
         });
     }
-    y += 116.0;
+    y += 172.0;
 
     // INLINE KEYBOARD LAYOUT SELECTOR DRAWER (expands seamlessly right inside Control Center!)
     if state.cc_keyboard_menu_open {

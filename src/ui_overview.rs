@@ -94,7 +94,7 @@ pub fn render_overview(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32, 
         if !state.search_query.is_empty() || sr_hov { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY },
     );
     let q_disp = if state.search_query.is_empty() {
-        "Buscar apps, juegos o acciones...".to_string()
+        "Buscar apps, calcular (245*18, 100c a f) o > cmd...".to_string()
     } else {
         format!("{}|", state.search_query)
     };
@@ -881,11 +881,42 @@ fn render_studio_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits
 fn render_search_results(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits: &mut Vec<HitRegion>) {
     let pw = 640.0f32.min(area.w);
     let px = area.x + (area.w - pw) * 0.5;
-    let card = Rect::new(px, area.y + 12.0, pw, 440.0);
+    let card = Rect::new(px, area.y + 12.0, pw, 456.0);
     ctx.fill_card(card, 20.0, theme::SURFACE, theme::BORDER_STRONG);
 
-    let q = state.search_query.trim().to_lowercase();
+    let raw_q = state.search_query.trim();
+    let q = raw_q.to_lowercase();
     let mut matches: Vec<(String, String, String, Action)> = Vec::new();
+
+    // 1. Instant Spotlight Math & Unit Calculator (`245 * 18`, `15% de 480`, `100 c to f`, `128 gb en mb`)
+    if let Some(calc) = crate::math_eval::evaluate_query(raw_q) {
+        matches.push((
+            format!("= {}", calc.formatted),
+            calc.subtitle,
+            String::new(),
+            Action::CopyTextAndClose(calc.formatted),
+        ));
+    }
+
+    // 2. Quick Shell Command Runner (`> ipconfig`, `> notepad` — replaces `Win + R`!)
+    if let Some(cmd_body) = raw_q.strip_prefix('>').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        matches.push((
+            format!("Ejecutar comando: {}", cmd_body),
+            "Ejecutor rápido de AuraOS (reemplaza Win+R)".into(),
+            String::new(),
+            Action::RunShellCommand(cmd_body.to_string()),
+        ));
+    }
+
+    // 3. `@audit` / `@agent` AI Desktop Self-Test Trigger
+    if q.starts_with("@audit") || q.starts_with("@agent") || q.starts_with("@test") {
+        matches.push((
+            "Ejecutar Auditoría IA con Cursor Autónomo (AuraAgent)".into(),
+            "Prueba en vivo todos los módulos sin mover tu ratón físico".into(),
+            String::new(),
+            Action::LaunchAuraAgentAudit,
+        ));
+    }
 
     for w in &state.open_windows {
         if w.title.to_lowercase().contains(&q) || w.process_name.to_lowercase().contains(&q) {

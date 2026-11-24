@@ -443,41 +443,31 @@ impl GpuEngine {
     }
 
     fn extract_hicon_wic(&self, path: &str) -> Option<IWICBitmapSource> {
-        // If it's AuraFiles.exe, prefer our 256px supersampled PNG if present!
-        if Path::new(path)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .map(|s| s.eq_ignore_ascii_case("AuraFiles.exe"))
-            .unwrap_or(false)
-        {
-            if let Some(dir) = Path::new(path).parent() {
-                let png = dir.join("AuraFiles_256.png");
-                if png.exists() {
-                    unsafe {
-                        let w = to_wide(&png.to_string_lossy());
-                        if let Ok(dec) = self.wic.CreateDecoderFromFilename(
-                            PCWSTR(w.as_ptr()),
-                            None,
-                            windows::Win32::Foundation::GENERIC_READ,
-                            WICDecodeMetadataCacheOnDemand,
-                        ) {
-                            if let Ok(frame) = dec.GetFrame(0) {
-                                if let Ok(conv) = self.wic.CreateFormatConverter() {
-                                    if conv
-                                        .Initialize(
-                                            &frame,
-                                            &GUID_WICPixelFormat32bppPBGRA,
-                                            WICBitmapDitherTypeNone,
-                                            None,
-                                            0.0,
-                                            WICBitmapPaletteTypeCustom,
-                                        )
-                                        .is_ok()
-                                    {
-                                        if let Ok(src) = conv.cast::<IWICBitmapSource>() {
-                                            return Some(src);
-                                        }
-                                    }
+        // Universal 256px supersampled PNG fast-path for ALL AuraOS binaries (bypasses stale Windows IconCache.db!)
+        if let Some(png) = resolve_companion_icon_png(path) {
+            unsafe {
+                let w = to_wide(&png.to_string_lossy());
+                if let Ok(dec) = self.wic.CreateDecoderFromFilename(
+                    PCWSTR(w.as_ptr()),
+                    None,
+                    windows::Win32::Foundation::GENERIC_READ,
+                    WICDecodeMetadataCacheOnDemand,
+                ) {
+                    if let Ok(frame) = dec.GetFrame(0) {
+                        if let Ok(conv) = self.wic.CreateFormatConverter() {
+                            if conv
+                                .Initialize(
+                                    &frame,
+                                    &GUID_WICPixelFormat32bppPBGRA,
+                                    WICBitmapDitherTypeNone,
+                                    None,
+                                    0.0,
+                                    WICBitmapPaletteTypeCustom,
+                                )
+                                .is_ok()
+                            {
+                                if let Ok(src) = conv.cast::<IWICBitmapSource>() {
+                                    return Some(src);
                                 }
                             }
                         }
@@ -603,21 +593,40 @@ impl GpuEngine {
     }
 }
 
+/// Resolves `<Stem>_256.png` companion high-DPI icon for any AuraOS executable or shortcut target
+fn resolve_companion_icon_png(path: &str) -> Option<std::path::PathBuf> {
+    let p = Path::new(path);
+    let stem = p.file_stem()?.to_str()?;
+    let png_name = format!("{}_256.png", stem);
+    if let Some(dir) = p.parent() {
+        let c1 = dir.join(&png_name);
+        if c1.exists() {
+            return Some(c1);
+        }
+        let c2 = dir.join("icons").join(&png_name);
+        if c2.exists() {
+            return Some(c2);
+        }
+        // Cargo `target/release/<Bin>.exe` -> `assets/icons/<Stem>_256.png`
+        if let Some(root) = dir.parent().and_then(|d| d.parent()) {
+            let c3 = root.join("assets").join("icons").join(&png_name);
+            if c3.exists() {
+                return Some(c3);
+            }
+        }
+    }
+    let app_dir_png = crate::models::app_data_dir().join(&png_name);
+    if app_dir_png.exists() {
+        return Some(app_dir_png);
+    }
+    None
+}
+
 /// Background STA worker helper: extracts HD icon to raw premultiplied BGRA pixels
 fn decode_icon_to_bgra(wic: &IWICImagingFactory, path: &str) -> Option<DecodedAsset> {
-    if Path::new(path)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.eq_ignore_ascii_case("AuraFiles.exe"))
-        .unwrap_or(false)
-    {
-        if let Some(dir) = Path::new(path).parent() {
-            let png = dir.join("AuraFiles_256.png");
-            if png.exists() {
-                if let Some(d) = decode_image_to_bgra(wic, &png.to_string_lossy(), 96) {
-                    return Some(d);
-                }
-            }
+    if let Some(png) = resolve_companion_icon_png(path) {
+        if let Some(d) = decode_image_to_bgra(wic, &png.to_string_lossy(), 128) {
+            return Some(d);
         }
     }
     if !Path::new(path).exists() {
@@ -1302,6 +1311,56 @@ impl<'a> DrawCtx<'a> {
             self.bmp_cache.retain(|k, _| !k.starts_with("tm_") && !k.starts_with("photo_"));
             let bmp = self.upload_decoded_to_gpu(asset);
             self.bmp_cache.insert(cache_key.to_string(), bmp);
+        }
+        if let Some(Some(bmp)) = self.bmp_cache.get(cache_key) {
+            unsafe {
+                self.rt.DrawBitmap(
+                    bmp,
+                    Some(&dst.to_d2d()),
+                    1.0,
+                    D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                    None,
+                );
+            }
+        }
+    }
+
+    /// Streams a premultiplied-alpha BGRA buffer (used by AuraPDF & AuraPhotos Studio Editor!)
+    pub fn draw_bgra_alpha_live(&mut self, cache_key: &str, w: u32, h: u32, pbgra: &[u8], dst: Rect) {
+        if w == 0 || h == 0 || pbgra.len() < (w as usize * h as usize * 4) {
+            return;
+        }
+        let need_create = match self.bmp_cache.get(cache_key) {
+            Some(Some(b)) => unsafe {
+                let sz = b.GetPixelSize();
+                sz.width != w || sz.height != h
+            },
+            _ => true,
+        };
+        if need_create {
+            let props = D2D1_BITMAP_PROPERTIES {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+            };
+            let bmp = unsafe {
+                self.rt
+                    .CreateBitmap(
+                        D2D_SIZE_U { width: w, height: h },
+                        Some(pbgra.as_ptr() as *const _),
+                        w * 4,
+                        &props,
+                    )
+                    .ok()
+            };
+            self.bmp_cache.insert(cache_key.to_string(), bmp);
+        } else if let Some(Some(b)) = self.bmp_cache.get(cache_key) {
+            unsafe {
+                let _ = b.CopyFromMemory(None, pbgra.as_ptr() as *const _, w * 4);
+            }
         }
         if let Some(Some(bmp)) = self.bmp_cache.get(cache_key) {
             unsafe {
