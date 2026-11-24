@@ -52,11 +52,11 @@ pub fn render_overview(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32, 
     let margin_x = ((w - 1180.0) * 0.5).max(84.0);
     let content_w = (w - margin_x * 2.0).min(1220.0);
 
-    // 4-Mode Segmented Pill (Overview / Dev & AI / Gamer / Fondos)
-    let seg_r = Rect::new(margin_x, top_y, 356.0, 38.0);
+    // 5-Mode Segmented Pill (Overview / Dev & AI / Gamer / Studio / Fondos)
+    let seg_r = Rect::new(margin_x, top_y, 436.0, 38.0);
     ctx.fill_card(seg_r, 19.0, p.surface, p.border);
-    let tab_w = (seg_r.w - 8.0) / 4.0;
-    let pill_x = seg_r.x + 4.0 + state.overview_tab_pill_x.value.clamp(0.0, 3.0) * tab_w;
+    let tab_w = (seg_r.w - 8.0) / 5.0;
+    let pill_x = seg_r.x + 4.0 + state.overview_tab_pill_x.value.clamp(0.0, 4.0) * tab_w;
     if !state.overview_settings_view {
         ctx.fill_rrect(Rect::new(pill_x, seg_r.y + 4.0, tab_w, 30.0), 15.0, p.accent);
     }
@@ -64,6 +64,7 @@ pub fn render_overview(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32, 
         ("ov_tab_pc", "Overview", ShellMode::PC),
         ("ov_tab_dev", "Dev & AI", ShellMode::Dev),
         ("ov_tab_gamer", "Gamer", ShellMode::Gamer),
+        ("ov_tab_creative", "Studio", ShellMode::Creative),
         ("ov_tab_studio", "Fondos", ShellMode::Studio),
     ];
     for (i, (id, lbl, m)) in tabs.into_iter().enumerate() {
@@ -79,8 +80,8 @@ pub fn render_overview(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32, 
     }
 
     // Centered Instant Search Pill (Raycast-style — clickable focus + live caret + clear button!)
-    let sw = 340.0f32.min(content_w - 580.0).max(210.0);
-    let sx = margin_x + 372.0 + ((content_w - 372.0 - 216.0 - sw) * 0.5).max(0.0);
+    let sw = 320.0f32.min(content_w - 664.0).max(196.0);
+    let sx = margin_x + 450.0 + ((content_w - 450.0 - 214.0 - sw) * 0.5).max(0.0);
     let sr = Rect::new(sx, top_y, sw, 38.0);
     let sr_hov = state.hovered_id.as_deref() == Some("ov_search");
     ctx.fill_card(
@@ -174,6 +175,7 @@ pub fn render_overview(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32, 
             ShellMode::PC => render_pc_bento(ctx, state, body_r_anim, hits),
             ShellMode::Dev => render_dev_bento(ctx, state, body_r_anim, hits),
             ShellMode::Gamer => render_gamer_bento(ctx, state, body_r_anim, hits),
+            ShellMode::Creative => render_creative_studio_bento(ctx, state, body_r_anim, hits),
             ShellMode::Studio => render_studio_bento(ctx, state, body_r_anim, hits),
         }
     }
@@ -781,6 +783,290 @@ fn render_gamer_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits:
                 slider: None,
             });
         }
+    }
+}
+
+// ==================== 3B. AURA STUDIO CREATIVE SUITE (AURABEATS DAW + PHOTOS + VIDEO) ====================
+
+fn render_creative_studio_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits: &mut Vec<HitRegion>) {
+    let p = theme::pal();
+    let gap = 16.0;
+    let y0 = area.y + 10.0;
+
+    // --- TOP HEADER BANNER ---
+    let hdr = Rect::new(area.x, y0, area.w, 72.0);
+    ctx.fill_card(hdr, 22.0, p.card_bg, p.border);
+    let badge_ic = Rect::new(hdr.x + 18.0, hdr.y + 16.0, 40.0, 40.0);
+    ctx.fill_rrect(badge_ic, 13.0, p.accent_tint);
+    ctx.draw_vector_icon(VectorIcon::Sparkle, badge_ic.x + 20.0, badge_ic.y + 20.0, 18.0, p.accent_light);
+    ctx.draw_text(
+        "AURA STUDIO · SUITE CREATIVA NATIVA",
+        Rect::new(hdr.x + 70.0, hdr.y + 16.0, hdr.w - 350.0, 20.0),
+        TextStyle::Title14Semi,
+        p.text_primary,
+    );
+    ctx.draw_text(
+        "Producción musical con AuraBeats DAW, fotografía GPU y herramientas creativas integradas a AuraOS",
+        Rect::new(hdr.x + 70.0, hdr.y + 38.0, hdr.w - 350.0, 18.0),
+        TextStyle::Body11Reg,
+        p.text_tertiary,
+    );
+
+    let status_pill = Rect::new(hdr.x + hdr.w - 256.0, hdr.y + 20.0, 238.0, 32.0);
+    let (st_bg, st_bd, st_col, st_txt) = if state.aurabeats_installed {
+        (
+            theme::rgba(34, 197, 94, 0.14),
+            theme::rgba(34, 197, 94, 0.42),
+            theme::EMERALD,
+            format!("AuraBeats listo · {} plugins DSP", state.aurabeats_plugin_count.max(28))
+        )
+    } else {
+        (
+            p.accent_tint,
+            p.accent_border,
+            p.accent_light,
+            "Proceso aislado · 0 MB en reposo".to_string(),
+        )
+    };
+    ctx.fill_card(status_pill, 12.0, st_bg, st_bd);
+    ctx.fill_circle(status_pill.x + 14.0, status_pill.y + 16.0, 4.0, st_col);
+    ctx.draw_text(
+        &st_txt,
+        Rect::new(status_pill.x + 24.0, status_pill.y, status_pill.w - 30.0, 32.0),
+        TextStyle::Small10Bold,
+        st_col,
+    );
+
+    // --- MAIN 3-COLUMN CREATIVE BENTO (AURABEATS 44% + AURAPHOTOS 28% + VIDEO SLOT 28%) ---
+    let main_y = hdr.y + hdr.h + gap;
+    let main_h = (area.h - 72.0 - 102.0 - gap * 2.0 - 16.0).clamp(312.0, 386.0);
+    let daw_w = ((area.w - gap * 2.0) * 0.44).max(380.0);
+    let side_w = ((area.w - daw_w - gap * 2.0) * 0.5).max(240.0);
+
+    // 1. HERO CARD: AURABEATS DAW (GPL-3.0 Fork de Lemon-Studio integrado a AuraOS)
+    let daw_r = Rect::new(area.x, main_y, daw_w, main_h);
+    let daw_hov = state.hovered_id.as_deref() == Some("studio_aurabeats");
+    ctx.fill_card(
+        daw_r,
+        24.0,
+        if daw_hov { p.elevated } else { p.card_bg },
+        if daw_hov { p.accent_light } else { p.accent_border },
+    );
+
+    // Subtle Obsidian-Violet header highlight strip inside AuraBeats card
+    let daw_top = Rect::new(daw_r.x + 14.0, daw_r.y + 14.0, daw_r.w - 28.0, 108.0);
+    ctx.fill_card(daw_top, 18.0, theme::with_alpha(p.accent_tint, 0.72), theme::with_alpha(p.accent_border, 0.55));
+
+    let ico_r = Rect::new(daw_top.x + 16.0, daw_top.y + 18.0, 72.0, 72.0);
+    ctx.fill_rrect(ico_r, 18.0, p.surface);
+    let mut drew_daw_icon = false;
+    if let Some(ic_path) = &state.aurabeats_icon_path {
+        ctx.push_clip(ico_r);
+        drew_daw_icon = ctx.draw_image_file(ic_path, ico_r, 1.0);
+        ctx.pop_clip();
+    }
+    if !drew_daw_icon {
+        ctx.draw_vector_icon(VectorIcon::MusicNote, ico_r.x + 36.0, ico_r.y + 36.0, 30.0, p.accent_light);
+    }
+
+    let tag_r = Rect::new(ico_r.x + 88.0, daw_top.y + 18.0, 136.0, 21.0);
+    ctx.fill_rrect(tag_r, 8.0, p.accent);
+    ctx.draw_text_center("AUDIO · VST3 / CLAP", tag_r, TextStyle::Small9Reg, theme::CRISP_WHITE);
+
+    ctx.draw_text(
+        "AuraBeats DAW",
+        Rect::new(ico_r.x + 88.0, daw_top.y + 44.0, daw_top.w - 110.0, 28.0),
+        TextStyle::Title22Bold,
+        p.text_primary,
+    );
+    ctx.draw_text(
+        "Estación de audio digital nativa en Rust · Tema Aura Obsidian",
+        Rect::new(ico_r.x + 88.0, daw_top.y + 74.0, daw_top.w - 104.0, 18.0),
+        TextStyle::Body11Reg,
+        p.text_secondary,
+    );
+
+    // Feature description (2 crisp lines — zero ellipsis truncation!) & 2x2 capability chips
+    ctx.draw_text(
+        "Compón beats, graba MIDI y mezcla con Piano Roll, Channel Rack y Mixer.",
+        Rect::new(daw_r.x + 20.0, daw_top.y + daw_top.h + 14.0, daw_r.w - 40.0, 18.0),
+        TextStyle::Body11Reg,
+        p.text_secondary,
+    );
+    ctx.draw_text(
+        "Incluye 28 plugins DSP nativos, VST3/VST2/CLAP e importación .flp / .lsp.",
+        Rect::new(daw_r.x + 20.0, daw_top.y + daw_top.h + 33.0, daw_r.w - 40.0, 18.0),
+        TextStyle::Body11Reg,
+        p.text_tertiary,
+    );
+
+    let chips = [
+        ("Piano Roll & Mixer", theme::VIOLET_LIGHT),
+        ("28 Plugins DSP nativos", theme::EMERALD),
+        ("Puente VST3 / VST2 / CLAP", theme::BLUE),
+        ("Proyectos .flp y .lsp", theme::AMBER),
+    ];
+    let chip_w = (daw_r.w - 50.0) * 0.5;
+    let chip_y0 = daw_top.y + daw_top.h + 64.0;
+    for (ci, (clbl, ccol)) in chips.into_iter().enumerate() {
+        let col = (ci % 2) as f32;
+        let row = (ci / 2) as f32;
+        let cr = Rect::new(daw_r.x + 20.0 + col * (chip_w + 10.0), chip_y0 + row * 34.0, chip_w, 26.0);
+        ctx.fill_card(cr, 9.0, p.surface, p.border);
+        ctx.fill_circle(cr.x + 12.0, cr.y + 13.0, 3.5, ccol);
+        ctx.draw_text(clbl, Rect::new(cr.x + 22.0, cr.y, cr.w - 28.0, 26.0), TextStyle::Small10Med, p.text_primary);
+    }
+
+    // Primary CTA Button for AuraBeats
+    let daw_btn = Rect::new(daw_r.x + 20.0, daw_r.y + daw_r.h - 56.0, daw_r.w - 40.0, 38.0);
+    ctx.fill_rrect(daw_btn, 13.0, if daw_hov { p.accent_light } else { p.accent });
+    ctx.draw_vector_icon(VectorIcon::Play, daw_btn.x + daw_btn.w * 0.5 - 86.0, daw_btn.y + 19.0, 12.0, theme::CRISP_WHITE);
+    ctx.draw_text_center(
+        if state.aurabeats_installed { "Abrir AuraBeats DAW" } else { "Compilar / Abrir AuraBeats" },
+        daw_btn,
+        TextStyle::Body12Semi,
+        theme::CRISP_WHITE,
+    );
+    hits.push(HitRegion {
+        id: "studio_aurabeats".into(),
+        rect: daw_r,
+        action: Action::LaunchAuraBeats,
+        right_action: None,
+        tooltip: Some("Lanzar AuraBeats DAW (motor aislado de audio GPL-3.0)".into()),
+        slider: None,
+    });
+
+    // 2. CARD: AURAPHOTOS STUDIO (GPU Photo Editor)
+    let ph_x = daw_r.x + daw_r.w + gap;
+    let ph_r = Rect::new(ph_x, main_y, side_w, main_h);
+    let ph_hov = state.hovered_id.as_deref() == Some("studio_auraphotos");
+    ctx.fill_card(
+        ph_r,
+        24.0,
+        if ph_hov { p.elevated } else { p.card_bg },
+        if ph_hov { theme::EMERALD } else { p.border },
+    );
+
+    let ph_ic = Rect::new(ph_r.x + 20.0, ph_r.y + 20.0, 52.0, 52.0);
+    ctx.fill_card(ph_ic, 16.0, theme::rgba(34, 197, 94, 0.14), theme::rgba(34, 197, 94, 0.40));
+    ctx.draw_vector_icon(VectorIcon::Image, ph_ic.x + 26.0, ph_ic.y + 26.0, 24.0, theme::EMERALD);
+
+    let ph_tag = Rect::new(ph_r.x + ph_r.w - 94.0, ph_r.y + 24.0, 74.0, 21.0);
+    ctx.fill_rrect(ph_tag, 8.0, theme::rgba(34, 197, 94, 0.16));
+    ctx.draw_text_center("FOTO · GPU", ph_tag, TextStyle::Small9Reg, theme::EMERALD);
+
+    ctx.draw_text("AuraPhotos Studio", Rect::new(ph_r.x + 20.0, ph_r.y + 88.0, ph_r.w - 40.0, 24.0), TextStyle::Title16Semi, p.text_primary);
+    ctx.draw_text(
+        "Visor y editor fotográfico GPU Direct2D",
+        Rect::new(ph_r.x + 20.0, ph_r.y + 118.0, ph_r.w - 40.0, 18.0),
+        TextStyle::Body11Reg,
+        p.text_secondary,
+    );
+    ctx.draw_text(
+        "con zoom fluido, rotación y exportación.",
+        Rect::new(ph_r.x + 20.0, ph_r.y + 137.0, ph_r.w - 40.0, 18.0),
+        TextStyle::Body11Reg,
+        p.text_tertiary,
+    );
+
+    for (pi, plbl) in ["Direct2D 60 FPS sin lag", "PNG · JPG · WEBP · BMP", "Integrado con AuraFiles"].into_iter().enumerate() {
+        let pr = Rect::new(ph_r.x + 20.0, ph_r.y + 182.0 + pi as f32 * 30.0, ph_r.w - 40.0, 24.0);
+        ctx.fill_card(pr, 8.0, p.surface, p.border);
+        ctx.fill_circle(pr.x + 11.0, pr.y + 12.0, 3.0, theme::EMERALD);
+        ctx.draw_text(plbl, Rect::new(pr.x + 20.0, pr.y, pr.w - 26.0, 24.0), TextStyle::Small10Med, p.text_secondary);
+    }
+
+    let ph_btn = Rect::new(ph_r.x + 20.0, ph_r.y + ph_r.h - 56.0, ph_r.w - 40.0, 38.0);
+    ctx.fill_card(ph_btn, 13.0, if ph_hov { theme::EMERALD } else { p.elevated }, theme::rgba(34, 197, 94, 0.45));
+    ctx.draw_text_center("Abrir AuraPhotos", ph_btn, TextStyle::Body12Semi, if ph_hov { theme::DARK_INK } else { p.text_primary });
+    hits.push(HitRegion {
+        id: "studio_auraphotos".into(),
+        rect: ph_r,
+        action: Action::LaunchAuraApp("AuraPhotos.exe"),
+        right_action: None,
+        tooltip: Some("Abrir AuraPhotos Studio".into()),
+        slider: None,
+    });
+
+    // 3. CARD: VIDEO EDITOR SLOT (Próximo módulo open-source en Aura Studio)
+    let vid_x = ph_r.x + ph_r.w + gap;
+    let vid_r = Rect::new(vid_x, main_y, side_w, main_h);
+    let vid_hov = state.hovered_id.as_deref() == Some("studio_video_player");
+    ctx.fill_card(
+        vid_r,
+        24.0,
+        if vid_hov { p.elevated } else { p.card_bg },
+        if vid_hov { theme::AMBER } else { p.border },
+    );
+
+    let vid_ic = Rect::new(vid_r.x + 20.0, vid_r.y + 20.0, 52.0, 52.0);
+    ctx.fill_card(vid_ic, 16.0, theme::rgba(245, 183, 49, 0.14), theme::rgba(245, 183, 49, 0.40));
+    ctx.draw_vector_icon(VectorIcon::Film, vid_ic.x + 26.0, vid_ic.y + 26.0, 24.0, theme::AMBER);
+
+    let vid_tag = Rect::new(vid_r.x + vid_r.w - 112.0, vid_r.y + 24.0, 92.0, 21.0);
+    ctx.fill_rrect(vid_tag, 8.0, theme::rgba(245, 183, 49, 0.16));
+    ctx.draw_text_center("PRÓXIMO MÓDULO", vid_tag, TextStyle::Small9Reg, theme::AMBER);
+
+    ctx.draw_text("Editor de Video", Rect::new(vid_r.x + 20.0, vid_r.y + 88.0, vid_r.w - 40.0, 24.0), TextStyle::Title16Semi, p.text_primary);
+    ctx.draw_text(
+        "Espacio reservado en Aura Studio para",
+        Rect::new(vid_r.x + 20.0, vid_r.y + 118.0, vid_r.w - 40.0, 18.0),
+        TextStyle::Body11Reg,
+        p.text_secondary,
+    );
+    ctx.draw_text(
+        "tu próximo editor open-source nativo.",
+        Rect::new(vid_r.x + 20.0, vid_r.y + 137.0, vid_r.w - 40.0, 18.0),
+        TextStyle::Body11Reg,
+        p.text_tertiary,
+    );
+
+    for (vi, vlbl) in ["Timeline GPU multipista", "Render nativo hardware", "Integración con AuraPlayer"].into_iter().enumerate() {
+        let vr = Rect::new(vid_r.x + 20.0, vid_r.y + 182.0 + vi as f32 * 30.0, vid_r.w - 40.0, 24.0);
+        ctx.fill_card(vr, 8.0, p.surface, p.border);
+        ctx.fill_circle(vr.x + 11.0, vr.y + 12.0, 3.0, theme::AMBER);
+        ctx.draw_text(vlbl, Rect::new(vr.x + 20.0, vr.y, vr.w - 26.0, 24.0), TextStyle::Small10Med, p.text_tertiary);
+    }
+
+    let vid_btn = Rect::new(vid_r.x + 20.0, vid_r.y + vid_r.h - 56.0, vid_r.w - 40.0, 38.0);
+    ctx.fill_card(vid_btn, 13.0, if vid_hov { theme::rgba(245, 183, 49, 0.24) } else { p.elevated }, theme::rgba(245, 183, 49, 0.42));
+    ctx.draw_text_center("Abrir AuraPlayer", vid_btn, TextStyle::Body12Semi, theme::AMBER);
+    hits.push(HitRegion {
+        id: "studio_video_player".into(),
+        rect: vid_r,
+        action: Action::LaunchAuraApp("AuraPlayer.exe"),
+        right_action: None,
+        tooltip: Some("Abrir reproductor multimedia AuraPlayer".into()),
+        slider: None,
+    });
+
+    // --- BOTTOM QUICK CREATIVE TOOLS STRIP ---
+    let strip_y = main_y + main_h + gap;
+    let tools = [
+        ("studio_tool_pdf", "AuraPDF Studio", "Lector & editor PDF nativo", VectorIcon::FileText, theme::CORAL, Action::LaunchAuraPdf),
+        ("studio_tool_shot", "AuraShot OCR", "Capturas y texto instantáneo", VectorIcon::Sparkle, p.accent_light, Action::LaunchAuraShot),
+        ("studio_tool_player", "AuraPlayer", "Video y audio sin bloatware", VectorIcon::Play, theme::BLUE, Action::LaunchAuraApp("AuraPlayer.exe")),
+        ("studio_tool_notes", "AuraNotes", "Notas, guiones y código", VectorIcon::Code, theme::EMERALD, Action::LaunchAuraApp("AuraNotes.exe")),
+    ];
+    let tw = (area.w - gap * 3.0) / 4.0;
+    for (ti, (id, title, sub, icon, accent, act)) in tools.into_iter().enumerate() {
+        let tr = Rect::new(area.x + ti as f32 * (tw + gap), strip_y, tw, 76.0);
+        let thov = state.hovered_id.as_deref() == Some(id);
+        ctx.fill_card(tr, 18.0, if thov { p.elevated } else { p.card_bg }, if thov { p.accent_border } else { p.border });
+        let tib = Rect::new(tr.x + 14.0, tr.y + 18.0, 40.0, 40.0);
+        ctx.fill_rrect(tib, 12.0, theme::with_alpha(accent, 0.16));
+        ctx.draw_vector_icon(icon, tib.x + 20.0, tib.y + 20.0, 17.0, accent);
+        ctx.draw_text(title, Rect::new(tr.x + 64.0, tr.y + 17.0, tr.w - 86.0, 20.0), TextStyle::Body12Semi, p.text_primary);
+        ctx.draw_text(sub, Rect::new(tr.x + 64.0, tr.y + 39.0, tr.w - 86.0, 16.0), TextStyle::Small9Reg, p.text_tertiary);
+        ctx.draw_vector_icon(VectorIcon::External, tr.x + tr.w - 22.0, tr.y + 38.0, 11.0, if thov { p.text_primary } else { p.text_tertiary });
+        hits.push(HitRegion {
+            id: id.into(),
+            rect: tr,
+            action: act,
+            right_action: None,
+            tooltip: Some(format!("Abrir {}", title)),
+            slider: None,
+        });
     }
 }
 

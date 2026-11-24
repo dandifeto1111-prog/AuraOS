@@ -1,6 +1,6 @@
 ﻿param(
-    [string]$Version = "5.2.0",
-    [string]$Changelog = "v5.2.0: Motor de video aislado AuraWallpaper.exe (1080p/1440p nativo 60 FPS + decodificacion hardware DXVA sin pixelado ni fugas), reduccion radical de CPU/RAM en AuraShell.exe (~40 MB, 0% polling en reposo, brocha D2D reutilizada y recorte DXGI), linea de tiempo musical sincronizada real con SMTC + salto con clic (MM:SS), eliminacion de semaforos en apps externas (solo ventanas nativas AuraOS) e instalador inteligente multi-paso con escaner profundo de hardware y memoria de APBOptimizer."
+    [string]$Version = "5.2.1",
+    [string]$Changelog = "v5.2.1: Hub creativo nativo Aura Studio (PC | Dev | Gamer | Studio | Fondos) integrado con AuraBeats DAW (fork GPL-3.0 de Lemon-Studio en Rust con tema Aura Obsidian Violet, semaforos macOS, 28 plugins DSP, VST3/VST2/CLAP, WASAPI+ASIO y apertura directa de proyectos .flp/.lsp desde AuraFiles), registro automatico en Launchpad/Spotlight/Mezclador de Audio y espacio reservado para el proximo Editor de Video."
 )
 
 $ErrorActionPreference = "Stop"

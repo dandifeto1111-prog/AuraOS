@@ -1379,11 +1379,115 @@ pub fn launch_aura_app(exe_name: &str, file_arg: Option<&str>) -> bool {
     cmd.spawn().is_ok()
 }
 
+pub fn is_daw_project_ext(ext: &str) -> bool {
+    matches!(ext.to_lowercase().as_str(), "flp" | "lsp")
+}
+
+pub fn resolve_aurabeats_path() -> Option<std::path::PathBuf> {
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let p = Path::new(&local).join("AuraBeats").join("AuraBeats.exe");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    if let Some(p) = resolve_aura_app_path("AuraBeats.exe") {
+        return Some(p);
+    }
+    let dev = std::path::PathBuf::from(
+        r"C:\Users\danil\.gemini\antigravity\scratch\AuraBeats\target\release\AuraBeats.exe",
+    );
+    if dev.exists() {
+        return Some(dev);
+    }
+    None
+}
+
+pub fn resolve_aurabeats_icon_path() -> Option<std::path::PathBuf> {
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let p1 = Path::new(&local).join("AuraBeats").join("AuraBeats_256.png");
+        if p1.exists() {
+            return Some(p1);
+        }
+        let p2 = Path::new(&local)
+            .join("AuraShell")
+            .join("assets")
+            .join("icons")
+            .join("AuraBeats_256.png");
+        if p2.exists() {
+            return Some(p2);
+        }
+    }
+    if let Ok(cur) = std::env::current_exe() {
+        if let Some(dir) = cur.parent() {
+            let p1 = dir.join("AuraBeats_256.png");
+            if p1.exists() {
+                return Some(p1);
+            }
+            let p2 = dir.join("assets").join("icons").join("AuraBeats_256.png");
+            if p2.exists() {
+                return Some(p2);
+            }
+        }
+    }
+    let dev = std::path::PathBuf::from(
+        r"C:\Users\danil\.gemini\antigravity\scratch\AuraOS-Rust\assets\icons\AuraBeats_256.png",
+    );
+    if dev.exists() {
+        return Some(dev);
+    }
+    None
+}
+
+pub fn launch_aurabeats(project_file: Option<&str>) -> bool {
+    let Some(exe) = resolve_aurabeats_path() else {
+        return false;
+    };
+    let mut cmd = std::process::Command::new(&exe);
+    if let Some(f) = project_file {
+        if !f.trim().is_empty() {
+            cmd.arg(f);
+        }
+    }
+    cmd.spawn().is_ok()
+}
+
+pub fn count_aurabeats_plugins() -> usize {
+    let mut dirs = Vec::new();
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        dirs.push(Path::new(&local).join(r"Programs\Common\CLAP"));
+        dirs.push(Path::new(&local).join(r"Programs\Common\VST3"));
+    }
+    dirs.push(std::path::PathBuf::from(r"C:\Program Files\Common Files\CLAP"));
+    dirs.push(std::path::PathBuf::from(r"C:\Program Files\Common Files\VST3"));
+
+    let mut seen = std::collections::HashSet::new();
+    for dir in dirs {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            let ext = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if ext == "clap" || ext == "vst3" {
+                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                    seen.insert(stem.to_lowercase());
+                }
+            }
+        }
+    }
+    seen.len()
+}
+
 /// Smart AuraOS File Router: opens Images in AuraPhotos, Videos/Audio in AuraPlayer,
-/// Text/Code in AuraNotes, and everything else via Windows ShellExecuteW!
+/// DAW Projects (.flp/.lsp) in AuraBeats, Text/Code in AuraNotes, and everything else via Windows ShellExecuteW!
 pub fn open_path_with_aura_suite(path: &Path) {
     let path_str = path.to_string_lossy().to_string();
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if is_daw_project_ext(ext) && launch_aurabeats(Some(&path_str)) {
+        return;
+    }
     if is_pdf_ext(ext) && launch_aura_app("AuraPDF.exe", Some(&path_str)) {
         return;
     }

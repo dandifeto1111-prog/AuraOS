@@ -433,7 +433,9 @@ fn friendly_app_name(proc_name: &str) -> String {
         "obs64" => "OBS Studio".to_string(),
         "vlc" => "VLC Media Player".to_string(),
         "code" => "VS Code".to_string(),
-        "aurashell" => "AuraOS Fondos".to_string(),
+        "aurabeats" | "lemonstudio" => "AuraBeats DAW".to_string(),
+        "aurawallpaper" => "AuraOS Fondos".to_string(),
+        "aurashell" => "AuraOS".to_string(),
         "" => String::new(),
         other => {
             let mut ch = other.chars();

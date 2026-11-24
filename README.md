@@ -5,7 +5,7 @@
   <p>Conserva toda la compatibilidad de juegos, DirectX, drivers y anti-cheats de Windows (Riot Vanguard, Steam, Epic), mientras reemplaza la interfaz pesada por una suite ultrarrápida estilo <em>Drool Dark Mode</em>.</p>
 
   <p>
-    <a href="https://github.com/dandifeto1111-prog/AuraOS/releases/latest"><img src="https://img.shields.io/badge/Release-v5.2.0-7C5CFF?style=for-the-badge&logo=github" alt="Release v5.2.0" /></a>
+    <a href="https://github.com/dandifeto1111-prog/AuraOS/releases/latest"><img src="https://img.shields.io/badge/Release-v5.2.1-7C5CFF?style=for-the-badge&logo=github" alt="Release v5.2.1" /></a>
     <img src="https://img.shields.io/badge/100%25_Rust-Direct2D_%2B_DirectComposition-F4727F?style=for-the-badge&logo=rust" alt="100% Rust" />
     <img src="https://img.shields.io/badge/OS-Windows_11_x64-34D399?style=for-the-badge&logo=windows11" alt="Windows 11" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-FBBF24?style=for-the-badge" alt="MIT License" /></a>
@@ -22,9 +22,23 @@ Cada aplicación del sistema está acelerada por hardware con **Direct2D y Direc
 
 ---
 
-## 🖼️ Galería del Sistema (Capturas Reales v5.2.0)
+## 🖼️ Galería del Sistema (Capturas Reales v5.2.1)
 
-### ⚡ Nuevo en v5.2.0: Motor Aislado `AuraWallpaper.exe` (1080p/1440p 60 FPS DXVA), Shell Ultra-Ligero (~25 MB) e Instalador Inteligente de 4 Pasos
+### 🎹 Nuevo en v5.2.1: Hub Creativo `Aura Studio` + `AuraBeats DAW` (Fork Nativo de Lemon-Studio en Rust)
+Nuevo modo **`Studio`** en la barra superior (`PC | Dev | Gamer | Studio | Fondos`) con lanzamiento en 1 clic de **`AuraBeats DAW`** (estación de audio digital en Rust puro bajo GPL-3.0, proceso aislado con 0 MB en reposo, tema **Aura Obsidian Violet**, semáforos macOS unificados, 28 plugins DSP nativos, soporte **VST3 / VST2 / CLAP**, **WASAPI + ASIO**, Piano Roll, Channel Rack, Mixer e importación nativa de proyectos `.flp` / `.lsp`), junto a **`AuraPhotos Studio`**, espacio reservado para el próximo **Editor de Video** open-source y accesos rápidos a `AuraPDF`, `AuraShot OCR`, `AuraPlayer` y `AuraNotes`.
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/v53_aura_studio.png" alt="AuraOS v5.2.1 Aura Studio — Suite Creativa Nativa" /></td>
+    <td><img src="docs/screenshots/v521_aurabeats_daw.png" alt="AuraBeats DAW — Tema Aura Obsidian Violet con semáforos macOS" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><strong>Hub Creativo Aura Studio:</strong> Lanzador nativo para <code>AuraBeats DAW</code>, <code>AuraPhotos Studio</code>, espacio reservado para el próximo Editor de Video y herramientas rápidas</sub></td>
+    <td align="center"><sub><strong>AuraBeats DAW (GPL-3.0):</strong> Fork nativo de Lemon-Studio en Rust con tema <em>Aura Obsidian Violet</em>, semáforos macOS, 28 plugins DSP, VST3/VST2/CLAP, WASAPI+ASIO y proyectos <code>.flp</code></sub></td>
+  </tr>
+</table>
+
+### ⚡ v5.2.0: Motor Aislado `AuraWallpaper.exe` (1080p/1440p 60 FPS DXVA), Shell Ultra-Ligero (~25 MB) e Instalador Inteligente de 4 Pasos
 El motor de video ahora corre en su propio proceso aislado (`AuraWallpaper.exe`) con decodificación por hardware **DXVA/D3D11**, resolución nativa sin pixelado, **60 FPS reales** y pausa sin fugas (`0.0% CPU`), dejando a `AuraShell.exe` en **~20–30 MB de Working Set y 0% CPU en reposo**. La barra ondulada de música ahora se sincroniza en tiempo real con **Spotify, YouTube y VLC** (`M:SS / M:SS` con salto al clic), y el nuevo instalador escanea tu hardware para adaptar AuraOS automáticamente sin volver a pedir `APBOptimizer` en actualizaciones.
 
 <table>

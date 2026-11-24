@@ -79,12 +79,12 @@ pub fn render_topbar(ctx: &mut DrawCtx<'_>, state: &AppState, width: f32, hits: 
     );
     let d1 = if state.mode == ShellMode::PC { p.accent } else { theme::rgba(255, 255, 255, 0.35) };
     let d2 = if state.mode == ShellMode::Dev { p.accent } else { theme::rgba(255, 255, 255, 0.35) };
-    let d3 = if state.mode == ShellMode::Gamer || state.mode == ShellMode::Studio { p.accent } else { theme::rgba(255, 255, 255, 0.35) };
+    let d3 = if matches!(state.mode, ShellMode::Gamer | ShellMode::Creative | ShellMode::Studio) { p.accent } else { theme::rgba(255, 255, 255, 0.35) };
     ctx.fill_rrect(Rect::new(lx + 9.0, 14.5, if state.mode == ShellMode::PC { 12.0 } else { 5.0 }, 5.0), 2.5, d1);
     let dx2 = lx + if state.mode == ShellMode::PC { 24.0 } else { 17.0 };
     ctx.fill_rrect(Rect::new(dx2, 14.5, if state.mode == ShellMode::Dev { 12.0 } else { 5.0 }, 5.0), 2.5, d2);
     let dx3 = dx2 + if state.mode == ShellMode::Dev { 15.0 } else { 8.0 };
-    ctx.fill_rrect(Rect::new(dx3, 14.5, if state.mode == ShellMode::Gamer || state.mode == ShellMode::Studio { 12.0 } else { 5.0 }, 5.0), 2.5, d3);
+    ctx.fill_rrect(Rect::new(dx3, 14.5, if matches!(state.mode, ShellMode::Gamer | ShellMode::Creative | ShellMode::Studio) { 12.0 } else { 5.0 }, 5.0), 2.5, d3);
     ctx.draw_text("Actividades", Rect::new(lx + 44.0, 5.0, 66.0, 24.0), TextStyle::Body11Med, p.text_primary);
     hits.push(HitRegion {
         id: "top_act".into(),
@@ -182,7 +182,7 @@ pub fn render_topbar(ctx: &mut DrawCtx<'_>, state: &AppState, width: f32, hits: 
         + (8.0 + 132.0) // sys tray
         + (8.0 + 78.0)  // media
         + if has_tasks { 8.0 + 104.0 } else { 0.0 }
-        + (10.0 + 198.0); // 4-mode switcher
+        + (10.0 + 246.0); // 5-mode switcher (PC | Dev | Gamer | Studio | Fondos)
     let right_start_x = width - right_cluster_total;
 
     // ==================== CENTER CLUSTER (Clock + Weather + Pomodoro -> AuraCalendar!) ====================
@@ -443,15 +443,15 @@ pub fn render_topbar(ctx: &mut DrawCtx<'_>, state: &AppState, width: f32, hits: 
         });
     }
 
-    // 8. 4-Mode Segmented Switcher (PC | Dev | Gamer | Fondos)
+    // 8. 5-Mode Segmented Switcher (PC | Dev | Gamer | Studio | Fondos)
     rx -= 10.0;
-    let mode_w = 198.0;
+    let mode_w = 246.0;
     rx -= mode_w;
     let mode_box = Rect::new(rx, 5.0, mode_w, 24.0);
     ctx.fill_card(mode_box, 11.0, p.pill_subtle, p.border);
 
-    let seg_w = (mode_w - 6.0) / 4.0;
-    let pill_x = rx + 3.0 + state.overview_tab_pill_x.value.clamp(0.0, 3.0) * seg_w;
+    let seg_w = (mode_w - 6.0) / 5.0;
+    let pill_x = rx + 3.0 + state.overview_tab_pill_x.value.clamp(0.0, 4.0) * seg_w;
     ctx.fill_rrect(
         Rect::new(pill_x, 7.0, seg_w, 20.0),
         9.0,
@@ -462,6 +462,7 @@ pub fn render_topbar(ctx: &mut DrawCtx<'_>, state: &AppState, width: f32, hits: 
         ("top_mode_pc", "PC", ShellMode::PC),
         ("top_mode_dev", "Dev", ShellMode::Dev),
         ("top_mode_gamer", "Gamer", ShellMode::Gamer),
+        ("top_mode_creative", "Studio", ShellMode::Creative),
         ("top_mode_studio", "Fondos", ShellMode::Studio),
     ];
     for (i, (id, lbl, m)) in modes.into_iter().enumerate() {

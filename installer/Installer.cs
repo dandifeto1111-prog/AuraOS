@@ -868,6 +868,14 @@ namespace AuraShellInstaller
                     }
                 }
 
+                // Copy AuraBeats Studio icon asset so Aura Studio Hub always displays the crisp HD icon
+                foreach (string studioAsset in new[] { "AuraBeats_256.png", "AuraBeats.ico" })
+                {
+                    string sAsset = Path.Combine(sourceDir, studioAsset);
+                    if (!File.Exists(sAsset)) sAsset = Path.Combine(Path.Combine(sourceDir, @"assets\icons"), studioAsset);
+                    if (File.Exists(sAsset)) SafeCopyFileWithRetry(sAsset, Path.Combine(InstallDir, studioAsset));
+                }
+
                 report(68, "Copiando scripts de restauración, manifiesto y actualizador...");
                 string dstRestore = Path.Combine(InstallDir, "restore-windows.ps1");
                 string dstApb = Path.Combine(InstallDir, "APBOptimizer.ps1");
@@ -1017,7 +1025,7 @@ namespace AuraShellInstaller
                 }
 
                 var verMeta = ReadManifest(InstallDir) ?? ReadManifest(sourceDir);
-                string verLabel = verMeta != null && !string.IsNullOrEmpty(verMeta.Version) ? verMeta.Version : "5.2.0";
+                string verLabel = verMeta != null && !string.IsNullOrEmpty(verMeta.Version) ? verMeta.Version : "5.2.1";
 
                 using (RegistryKey key = Registry.CurrentUser.CreateSubKey(UninstallRegKey))
                 {
@@ -1436,7 +1444,7 @@ namespace AuraShellInstaller
                 Margin = new Thickness(10, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center
             };
-            _versionBadgeTxt = new TextBlock { Text = "v5.2.0", Foreground = Brushes.White, FontSize = 10.6, FontWeight = FontWeights.SemiBold };
+            _versionBadgeTxt = new TextBlock { Text = "v5.2.1", Foreground = Brushes.White, FontSize = 10.6, FontWeight = FontWeights.SemiBold };
             _versionBadge.Child = _versionBadgeTxt;
             titleRow.Children.Add(_versionBadge);
             titleStack.Children.Add(titleRow);
@@ -1504,7 +1512,7 @@ namespace AuraShellInstaller
         {
             VersionManifest inst, avail;
             bool hasNewer = InstallerProgram.HasNewerVersionAvailable(out inst, out avail);
-            string verStr = avail != null && !string.IsNullOrEmpty(avail.Version) ? avail.Version : "5.2.0";
+            string verStr = avail != null && !string.IsNullOrEmpty(avail.Version) ? avail.Version : "5.2.1";
             if (!_isInstalled)
             {
                 _versionBadge.Background = new SolidColorBrush(Violet);
@@ -1593,7 +1601,7 @@ namespace AuraShellInstaller
             vcGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.2, GridUnitType.Star) });
 
             vcGrid.Children.Add(MakeStatCell("INSTALADA ACTUALMENTE", inst != null ? ("v" + inst.Version) : (_isInstalled ? "Instalada" : "Sin instalar"), Brushes.White));
-            var c2 = MakeStatCell("PAQUETE DISPONIBLE", avail != null ? ("v" + avail.Version) : "v5.2.0", new SolidColorBrush(VioletHover));
+            var c2 = MakeStatCell("PAQUETE DISPONIBLE", avail != null ? ("v" + avail.Version) : "v5.2.1", new SolidColorBrush(VioletHover));
             Grid.SetColumn(c2, 1); vcGrid.Children.Add(c2);
             var c3 = MakeStatCell("SISTEMA DETECTADO", _hw.WindowsLabel, TextPrimary);
             Grid.SetColumn(c3, 2); vcGrid.Children.Add(c3);

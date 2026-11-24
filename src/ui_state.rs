@@ -17,6 +17,8 @@ pub enum Action {
     LaunchAuraTasks,
     LaunchAuraShot,
     LaunchAuraPdf,
+    LaunchAuraBeats,
+    LaunchAuraApp(&'static str),
     ToggleCalendar,
     CalPrevMonth,
     CalNextMonth,
@@ -255,6 +257,9 @@ pub struct AppState {
     pub pending_update: Option<crate::updater::UpdateInfo>,
     pub game_boost_status: String,
     pub update_available_ver: Option<String>,
+    pub aurabeats_installed: bool,
+    pub aurabeats_plugin_count: usize,
+    pub aurabeats_icon_path: Option<String>,
 
     // Tactile press feedback (Emil Kowalski scale(0.97) on press)
     pub hovered_id: Option<String>,
@@ -273,8 +278,13 @@ impl AppState {
             ShellMode::PC => 0.0,
             ShellMode::Dev => 1.0,
             ShellMode::Gamer => 2.0,
-            ShellMode::Studio => 3.0,
+            ShellMode::Creative => 3.0,
+            ShellMode::Studio => 4.0,
         };
+        let aurabeats_installed = crate::win32_shell::resolve_aurabeats_path().is_some();
+        let aurabeats_plugin_count = crate::win32_shell::count_aurabeats_plugins();
+        let aurabeats_icon_path = crate::win32_shell::resolve_aurabeats_icon_path()
+            .map(|p| p.to_string_lossy().to_string());
         Self {
             settings,
             custom_items,
@@ -374,6 +384,9 @@ impl AppState {
             pending_update: None,
             game_boost_status: "Listo para optimizar rendimiento".to_string(),
             update_available_ver: None,
+            aurabeats_installed,
+            aurabeats_plugin_count,
+            aurabeats_icon_path,
             hovered_id: None,
             pressed_id: None,
             active_slider: None,

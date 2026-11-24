@@ -454,6 +454,22 @@ pub fn scan_all_apps(custom: &CustomItemsStore) -> Vec<AppEntry> {
         }
     }
 
+    // Always register AuraBeats DAW (Aura Studio) when installed so it appears in Launchpad & Spotlight!
+    if let Some(p) = crate::win32_shell::resolve_aurabeats_path() {
+        let p_str = p.to_string_lossy().to_string();
+        if seen.insert("aurabeats daw".to_string()) {
+            apps.push(AppEntry {
+                name: "AuraBeats DAW".to_string(),
+                target: p_str.clone(),
+                icon_path: p_str,
+                category: "Studio".to_string(),
+                is_web: false,
+                is_custom: false,
+                custom_id: None,
+            });
+        }
+    }
+
     // Include custom Dev/AI apps
     for c in &custom.dev_ai_items {
         let key = c.name.to_lowercase();

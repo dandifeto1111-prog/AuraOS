@@ -1415,13 +1415,15 @@ impl ShellRuntime {
                     ShellMode::PC => 0.0,
                     ShellMode::Dev => 1.0,
                     ShellMode::Gamer => 2.0,
-                    ShellMode::Studio => 3.0,
+                    ShellMode::Creative => 3.0,
+                    ShellMode::Studio => 4.0,
                 };
                 let target_idx = match m {
                     ShellMode::PC => 0.0,
                     ShellMode::Dev => 1.0,
                     ShellMode::Gamer => 2.0,
-                    ShellMode::Studio => 3.0,
+                    ShellMode::Creative => 3.0,
+                    ShellMode::Studio => 4.0,
                 };
                 let same_mode = self.state.mode == m && !self.state.overview_settings_view;
                 if same_mode && self.state.overview_open {
@@ -1490,6 +1492,18 @@ impl ShellRuntime {
             Action::LaunchAuraPdf => {
                 self.close_all_overlays();
                 win32_shell::launch_aura_pdf(None);
+            }
+            Action::LaunchAuraBeats => {
+                self.close_all_overlays();
+                if !win32_shell::launch_aurabeats(None) {
+                    // Refresh status in case it was installed after shell startup
+                    self.state.aurabeats_installed = win32_shell::resolve_aurabeats_path().is_some();
+                    self.state.aurabeats_plugin_count = win32_shell::count_aurabeats_plugins();
+                }
+            }
+            Action::LaunchAuraApp(exe) => {
+                self.close_all_overlays();
+                let _ = win32_shell::launch_aura_app(exe, None);
             }
             Action::ToggleCalendar => {
                 if self.state.calendar_open || AppState::was_just_closed(self.state.calendar_last_closed) {
@@ -2396,7 +2410,7 @@ impl ShellRuntime {
                         save_settings(&self.state.settings);
                         self.wallpaper.set_wallpaper(&mut self.gpu, &wp_id);
                         self.state.mode = ShellMode::Studio;
-                        self.state.overview_tab_pill_x.snap(3.0);
+                        self.state.overview_tab_pill_x.snap(4.0);
                         self.wake_anim_timer();
                     }
                 }
@@ -3491,7 +3505,7 @@ fn run_visual_capture(out_dir: &PathBuf) {
     state.overview_open = true;
     state.overview_anim.snap(1.0);
     state.tab_content_anim.snap(1.0);
-    state.overview_tab_pill_x.snap(3.0);
+    state.overview_tab_pill_x.snap(4.0);
     let _ = gpu.render_to_png(1600, 900, &out_dir.join("v31_studio.png"), |ctx| {
         let mut h1 = Vec::new();
         let mut h2 = Vec::new();
@@ -3696,5 +3710,27 @@ fn run_visual_capture(out_dir: &PathBuf) {
         ui_dock::render_dock(ctx, &state, DOCK_THICKNESS, 900.0 - TOPBAR_HEIGHT, true, &mut h3);
         ctx.reset_transform();
         ui_topbar::render_topbar(ctx, &state, 1600.0, &mut h4);
+    });
+
+    // 13. Capture v5.3 Aura Studio Creative Suite Hub (AuraBeats DAW + AuraPhotos + Video Slot!)
+    theme::apply_theme_scheme("Violet", (124, 92, 255));
+    state.overview_open = true;
+    state.overview_anim.snap(1.0);
+    state.search_query.clear();
+    state.mode = ShellMode::Creative;
+    state.overview_tab_pill_x.snap(3.0);
+    state.aurabeats_installed = true;
+    state.aurabeats_plugin_count = state.aurabeats_plugin_count.max(28);
+    let _ = gpu.render_to_png(1600, 900, &out_dir.join("v53_aura_studio.png"), |ctx| {
+        let mut h1 = Vec::new();
+        let mut h2 = Vec::new();
+        let mut h3 = Vec::new();
+        wallpaper::draw_wallpaper_frame(ctx, WallpaperKind::Preset, "aura_obsidian_flow", 1600.0, 900.0, 2.0);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 0.0, TOPBAR_HEIGHT);
+        ui_overview::render_overview(ctx, &state, 1600.0, 900.0 - TOPBAR_HEIGHT, &mut h1);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 0.0, TOPBAR_HEIGHT);
+        ui_dock::render_dock(ctx, &state, DOCK_THICKNESS, 900.0 - TOPBAR_HEIGHT, true, &mut h2);
+        ctx.reset_transform();
+        ui_topbar::render_topbar(ctx, &state, 1600.0, &mut h3);
     });
 }

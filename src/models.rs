@@ -6,7 +6,8 @@ pub enum ShellMode {
     PC,
     Dev,
     Gamer,
-    Studio, // Fondos de Pantalla & Widgets del Escritorio
+    Creative, // Aura Studio — Producción Musical (AuraBeats DAW), Fotos & Video
+    Studio,   // Fondos de Pantalla & Widgets del Escritorio
 }
 
 impl Default for ShellMode {
