@@ -1350,8 +1350,9 @@ impl ShellRuntime {
         self.surf_power.ensure_size(&self.gpu, POWER_MENU_W as u32, POWER_MENU_H as u32);
         self.state.power_confirm = None;
         self.state.power_open = true;
-        self.state.power_anim.snap(0.01);
-        self.state.power_anim.animate_to(1.0, 180.0, CubicBezier::EASE_OUT);
+        self.state.power_anim.snap(0.05);
+        self.state.power_anim.animate_to(1.0, 165.0, CubicBezier::EASE_OUT);
+        self.wake_anim_timer();
         self.redraw_power();
         self.redraw_topbar();
         win32_shell::bring_to_front(self.hwnd_power);
@@ -1479,6 +1480,9 @@ impl ShellRuntime {
             }
             Action::LaunchAuraLock => {
                 self.close_all_overlays();
+                self.state.power_anim.snap(0.0);
+                unsafe { let _ = ShowWindow(self.hwnd_power, SW_HIDE); }
+                self.surf_power.trim_hidden(&self.gpu);
                 win32_shell::launch_aura_lock();
             }
             Action::LaunchAuraTasks => {
@@ -2270,6 +2274,9 @@ impl ShellRuntime {
                     if np_changed {
                         tb_dirty = true;
                         cc_dirty = true;
+                        if self.state.now_playing.is_playing {
+                            self.wake_anim_timer();
+                        }
                         self.redraw_widget(WidgetKind::Music);
                     }
                 }
@@ -2551,27 +2558,26 @@ impl ShellRuntime {
             self.redraw_dock();
         }
 
-        // 8. Animated Desktop Music Visualizer (throttled to 24 FPS; skipped in performance_mode or covered desktop!)
+        // 8. Animated Desktop Music Visualizer (Silky 60 FPS GPU when visible & playing; 0% CPU when paused or covered!)
         let music_enabled = self.state.settings.show_desktop_widgets
             && !self.state.settings.performance_mode
             && self.state.widgets.get(WidgetKind::Music).map(|w| w.enabled).unwrap_or(false);
         let fullscreen_overlay = self.state.launchpad_open || self.state.overview_open;
         let mut music_animating = false;
+        let cc_music_animating = self.state.cc_open
+            && !self.state.settings.performance_mode
+            && self.state.now_playing.is_playing;
         if music_enabled && !self.desktop_covered && !self.hidden_for_fullscreen && !fullscreen_overlay {
             let target_energy = if self.state.now_playing.is_playing { 1.0 } else { 0.0 };
             let diff = target_energy - self.state.music_energy;
             if self.state.now_playing.is_playing || diff.abs() > 0.015 {
                 music_animating = true;
-                self.state.music_energy += diff * (dt_sec * 6.0).min(1.0);
-                self.state.music_wave_phase += dt_sec * 1.8;
+                self.state.music_energy += diff * (dt_sec * 7.5).min(1.0);
+                self.state.music_wave_phase += dt_sec * 2.35;
                 if self.state.music_wave_phase > 1000.0 {
                     self.state.music_wave_phase -= 1000.0;
                 }
-                self.music_anim_accum += dt_sec;
-                if self.music_anim_accum >= 0.083 {
-                    self.music_anim_accum = 0.0;
-                    self.redraw_widget(WidgetKind::Music);
-                }
+                self.redraw_widget(WidgetKind::Music);
             }
         }
 
@@ -2602,22 +2608,18 @@ impl ShellRuntime {
 
         let desired_ms = if genie_running {
             8 // Silky 120 FPS pacing during macOS Genie suction/un-suction!
-        } else if ui_animating {
-            16
+        } else if ui_animating || music_animating || cc_music_animating {
+            16 // Butter-smooth 60 FPS for UI transitions AND live Music Widget / Wavy Timeline!
         } else if !self.state.launchpad_open && self.wallpaper.needs_fast_tick() {
             48
-        } else if music_animating || (self.state.cc_open && self.state.now_playing.is_playing) {
-            83 // Ultra-efficient 12 FPS wavy visualizer (half the GPU work, zero CreateLayer allocs!)
         } else {
             220
         };
-        if self.state.cc_open && self.state.now_playing.is_playing && !music_animating {
-            self.state.music_wave_phase = (self.state.music_wave_phase + dt_sec * 1.8) % 1000.0;
-            self.music_anim_accum += dt_sec;
-            if self.music_anim_accum >= 0.083 {
-                self.music_anim_accum = 0.0;
-                self.redraw_cc();
+        if cc_music_animating {
+            if !music_animating {
+                self.state.music_wave_phase = (self.state.music_wave_phase + dt_sec * 2.35) % 1000.0;
             }
+            self.redraw_cc();
         }
         if desired_ms != self.anim_interval_ms {
             self.anim_interval_ms = desired_ms;

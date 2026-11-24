@@ -34,10 +34,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     SetFocus, VK_BACK, VK_ESCAPE, VK_RETURN, VK_SPACE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, KillTimer, LoadCursorW,
-    PostQuitMessage, RegisterClassW, SetTimer, ShowWindow, TranslateMessage, IDC_ARROW, MSG,
-    SW_HIDE, SW_SHOW, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE,
-    WM_TIMER, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, KillTimer,
+    LoadCursorW, PostQuitMessage, RegisterClassW, SetTimer, ShowWindow, TranslateMessage,
+    IDC_ARROW, MSG, SW_HIDE, SW_SHOW, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN,
+    WM_MOUSEMOVE, WM_TIMER, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOPMOST, WS_POPUP,
 };
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -219,7 +219,9 @@ impl LockRuntime {
             v.stop_now();
         }
         unsafe {
+            let _ = KillTimer(self.hwnd, TIMER_FRAME);
             let _ = ShowWindow(self.hwnd, SW_HIDE);
+            let _ = DestroyWindow(self.hwnd);
             PostQuitMessage(0);
         }
     }
@@ -748,13 +750,25 @@ fn current_clock_and_date() -> (String, String) {
 unsafe extern "system" fn lock_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if msg == WM_CLOSE {
         let should_exit = LOCK_RT.with(|c| {
-            c.try_borrow()
+            c.try_borrow_mut()
                 .ok()
-                .and_then(|g| g.as_ref().map(|r| !r.is_protected()))
+                .and_then(|mut g| {
+                    g.as_mut().map(|r| {
+                        let ok = !r.is_protected();
+                        if ok {
+                            if let Some(mut v) = r.video.take() {
+                                v.stop_now();
+                            }
+                        }
+                        ok
+                    })
+                })
                 .unwrap_or(true)
         });
         if should_exit {
+            let _ = KillTimer(hwnd, TIMER_FRAME);
             let _ = ShowWindow(hwnd, SW_HIDE);
+            let _ = DestroyWindow(hwnd);
             PostQuitMessage(0);
         }
         return LRESULT(0);
@@ -1055,7 +1069,14 @@ fn main() {
 
     LOCK_RT.with(|c| {
         if let Ok(mut g) = c.try_borrow_mut() {
+            if let Some(r) = g.as_mut() {
+                if let Some(mut v) = r.video.take() {
+                    v.stop_now();
+                }
+            }
             *g = None;
         }
     });
+    // Guarantee clean immediate process exit so Media Foundation / MTA threads NEVER linger as a zombie!
+    std::process::exit(0);
 }

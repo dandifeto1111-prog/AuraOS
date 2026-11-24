@@ -84,14 +84,25 @@ pub fn acquire_single_instance_mutex(name: &str) -> bool {
         }
         let last_err = windows::Win32::Foundation::GetLastError();
         if last_err == windows::Win32::Foundation::ERROR_ALREADY_EXISTS {
-            // Try activating existing AuraShell instance
-            let msg_name = to_wide("WM_AURASHELL_V3_ACTIVATE");
-            let msg = RegisterWindowMessageW(PCWSTR(msg_name.as_ptr()));
-            let top_title = to_wide("AuraTopBar");
-            if let Ok(existing) = FindWindowW(None, PCWSTR(top_title.as_ptr())) {
-                if !existing.is_invalid() {
-                    let _ = PostMessageW(existing, msg, WPARAM(0), LPARAM(0));
-                    return false;
+            // ONLY activate AuraTopBar Overview when this mutex belongs to AuraShell itself!
+            // Other apps (AuraLock, AuraSettings, etc.) must NEVER trigger WM_AURASHELL_V3_ACTIVATE!
+            if name.contains("AuraShell") {
+                let msg_name = to_wide("WM_AURASHELL_V3_ACTIVATE");
+                let msg = RegisterWindowMessageW(PCWSTR(msg_name.as_ptr()));
+                let top_title = to_wide("AuraTopBar");
+                if let Ok(existing) = FindWindowW(None, PCWSTR(top_title.as_ptr())) {
+                    if !existing.is_invalid() {
+                        let _ = PostMessageW(existing, msg, WPARAM(0), LPARAM(0));
+                        return false;
+                    }
+                }
+            } else if name.contains("AuraLock") {
+                let lock_title = to_wide("AuraLock");
+                if let Ok(existing) = FindWindowW(None, PCWSTR(lock_title.as_ptr())) {
+                    if !existing.is_invalid() && IsWindowVisible(existing).as_bool() {
+                        bring_to_front(existing);
+                        return false;
+                    }
                 }
             }
             return false;
@@ -984,7 +995,55 @@ pub fn launch_aura_settings(tab: Option<&str>) {
     launch_target("ms-settings:", "");
 }
 
+/// Cleans up any stale/hidden zombie `AuraLock.exe` process before launching a fresh lock screen.
+fn cleanup_stale_auralock_if_hidden() {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::Threading::{TerminateProcess, PROCESS_TERMINATE};
+
+    unsafe {
+        let lock_title = to_wide("AuraLock");
+        if let Ok(existing) = FindWindowW(None, PCWSTR(lock_title.as_ptr())) {
+            if !existing.is_invalid() && IsWindowVisible(existing).as_bool() {
+                // Already genuinely visible on screen — do not kill!
+                return;
+            }
+        }
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return };
+        let mut pe = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snap, &mut pe).is_ok() {
+            loop {
+                let exe = from_wide(&pe.szExeFile);
+                if exe.eq_ignore_ascii_case("AuraLock.exe") {
+                    if let Ok(hp) = OpenProcess(PROCESS_TERMINATE, false, pe.th32ProcessID) {
+                        let _ = TerminateProcess(hp, 0);
+                        let _ = windows::Win32::Foundation::CloseHandle(hp);
+                    }
+                }
+                if Process32NextW(snap, &mut pe).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = windows::Win32::Foundation::CloseHandle(snap);
+    }
+}
+
 pub fn launch_aura_lock() {
+    unsafe {
+        let lock_title = to_wide("AuraLock");
+        if let Ok(existing) = FindWindowW(None, PCWSTR(lock_title.as_ptr())) {
+            if !existing.is_invalid() && IsWindowVisible(existing).as_bool() {
+                bring_to_front(existing);
+                return;
+            }
+        }
+    }
+    cleanup_stale_auralock_if_hidden();
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()));
@@ -994,7 +1053,7 @@ pub fn launch_aura_lock() {
     ];
     for c in candidates.iter().flatten() {
         if c.exists() {
-            launch_target(&c.to_string_lossy(), "");
+            let _ = std::process::Command::new(c).spawn();
             return;
         }
     }

@@ -11,6 +11,7 @@ pub mod hotkey_hook;
 pub mod math_eval;
 pub mod models;
 pub mod motion;
+pub mod ole_dnd;
 pub mod pdf_engine;
 pub mod radios;
 pub mod renderer;
