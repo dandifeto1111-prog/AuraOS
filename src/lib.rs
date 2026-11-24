@@ -17,7 +17,6 @@ pub mod renderer;
 pub mod system;
 pub mod telemetry_worker;
 pub mod theme;
-pub mod traffic_lights;
 pub mod updater;
 pub mod video_decoder;
 pub mod wallpaper;

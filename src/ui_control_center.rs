@@ -116,20 +116,37 @@ pub fn render_control_center(ctx: &mut DrawCtx<'_>, state: &AppState, win_h: f32
         mbx += sz + 5.0;
     }
 
-    // Material 3 Expressive Wavy Progress Line!
-    let wave_prog = if state.now_playing.is_playing {
-        0.35 + ((state.music_wave_phase * 0.04).sin() * 0.5 + 0.5) * 0.45
+    // Real SMTC-Synced Material 3 Expressive Wavy Timeline Bar + Live MM:SS + Click/Drag-to-Seek!
+    let has_tl = state.now_playing.has_timeline;
+    let wave_prog = state.now_playing.live_progress();
+    let (bar_x, bar_w) = if has_tl {
+        let pos_txt = crate::models::NowPlaying::format_time(state.now_playing.live_position_sec());
+        let dur_txt = crate::models::NowPlaying::format_time(state.now_playing.duration_sec);
+        ctx.draw_text(&pos_txt, Rect::new(lx + 12.0, y + 57.0, 42.0, 14.0), TextStyle::Small9Reg, theme::rgba(255, 255, 255, 0.90));
+        ctx.draw_text_right(&dur_txt, Rect::new(lx + cw - 54.0, y + 57.0, 42.0, 14.0), TextStyle::Small9Reg, theme::rgba(255, 255, 255, 0.76));
+        (lx + 56.0, (cw - 112.0).max(60.0))
     } else {
-        0.42
+        (lx + 14.0, cw - 28.0)
     };
+    let bar_r = Rect::new(bar_x, y + 57.0, bar_w, 14.0);
     ctx.draw_wavy_progress_bar(
-        Rect::new(lx + 14.0, y + 57.0, cw - 28.0, 14.0),
+        bar_r,
         wave_prog,
         state.music_wave_phase,
-        state.now_playing.is_playing,
+        state.now_playing.is_playing && has_tl,
         theme::CRISP_WHITE,
         theme::rgba(255, 255, 255, 0.28),
     );
+    if has_tl {
+        hits.push(HitRegion {
+            id: "cc_m_seek".into(),
+            rect: Rect::new(bar_r.x - 4.0, bar_r.y - 4.0, bar_r.w + 8.0, bar_r.h + 8.0),
+            action: Action::MediaSeek(wave_prog),
+            right_action: None,
+            tooltip: Some("Saltar en la línea de tiempo".into()),
+            slider: Some(SliderDragKind::MediaSeek { x: bar_r.x, w: bar_r.w }),
+        });
+    }
     y += 88.0;
 
     // 3. VOLUME + REAL DISPLAY BRIGHTNESS + INLINE AUDIO SWITCHER CARD

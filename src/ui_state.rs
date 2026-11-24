@@ -47,6 +47,7 @@ pub enum Action {
     MediaPrev,
     MediaPlayPause,
     MediaNext,
+    MediaSeek(f32),
     ToggleMasterMute,
     SetMasterVolume(i32),
     SwitchAudioDeviceTab(bool), // false = output, true = mic
@@ -126,6 +127,7 @@ pub enum SliderDragKind {
     Brightness { x: f32, w: f32 },
     AppVolume { x: f32, w: f32, pids: Vec<u32> },
     GlassOpacity { x: f32, w: f32 },
+    MediaSeek { x: f32, w: f32 },
 }
 
 #[derive(Debug, Clone, Default)]

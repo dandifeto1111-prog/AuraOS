@@ -1,7 +1,8 @@
 //! Real Windows Core Audio COM + IPolicyConfig (1-Click Output/Mic Switching) + WinRT SMTC Media Player
 
-use crate::models::{AudioAppSession, AudioDevice, NowPlaying};
+use crate::models::{now_unix_ms, AudioAppSession, AudioDevice, NowPlaying};
 use crate::win32_shell::{get_process_info, to_wide};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use windows::core::{GUID, HRESULT, IUnknown, IUnknown_Vtbl, Interface, PCWSTR};
 use windows::Win32::Foundation::S_OK;
@@ -111,6 +112,62 @@ pub fn media_prev() {
     dispatch_media_transport(2);
 }
 
+/// Seeks the active SMTC media session (YouTube, Spotify, Chrome, Edge, VLC...) to `frac` (0.0..=1.0).
+/// Runs asynchronously on a detached MTA thread so clicking/dragging the timeline NEVER stalls the UI!
+pub fn media_seek_fraction(frac: f32) {
+    let frac = frac.clamp(0.0, 1.0) as f64;
+    std::thread::spawn(move || {
+        let _ = std::panic::catch_unwind(move || {
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            }
+            if let Some(mgr) = await_winrt_bounded(
+                GlobalSystemMediaTransportControlsSessionManager::RequestAsync(),
+                240,
+            ) {
+                if let Ok(sess) = mgr.GetCurrentSession() {
+                    if let Ok(tl) = sess.GetTimelineProperties() {
+                        let start = tl.StartTime().map(|t| t.Duration).unwrap_or(0);
+                        let end = tl.EndTime().map(|t| t.Duration).unwrap_or(0);
+                        if end > start {
+                            let target = start + (((end - start) as f64) * frac).round() as i64;
+                            let _ = await_winrt_bounded(
+                                sess.TryChangePlaybackPositionAsync(target),
+                                240,
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    });
+}
+
+thread_local! {
+    static CACHED_SMTC_MGR: RefCell<Option<GlobalSystemMediaTransportControlsSessionManager>> = const { RefCell::new(None) };
+}
+
+fn get_cached_smtc_manager() -> Option<GlobalSystemMediaTransportControlsSessionManager> {
+    if let Some(existing) = CACHED_SMTC_MGR.with(|c| c.borrow().clone()) {
+        return Some(existing);
+    }
+    let fresh = await_winrt_bounded(
+        GlobalSystemMediaTransportControlsSessionManager::RequestAsync(),
+        250,
+    )?;
+    CACHED_SMTC_MGR.with(|c| *c.borrow_mut() = Some(fresh.clone()));
+    Some(fresh)
+}
+
+fn current_utc_filetime_100ns() -> i64 {
+    // 100-nanosecond intervals between 1601-01-01 and 1970-01-01
+    const UNIX_EPOCH_FT: i64 = 116_444_736_000_000_000;
+    let dur = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    UNIX_EPOCH_FT + (dur.as_secs() as i64) * 10_000_000 + (dur.subsec_nanos() as i64) / 100
+}
+
 /// Non-blocking bounded wait for WinRT IAsyncOperation (prevents STA COM deadlocks if Edge/Spotify stalls!)
 fn await_winrt_bounded<T: windows::core::RuntimeType>(
     op: windows::core::Result<IAsyncOperation<T>>,
@@ -128,36 +185,82 @@ fn await_winrt_bounded<T: windows::core::RuntimeType>(
     None
 }
 
-/// Real Windows SMTC live track title + artist + playback state (Spotify, Edge/YouTube, Chrome, VLC...)
-/// Never stalls UI thread even if a browser media tab hangs!
+/// Real Windows SMTC live track title + artist + playback state + EXACT synced timeline (YouTube, Spotify, VLC...)
+/// Uses a cached SMTC session manager (ZERO per-second WinRT broker RequestAsync leaks!)
 pub fn get_now_playing() -> NowPlaying {
-    if let Some(mgr) = await_winrt_bounded(
-        GlobalSystemMediaTransportControlsSessionManager::RequestAsync(),
-        250,
-    ) {
-        if let Ok(sess) = mgr.GetCurrentSession() {
-            let is_playing = sess
-                .GetPlaybackInfo()
-                .and_then(|pi| pi.PlaybackStatus())
-                .map(|st| st == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing)
-                .unwrap_or(false);
-
-            let src_raw = sess.SourceAppUserModelId().map(|s| s.to_string()).unwrap_or_default();
-            let source_app = friendly_smtc_source(&src_raw);
-
-            if let Some(props) = await_winrt_bounded(sess.TryGetMediaPropertiesAsync(), 250) {
-                let title = props.Title().map(|s| s.to_string()).unwrap_or_default().trim().to_string();
-                let artist = props.Artist().map(|s| s.to_string()).unwrap_or_default().trim().to_string();
-                if !title.is_empty() {
-                    return NowPlaying {
-                        title,
-                        artist,
-                        source_app,
-                        is_playing,
-                        active: true,
-                    };
-                }
+    let Some(mgr) = get_cached_smtc_manager() else {
+        return NowPlaying::default();
+    };
+    let sess = match mgr.GetCurrentSession() {
+        Ok(s) => s,
+        Err(_) => {
+            // Manager may have gone stale after explorer/audio restart; refresh once cleanly
+            CACHED_SMTC_MGR.with(|c| *c.borrow_mut() = None);
+            let Some(mgr2) = get_cached_smtc_manager() else {
+                return NowPlaying::default();
+            };
+            match mgr2.GetCurrentSession() {
+                Ok(s) => s,
+                Err(_) => return NowPlaying::default(),
             }
+        }
+    };
+
+    let is_playing = sess
+        .GetPlaybackInfo()
+        .and_then(|pi| pi.PlaybackStatus())
+        .map(|st| st == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing)
+        .unwrap_or(false);
+
+    let src_raw = sess.SourceAppUserModelId().map(|s| s.to_string()).unwrap_or_default();
+    let source_app = friendly_smtc_source(&src_raw);
+
+    // Query REAL SMTC Timeline (StartTime, EndTime, Position + LastUpdatedTime drift correction!)
+    let mut position_sec = 0.0f64;
+    let mut duration_sec = 0.0f64;
+    let mut has_timeline = false;
+    let sampled_at_unix_ms = now_unix_ms();
+
+    if let Ok(tl) = sess.GetTimelineProperties() {
+        let start = tl.StartTime().map(|t| t.Duration).unwrap_or(0);
+        let end = tl.EndTime().map(|t| t.Duration).unwrap_or(0);
+        let pos = tl.Position().map(|t| t.Duration).unwrap_or(0);
+        let last_upd = tl.LastUpdatedTime().map(|dt| dt.UniversalTime).unwrap_or(0);
+        if end > start {
+            let dur_s = (end - start) as f64 / 10_000_000.0;
+            if dur_s >= 1.0 && dur_s <= 86_400.0 {
+                let mut pos_s = (pos - start).max(0) as f64 / 10_000_000.0;
+                if is_playing && last_upd > 0 {
+                    let now_ft = current_utc_filetime_100ns();
+                    if now_ft > last_upd {
+                        let drift_s = (now_ft - last_upd) as f64 / 10_000_000.0;
+                        if drift_s > 0.0 && drift_s < dur_s + 5.0 {
+                            pos_s += drift_s;
+                        }
+                    }
+                }
+                position_sec = pos_s.clamp(0.0, dur_s);
+                duration_sec = dur_s;
+                has_timeline = true;
+            }
+        }
+    }
+
+    if let Some(props) = await_winrt_bounded(sess.TryGetMediaPropertiesAsync(), 250) {
+        let title = props.Title().map(|s| s.to_string()).unwrap_or_default().trim().to_string();
+        let artist = props.Artist().map(|s| s.to_string()).unwrap_or_default().trim().to_string();
+        if !title.is_empty() {
+            return NowPlaying {
+                title,
+                artist,
+                source_app,
+                is_playing,
+                active: true,
+                position_sec,
+                duration_sec,
+                has_timeline,
+                sampled_at_unix_ms,
+            };
         }
     }
     NowPlaying::default()

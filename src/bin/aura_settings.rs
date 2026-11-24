@@ -920,7 +920,6 @@ impl SettingsRuntime {
                     "lock_media" => self.settings.lock_show_media = !self.settings.lock_show_media,
                     "perf_mode" => self.settings.performance_mode = !self.settings.performance_mode,
                     "win_hotkeys" => self.settings.intercept_win_hotkeys = !self.settings.intercept_win_hotkeys,
-                    "traffic_light_overlay" => self.settings.traffic_light_overlay = !self.settings.traffic_light_overlay,
                     _ => {}
                 }
                 self.save_and_broadcast();
@@ -1290,7 +1289,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
 
     ctx.draw_text("Configuración de AuraOS", Rect::new(82.0, 0.0, 240.0, TOP_H), TextStyle::Title14Semi, theme::TEXT_PRIMARY);
     ctx.draw_text_right(
-        &format!("{} · {} · v5.1.0 Rust", s.username, s.hostname),
+        &format!("{} · {} · v5.2.0 Rust", s.username, s.hostname),
         Rect::new(w - 340.0, 0.0, 322.0, TOP_H),
         TextStyle::Small10Med,
         theme::TEXT_TERTIARY,
@@ -1650,7 +1649,6 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
 
             let rows = [
                 ("p_tb", "Ocultar barra clásica de Windows", "Reemplaza la barra inferior por AuraOS (Ctrl+Alt+W restaura)", s.settings.hide_windows_taskbar, "hide_taskbar"),
-                ("p_tl_ov", "Semáforos macOS en ventanas de Windows (× − +)", "Reemplaza los botones tradicionales de Windows por semáforos unificados (100% seguro)", s.settings.traffic_light_overlay, "traffic_light_overlay"),
                 ("p_hotkeys", "Atajos de Windows integrados con AuraOS", "Tecla Win → Launchpad · Ctrl+Shift+Esc → AuraTasks · Win+E/I/S", s.settings.intercept_win_hotkeys, "win_hotkeys"),
                 ("p_perf", "Modo Rendimiento (PC Modesto / Ultra Ligero)", "Reduce animaciones GPU continuas para máxima fluidez en equipos ligeros", s.settings.performance_mode, "perf_mode"),
                 ("p_dock_pos", "Dock a la izquierda estilo Ubuntu", "OFF = Dock inferior centrado estilo macOS", !s.settings.dock_position.eq_ignore_ascii_case("Bottom"), "dock_left"),
@@ -1839,7 +1837,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             }
         }
         Tab::StartupAndApps => {
-            ctx.draw_text("SUITE NATIVA AURAOS v5.1 (100% RUST + GPU)", Rect::new(cx, y, cw, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
+            ctx.draw_text("SUITE NATIVA AURAOS v5.2 (100% RUST + GPU)", Rect::new(cx, y, cw, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
             y += 22.0;
             let suite = [
                 ("st_af", "AuraFiles", "AuraFiles.exe"),
@@ -1931,7 +1929,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
         Tab::Updates => {
             let uc = Rect::new(cx, y, cw, 92.0);
             ctx.fill_card(uc, 16.0, theme::SURFACE, theme::VIOLET_BORDER);
-            ctx.draw_text("AuraOS v5.1.0 (Material You 3 + Suite Productividad & Dev Rust)", Rect::new(uc.x + 16.0, uc.y + 14.0, 520.0, 24.0), TextStyle::Title16Semi, theme::TEXT_PRIMARY);
+            ctx.draw_text("AuraOS v5.2.0 (Motor Video Aislado 60 FPS + Ultra-Ligero)", Rect::new(uc.x + 16.0, uc.y + 14.0, 520.0, 24.0), TextStyle::Title16Semi, theme::TEXT_PRIMARY);
             ctx.draw_text("AuraShell · AuraPDF · AuraPhotos · AuraShot · AuraTasks · AuraFiles · AuraLock · AuraSettings", Rect::new(uc.x + 16.0, uc.y + 42.0, cw - 32.0, 18.0), TextStyle::Body11Reg, theme::TEXT_SECONDARY);
             ctx.draw_text("Actualizaciones automáticas silenciosas compatibles con GitHub Releases y Discord", Rect::new(uc.x + 16.0, uc.y + 63.0, cw - 32.0, 16.0), TextStyle::Small10Med, theme::VIOLET_LIGHT);
             y += 108.0;

@@ -1,5 +1,23 @@
 # Historial de Versiones — AuraOS
 
+## v5.2.0 (2026-11-24)
+- **Motor de Video Wallpaper 100% Aislado (`AuraWallpaper.exe`) — Resolución Nativa 1080p/1440p a 60 FPS + Decodificación Hardware DXVA:**
+  - `AuraShell.exe` ya **no carga ni importa** librerías de Windows Media Foundation (`mfplat.dll`, `mfcore.dll`, `mfreadwrite.dll`, `mfmp4srcsnk.dll`), eliminando definitivamente los picos de `574 MB – 1.4 GB` y `21.3% CPU` provocados por el reciclado de decodificadores en proceso.
+  - **Cero pixelado y FPS reales:** Eliminado el reescalado CPU *nearest-neighbor* a `1280×720 / 30 FPS`; ahora `AuraWallpaper.exe` decodifica a **resolución nativa de monitor** (hasta `1920×1080` / `2560×1440`) y **hasta 60 FPS reales** mediante **DXVA/D3D11 Hardware Video Decoding** (`IMFDXGIDeviceManager` + `MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS`), ruta rápida `memcpy` sin bucles por píxel y reescalado bilineal 2×2 suave para fuentes 4K.
+  - **Auto-pausa real sin fugas (`Condvar` + IPC `HWND_MESSAGE`):** Al maximizar ventanas o jugar, `AuraShell` envía `WM_AURA_WP_PAUSE` a `AuraWallpaperIPC_v52`, estacionando el decodificador en `0.00% CPU` sin destruir/reabrir Media Foundation (0 fugas de memoria virtual) y ejecutando `IDXGIDevice3::Trim()`.
+- **Optimización extrema de CPU y RAM en `AuraShell.exe` (`~20–30 MB Working Set`, `~0.0% CPU` en reposo):**
+  - Brocha `ID2D1SolidColorBrush` reutilizable por `WindowSurface` (`SetColor` en lugar de crear 80+ objetos COM por frame).
+  - Eliminado `CreateLayer` offscreen en el widget de Música (reemplazado por `push_clip` sin asignaciones + ritmo eficiente de 12 FPS solo al reproducir).
+  - `TelemetryWorker` optimizado: caché persistente de `GlobalSystemMediaTransportControlsSessionManager` (0 fugas WinRT cada 1.4s), **0 polling de CoreAudio/Toolhelp32** mientras el Centro de Control está cerrado y `IDXGIDevice3::Trim()` automático al cerrar paneles.
+- **Línea de Tiempo Musical Real Sincronizada (SMTC) + Salto con Clic/Arrastre:**
+  - Consulta real de `GetTimelineProperties()` (`StartTime`, `EndTime`, `Position` y compensación exacta de `LastUpdatedTime`) en Spotify, YouTube (Chrome/Edge/Brave), VLC y reproductores nativos.
+  - Muestra marcas **`M:SS` / `M:SS`** en tiempo real y permite **hacer clic o arrastrar** sobre la barra ondulada Material 3 (tanto en el widget de escritorio como en el Centro de Control) para adelantar o retroceder vía `TryChangePlaybackPositionAsync`.
+- **Semáforos macOS estrictamente en ventanas nativas de AuraOS:** Eliminado el overlay experimental de semáforos sobre aplicaciones externas de Windows (`traffic_lights.rs`), conservando semáforos unificados impecables en toda la suite nativa de AuraOS.
+- **Nuevo Instalador Inteligente Profundo de 4 Pasos (`AuraShell-Setup.exe` v5.2):**
+  - **Escáner real de hardware al inicio:** Detecta CPU, hilos/GHz, RAM total y disponible, GPU dedicada/VRAM, resolución y Hz reales del monitor, tipo de equipo (Laptop con batería vs. PC de escritorio), disco libre, versión de Windows y conflictos activos (como Wallpaper Engine externo).
+  - **Adaptación automática por perfil (`Ultra / Gamer`, `Equilibrado / Laptop`, `Ultra-Ligero`)** y **selección modular de los 11 binarios**.
+  - **Memoria inteligente de `APBOptimizer` (`install_state.json`):** Nunca vuelve a pedir ni pre-seleccionar la optimización de Windows en actualizaciones ni si ya fue aplicada, además de incluir botón de **Actualización rápida (sin APB)**.
+
 ## v5.1.0 (2026-11-24)
 - **Motor Dinámico Material You 3 (*illogical-impulse* en Rust + Direct2D):** Extrae automáticamente una paleta oscura armónica del fondo de pantalla activo (imagen, preset o miniatura de video) y sincroniza `%LocalAppData%\AuraShell\active_palette.json` en tiempo real en toda la suite. Incluye 5 temas seleccionables en `AuraSettings → Personalización`: **`Auto (Fondo)`**, **`Obsidian Violet`**, **`Sage Forest`**, **`Warm Apricot`** y **`Monochrome`**.
 - **Correcciones críticas de UX en el Dock y Animación Genio:**

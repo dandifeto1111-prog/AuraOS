@@ -873,6 +873,10 @@ fn capture_lock_png(out_png: &Path) {
         source_app: "Spotify".into(),
         is_playing: true,
         active: true,
+        position_sec: 92.0,
+        duration_sec: 243.0,
+        has_timeline: true,
+        sampled_at_unix_ms: 0,
     };
 
     let _ = gpu.render_to_png(1440, 900, out_png, |ctx| {

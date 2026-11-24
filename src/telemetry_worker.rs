@@ -16,6 +16,7 @@ pub enum TelemetryCmd {
     RefreshControlCenter,
     RefreshOverview,
     RefreshNetwork,
+    SetControlCenterOpen(bool),
 }
 
 #[derive(Debug, Clone)]
@@ -72,19 +73,24 @@ impl TelemetryWorker {
             let mut last_fast = Instant::now();
             let mut last_net = Instant::now();
             let mut last_cc = Instant::now();
+            let mut cc_is_open = false;
 
             loop {
                 // Coalesce on-demand requests cleanly without busy spinning
-                match cmd_rx.recv_timeout(Duration::from_millis(350)) {
+                match cmd_rx.recv_timeout(Duration::from_millis(500)) {
                     Ok(first_cmd) => {
                         let mut want_cc = matches!(first_cmd, TelemetryCmd::RefreshControlCenter);
                         let mut want_ov = matches!(first_cmd, TelemetryCmd::RefreshOverview);
                         let mut want_net = matches!(first_cmd, TelemetryCmd::RefreshNetwork);
+                        if let TelemetryCmd::SetControlCenterOpen(v) = first_cmd {
+                            cc_is_open = v;
+                        }
                         while let Ok(more) = cmd_rx.try_recv() {
                             match more {
                                 TelemetryCmd::RefreshControlCenter => want_cc = true,
                                 TelemetryCmd::RefreshOverview => want_ov = true,
                                 TelemetryCmd::RefreshNetwork => want_net = true,
+                                TelemetryCmd::SetControlCenterOpen(v) => cc_is_open = v,
                             }
                         }
                         if want_net {
@@ -121,8 +127,8 @@ impl TelemetryWorker {
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
 
-                // Periodic background warm refresh (never blocks UI thread!)
-                if last_fast.elapsed() >= Duration::from_millis(1400) {
+                // Lightweight cached-SMTC + master volume check every 1.5s (0 COM manager allocations!)
+                if last_fast.elapsed() >= Duration::from_millis(1500) {
                     let (mv, mm) = audio::get_master_volume();
                     let np = audio::get_now_playing();
                     let _ = upd_tx.send(TelemetryUpdate::FastMedia {
@@ -133,13 +139,15 @@ impl TelemetryWorker {
                     last_fast = Instant::now();
                 }
 
-                if last_net.elapsed() >= Duration::from_secs(4) {
+                // Network radio WinRT check: 20s idle (refreshed instantly when opening Control Center!)
+                if last_net.elapsed() >= Duration::from_secs(20) {
                     let _ = upd_tx.send(TelemetryUpdate::Network(radios::query_radio_states()));
                     last_net = Instant::now();
                 }
 
-                // Keep Control Center mixer + tray warm every 5s in background
-                if last_cc.elapsed() >= Duration::from_secs(5) {
+                // ZERO background CoreAudio/Toolhelp32 churn while Control Center is closed!
+                // Only refresh heavy audio devices + per-app mixer + tray apps when Control Center is open.
+                if cc_is_open && last_cc.elapsed() >= Duration::from_secs(4) {
                     let _ = upd_tx.send(TelemetryUpdate::ControlCenterData {
                         output_devices: audio::get_audio_devices(false),
                         mic_devices: audio::get_audio_devices(true),

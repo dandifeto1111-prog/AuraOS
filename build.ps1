@@ -1,6 +1,6 @@
 ﻿param(
-    [string]$Version = "5.1.0",
-    [string]$Changelog = "v5.1.0: Material You 3 dinamico (Auto Wallpaper, Violet, Sage, Apricot, Mono), TopBar Float/Hug + bateria laptop, Dock inteligente (siempre visible en escritorio + orden fijo sin saltos), Genie 120fps sin doble animacion de Windows, Semaforos macOS unificados en ventanas de terceros (100% Vanguard-safe), Sidebar derecho unificado (brillo, luz nocturna, cafe, ondas musicales, To-Do), Monitor de Cuotas IA multiusuario + GitHub/Git Commits en Dev Hub, OCR nativo WinRT en AuraShot, F2/Ctrl+C/V en AuraFiles y reduccion drastica de RAM via swapchains bajo demanda."
+    [string]$Version = "5.2.0",
+    [string]$Changelog = "v5.2.0: Motor de video aislado AuraWallpaper.exe (1080p/1440p nativo 60 FPS + decodificacion hardware DXVA sin pixelado ni fugas), reduccion radical de CPU/RAM en AuraShell.exe (~40 MB, 0% polling en reposo, brocha D2D reutilizada y recorte DXGI), linea de tiempo musical sincronizada real con SMTC + salto con clic (MM:SS), eliminacion de semaforos en apps externas (solo ventanas nativas AuraOS) e instalador inteligente multi-paso con escaner profundo de hardware y memoria de APBOptimizer."
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,13 +9,13 @@ $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $legacy = Join-Path (Split-Path -Parent $root) "AuraShell"
 
-Write-Host "Compilando AuraOS Suite v$Version (10 binarios 100% Rust con iconos incrustados + AuraShell-Setup)..." -ForegroundColor Cyan
+Write-Host "Compilando AuraOS Suite v$Version (11 binarios 100% Rust con motor aislado AuraWallpaper + AuraShell-Setup)..." -ForegroundColor Cyan
 Set-Location $root
-cargo build --release --bin AuraShell --bin AuraFiles --bin AuraPhotos --bin AuraPlayer --bin AuraNotes --bin AuraLock --bin AuraSettings --bin AuraTasks --bin AuraPDF --bin AuraShot
+cargo build --release --bin AuraShell --bin AuraWallpaper --bin AuraFiles --bin AuraPhotos --bin AuraPlayer --bin AuraNotes --bin AuraLock --bin AuraSettings --bin AuraTasks --bin AuraPDF --bin AuraShot
 if ($LASTEXITCODE -ne 0) { Write-Error "Falló cargo build --release" }
 
 $bins = @(
-    "AuraShell.exe", "AuraFiles.exe", "AuraPhotos.exe", "AuraPlayer.exe",
+    "AuraShell.exe", "AuraWallpaper.exe", "AuraFiles.exe", "AuraPhotos.exe", "AuraPlayer.exe",
     "AuraNotes.exe", "AuraLock.exe", "AuraSettings.exe", "AuraTasks.exe",
     "AuraPDF.exe", "AuraShot.exe"
 )

@@ -50,7 +50,6 @@ pub struct ShellSettings {
     pub night_light: bool,
     pub brightness_pct: i32,
     pub keep_awake: bool,
-    pub traffic_light_overlay: bool,
 }
 
 impl Default for ShellSettings {
@@ -90,7 +89,6 @@ impl Default for ShellSettings {
             night_light: false,
             brightness_pct: 100,
             keep_awake: false,
-            traffic_light_overlay: true,
         }
     }
 }
@@ -317,6 +315,14 @@ pub struct NowPlaying {
     pub source_app: String,
     pub is_playing: bool,
     pub active: bool,
+    /// Real SMTC timeline position (seconds) at `sampled_at_unix_ms`
+    pub position_sec: f64,
+    /// Real SMTC total media duration (seconds)
+    pub duration_sec: f64,
+    /// True when the active media session (YouTube, Spotify, VLC, etc.) reports a valid timeline
+    pub has_timeline: bool,
+    /// UTC Unix timestamp in milliseconds when `position_sec` was sampled
+    pub sampled_at_unix_ms: u64,
 }
 
 impl Default for NowPlaying {
@@ -327,6 +333,55 @@ impl Default for NowPlaying {
             source_app: "Multimedia".to_string(),
             is_playing: false,
             active: false,
+            position_sec: 0.0,
+            duration_sec: 0.0,
+            has_timeline: false,
+            sampled_at_unix_ms: 0,
+        }
+    }
+}
+
+pub fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+impl NowPlaying {
+    /// Real-time extrapolated playback position in seconds, synced with SMTC `LastUpdatedTime`.
+    pub fn live_position_sec(&self) -> f64 {
+        if !self.has_timeline || self.duration_sec <= 0.1 {
+            return 0.0;
+        }
+        let mut pos = self.position_sec;
+        if self.is_playing && self.sampled_at_unix_ms > 0 {
+            let now = now_unix_ms();
+            if now > self.sampled_at_unix_ms {
+                pos += (now - self.sampled_at_unix_ms) as f64 / 1000.0;
+            }
+        }
+        pos.clamp(0.0, self.duration_sec)
+    }
+
+    /// True 0.0..=1.0 playback progress ratio synced with the active track/video.
+    pub fn live_progress(&self) -> f32 {
+        if !self.has_timeline || self.duration_sec <= 0.1 {
+            return 0.0;
+        }
+        (self.live_position_sec() / self.duration_sec).clamp(0.0, 1.0) as f32
+    }
+
+    /// Formats seconds as `M:SS` (or `H:MM:SS` for long videos/streams).
+    pub fn format_time(secs: f64) -> String {
+        let total = secs.max(0.0).floor() as u64;
+        let h = total / 3600;
+        let m = (total % 3600) / 60;
+        let s = total % 60;
+        if h > 0 {
+            format!("{}:{:02}:{:02}", h, m, s)
+        } else {
+            format!("{}:{:02}", m, s)
         }
     }
 }

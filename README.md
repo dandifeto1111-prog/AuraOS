@@ -5,7 +5,7 @@
   <p>Conserva toda la compatibilidad de juegos, DirectX, drivers y anti-cheats de Windows (Riot Vanguard, Steam, Epic), mientras reemplaza la interfaz pesada por una suite ultrarrápida estilo <em>Drool Dark Mode</em>.</p>
 
   <p>
-    <a href="https://github.com/dandifeto1111-prog/AuraOS/releases/latest"><img src="https://img.shields.io/badge/Release-v5.1.0-7C5CFF?style=for-the-badge&logo=github" alt="Release v5.1.0" /></a>
+    <a href="https://github.com/dandifeto1111-prog/AuraOS/releases/latest"><img src="https://img.shields.io/badge/Release-v5.2.0-7C5CFF?style=for-the-badge&logo=github" alt="Release v5.2.0" /></a>
     <img src="https://img.shields.io/badge/100%25_Rust-Direct2D_%2B_DirectComposition-F4727F?style=for-the-badge&logo=rust" alt="100% Rust" />
     <img src="https://img.shields.io/badge/OS-Windows_11_x64-34D399?style=for-the-badge&logo=windows11" alt="Windows 11" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-FBBF24?style=for-the-badge" alt="MIT License" /></a>
@@ -22,10 +22,24 @@ Cada aplicación del sistema está acelerada por hardware con **Direct2D y Direc
 
 ---
 
-## 🖼️ Galería del Sistema (Capturas Reales v5.1.0)
+## 🖼️ Galería del Sistema (Capturas Reales v5.2.0)
 
-### 🎨 Material You 3 Dinámico, Barra Flotante + Batería, Reloj Vertical/Cookie y Barra Musical Ondulada
-Paleta oscura Material You 3 extraída automáticamente de tu fondo de pantalla (o seleccionable entre `Auto`, `Obsidian Violet`, `Sage Forest`, `Warm Apricot` y `Monochrome`), barra superior en estilos `Hug` / `Flotante` / `Recta` con batería real en portátiles, **Dock consciente del escritorio con orden fijo**, **Efecto Genio a 120 FPS sin doble animación de Windows** y **semáforos macOS unificados** en ventanas de Windows.
+### ⚡ Nuevo en v5.2.0: Motor Aislado `AuraWallpaper.exe` (1080p/1440p 60 FPS DXVA), Shell Ultra-Ligero (~25 MB) e Instalador Inteligente de 4 Pasos
+El motor de video ahora corre en su propio proceso aislado (`AuraWallpaper.exe`) con decodificación por hardware **DXVA/D3D11**, resolución nativa sin pixelado, **60 FPS reales** y pausa sin fugas (`0.0% CPU`), dejando a `AuraShell.exe` en **~20–30 MB de Working Set y 0% CPU en reposo**. La barra ondulada de música ahora se sincroniza en tiempo real con **Spotify, YouTube y VLC** (`M:SS / M:SS` con salto al clic), y el nuevo instalador escanea tu hardware para adaptar AuraOS automáticamente sin volver a pedir `APBOptimizer` en actualizaciones.
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/v52_setup_step1_hw.png" alt="Instalador AuraOS v5.2 Paso 1: Escáner Profundo de Hardware" /></td>
+    <td><img src="docs/screenshots/v52_setup_step2_modules.png" alt="Instalador AuraOS v5.2 Paso 2: Selección Modular de 11 Binarios" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><strong>Paso 1 — Diagnóstico Real de Hardware:</strong> Detecta CPU, RAM, GPU dedicada/VRAM, Hz del monitor, laptop y conflictos, recomendando el perfil ideal</sub></td>
+    <td align="center"><sub><strong>Paso 2 — Suite Modular:</strong> Elige exactamente qué módulos nativos instalar (Núcleo ligero o Suite completa de 11 binarios)</sub></td>
+  </tr>
+</table>
+
+### 🎨 Material You 3 Dinámico, Barra Flotante + Batería, Reloj Vertical/Cookie y Línea de Tiempo Musical Real
+Paleta oscura Material You 3 extraída automáticamente de tu fondo de pantalla (o seleccionable entre `Auto`, `Obsidian Violet`, `Sage Forest`, `Warm Apricot` y `Monochrome`), barra superior en estilos `Hug` / `Flotante` / `Recta` con batería real en portátiles, **Dock consciente del escritorio con orden fijo**, **Efecto Genio a 120 FPS sin doble animación de Windows** y **semáforos macOS unificados** en toda la suite nativa de AuraOS.
 
 <p align="center">
   <img src="docs/screenshots/v51_desktop_vertical_float.png" alt="AuraOS v5.1 Escritorio Material You Apricot + Reloj Vertical + Barra Flotante" width="100%" />

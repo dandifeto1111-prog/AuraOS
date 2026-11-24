@@ -1,18 +1,17 @@
-//! AuraOS Integrated Lightweight Wallpaper Engine (v3.1.1)
-//! - 4 Built-in predefined Direct2D GPU animated/static AuraOS wallpapers
+//! AuraOS v5.2 Modular Process-Isolated Wallpaper Engine
+//! - 4 Built-in Direct2D GPU animated/static AuraOS wallpapers (lazy swapchain trimmed when unused!)
 //! - Native Wallpaper Engine Steam Workshop scanner (ALL `video` + `web` items from 431960/project.json!)
-//! - Bulletproof Video Wallpaper playback via silent background FFmpeg BGRA pipe -> Direct2D GPU bitmap
-//!   rendered directly on `hwnd_host` inside `WorkerW` (works with 100% of MP4/WebM/Unicode/bracket paths!)
+//! - Video Wallpapers run 100% ISOLATED in `AuraWallpaper.exe` (DXVA/D3D11 Hardware Decode, Native 1080p/1440p
+//!   at true 60 FPS, zero pixelation, zero MF DLLs or virtual memory leaks inside `AuraShell.exe`!)
 //! - True Embedded Web Wallpaper (`index.html`) reparented DIRECTLY into `WorkerW` behind desktop icons
-//!   (starts offscreen at -32000,-32000 so ZERO separate window flash, strips chrome, hidden from Dock/Alt+Tab!)
-//! - Smart Auto-Pause: stops video decoder completely when maximized/fullscreen/overlay active (0% CPU/GPU!)
+//! - Smart Auto-Pause via instant Win32 IPC (`WM_AURA_WP_PAUSE` / `WM_AURA_WP_RESUME`) -> 0.0% CPU!
 
 use crate::models::{app_data_dir, CustomItemsStore, WallpaperItem, WallpaperKind};
 use crate::renderer::{DrawCtx, GpuEngine, Rect, WindowSurface};
 use crate::theme;
-use crate::video_decoder::{self, NativeVideoStream};
 use crate::win32_shell::to_wide;
 use std::collections::HashSet;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use windows::core::PCWSTR;
@@ -23,15 +22,107 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows, FindWindowExW, FindWindowW,
     GetClassNameW, GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
     IsWindowVisible, PostMessageW, RegisterClassW, SendMessageTimeoutW, SetParent, SetWindowLongW,
-    SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_BOTTOM, HWND_TOP, SMTO_NORMAL,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
-    SW_SHOWNOACTIVATE, WM_CLOSE, WNDCLASSW, WS_CHILD, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
-    WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE,
+    SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_BOTTOM, HWND_MESSAGE, HWND_TOP,
+    SMTO_NORMAL, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    SW_HIDE, SW_SHOWNOACTIVATE, WM_APP, WM_CLOSE, WNDCLASSW, WS_CHILD, WS_EX_APPWINDOW,
+    WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+    WS_VISIBLE,
 };
 
-const VIDEO_W: u32 = 1280;
-const VIDEO_H: u32 = 720;
 pub const WEB_WP_TITLE_MARKER: &str = "AURA_WEB_WP_HOST_312";
+pub const WP_WORKER_CLASS: &str = "AuraWallpaperWorker_v52";
+pub const WP_IPC_CLASS: &str = "AuraWallpaperIPC_v52";
+pub const WM_AURA_WP_FRAME: u32 = WM_APP + 1;
+pub const WM_AURA_WP_PAUSE: u32 = WM_APP + 10;
+pub const WM_AURA_WP_RESUME: u32 = WM_APP + 11;
+pub const WM_AURA_WP_QUIT: u32 = WM_APP + 12;
+
+/// Locates the active isolated `AuraWallpaper.exe` IPC control window (`HWND_MESSAGE` — immune to WorkerW parenting!)
+pub fn find_video_worker_ipc_hwnd() -> Option<HWND> {
+    unsafe {
+        let cls = to_wide(WP_IPC_CLASS);
+        if let Ok(hw) = FindWindowExW(HWND_MESSAGE, HWND::default(), PCWSTR(cls.as_ptr()), None) {
+            if !hw.is_invalid() {
+                return Some(hw);
+            }
+        }
+        let wcls = to_wide(WP_WORKER_CLASS);
+        if let Ok(hw) = FindWindowW(PCWSTR(wcls.as_ptr()), None) {
+            if !hw.is_invalid() {
+                return Some(hw);
+            }
+        }
+        None
+    }
+}
+
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+pub fn is_video_ext(path: &str) -> bool {
+    let low = path.to_lowercase();
+    low.ends_with(".mp4")
+        || low.ends_with(".webm")
+        || low.ends_with(".mkv")
+        || low.ends_with(".mov")
+        || low.ends_with(".m4v")
+        || low.ends_with(".wmv")
+        || low.ends_with(".avi")
+}
+
+fn resolve_wallpaper_worker_exe() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let cand = dir.join("AuraWallpaper.exe");
+            if cand.exists() {
+                return Some(cand);
+            }
+        }
+    }
+    let inst = app_data_dir().join("AuraWallpaper.exe");
+    if inst.exists() {
+        return Some(inst);
+    }
+    None
+}
+
+/// Deterministic cached thumbnail path (matches `video_decoder::video_thumbnail_cache_path`)
+pub fn video_thumb_cache_path(video_path: &str) -> PathBuf {
+    let thumb_dir = app_data_dir().join("wp_thumbs");
+    let _ = std::fs::create_dir_all(&thumb_dir);
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in video_path.as_bytes() {
+        h = (h ^ (*b as u64)).wrapping_mul(0x100000001b3);
+    }
+    thumb_dir.join(format!("vid_{:016x}.bmp", h))
+}
+
+/// Extracts a video thumbnail via isolated `AuraWallpaper.exe --thumb` so `AuraShell.exe` NEVER loads Media Foundation!
+pub fn extract_video_thumbnail_isolated(video_path: &str) -> Option<String> {
+    if !Path::new(video_path).exists() {
+        return None;
+    }
+    let out_bmp = video_thumb_cache_path(video_path);
+    if out_bmp.exists() {
+        return Some(out_bmp.to_string_lossy().to_string());
+    }
+    let out_jpg = out_bmp.with_extension("jpg");
+    if out_jpg.exists() {
+        return Some(out_jpg.to_string_lossy().to_string());
+    }
+    if let Some(worker) = resolve_wallpaper_worker_exe() {
+        let _ = Command::new(worker)
+            .args(["--thumb", video_path])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+        if out_bmp.exists() {
+            return Some(out_bmp.to_string_lossy().to_string());
+        }
+        if out_jpg.exists() {
+            return Some(out_jpg.to_string_lossy().to_string());
+        }
+    }
+    None
+}
 
 /// Scan built-in AuraOS presets + Steam Workshop Wallpaper Engine (video & web) + custom local wallpapers
 pub fn scan_wallpapers(custom: &CustomItemsStore) -> Vec<WallpaperItem> {
@@ -85,7 +176,7 @@ pub fn scan_wallpapers(custom: &CustomItemsStore) -> Vec<WallpaperItem> {
 
     for cw in &custom.custom_wallpapers {
         let low = cw.target.to_lowercase();
-        let is_vid = video_decoder::is_video_ext(&low);
+        let is_vid = is_video_ext(&low);
         let is_web = low.ends_with(".html") || low.ends_with(".htm");
         let kind = if is_vid {
             WallpaperKind::Video
@@ -154,7 +245,7 @@ pub fn scan_wallpapers(custom: &CustomItemsStore) -> Vec<WallpaperItem> {
                 items.push(WallpaperItem {
                     id: format!("video:{}", path_str),
                     title,
-                    subtitle: "Workshop · Video 30 FPS".into(),
+                    subtitle: "Workshop · Video 60 FPS HD".into(),
                     kind: WallpaperKind::Video,
                     file_path: path_str,
                     preview_path,
@@ -192,7 +283,7 @@ fn percent_encode_file_url(path: &str) -> String {
 }
 
 /// Find Windows desktop WorkerW layer cleanly (supports Win10/11 classic WorkerW AND Win11 24H2/26200 Progman child!)
-fn find_desktop_workerw() -> Option<HWND> {
+pub fn find_desktop_workerw() -> Option<HWND> {
     unsafe {
         let progman_cls = to_wide("Progman");
         let progman = FindWindowW(PCWSTR(progman_cls.as_ptr()), None).ok()?;
@@ -293,10 +384,9 @@ pub struct WallpaperEngine {
     workerw_hwnd: HWND,
     hwnd_host: HWND,
     surf_host: Option<WindowSurface>,
-    video_stream: Option<NativeVideoStream>,
+    video_child: Option<Child>,
+    video_paused_synced: bool,
     video_html_fallback_active: bool,
-    frame_scratch: Vec<u8>,
-    last_video_seq: u64,
     web_child: Option<Child>,
     web_hwnd: Option<HWND>,
     web_owner_pid: Option<u32>,
@@ -321,10 +411,9 @@ impl WallpaperEngine {
             workerw_hwnd: HWND::default(),
             hwnd_host: HWND::default(),
             surf_host: None,
-            video_stream: None,
+            video_child: None,
+            video_paused_synced: false,
             video_html_fallback_active: false,
-            frame_scratch: Vec::new(),
-            last_video_seq: 0,
             web_child: None,
             web_hwnd: None,
             web_owner_pid: None,
@@ -346,7 +435,8 @@ impl WallpaperEngine {
             return false;
         }
         match self.active_kind {
-            WallpaperKind::Video => !self.video_html_fallback_active,
+            // Video runs at 60 FPS completely isolated inside AuraWallpaper.exe (0 AuraShell ticks!)
+            WallpaperKind::Video => self.video_html_fallback_active && (self.web_hwnd.is_none() || self.web_recheck_frames > 0),
             WallpaperKind::Preset => !self.performance_mode && self.active_path != "matte_grid",
             WallpaperKind::Web => self.web_hwnd.is_none() || self.web_recheck_frames > 0,
             _ => false,
@@ -391,10 +481,22 @@ impl WallpaperEngine {
                 self.mounted_on_workerw = false;
             }
 
-            let surf = WindowSurface::new(gpu, host, self.screen_w as u32, self.screen_h as u32)?;
+            // Start lazily trimmed at 2x2 (~16 KB!) — expands only when Preset/Image actually paints!
+            let surf = WindowSurface::new(gpu, host, 2, 2)?;
             self.hwnd_host = host;
             self.surf_host = Some(surf);
             Ok(())
+        }
+    }
+
+    fn hide_and_trim_host(&mut self, gpu: &GpuEngine) {
+        unsafe {
+            if !self.hwnd_host.is_invalid() {
+                let _ = ShowWindow(self.hwnd_host, SW_HIDE);
+            }
+        }
+        if let Some(surf) = &mut self.surf_host {
+            surf.trim_hidden(gpu);
         }
     }
 
@@ -403,56 +505,40 @@ impl WallpaperEngine {
         self.stop_web();
         self.active_id = id.to_string();
         self.dirty_static = true;
-        self.last_video_seq = 0;
 
         if id.is_empty() || id == "external" {
             self.active_kind = WallpaperKind::External;
             self.active_path.clear();
-            unsafe {
-                if !self.hwnd_host.is_invalid() {
-                    let _ = ShowWindow(self.hwnd_host, SW_HIDE);
-                }
-            }
+            self.hide_and_trim_host(gpu);
             return;
         }
 
         if let Some(preset) = id.strip_prefix("preset:") {
             self.active_kind = WallpaperKind::Preset;
             self.active_path = preset.to_string();
+            if let Some(surf) = &mut self.surf_host {
+                surf.ensure_size(gpu, self.screen_w as u32, self.screen_h as u32);
+            }
             self.show_host_window();
             self.render_preset_or_image(gpu);
         } else if let Some(path) = id.strip_prefix("image:") {
             self.active_kind = WallpaperKind::Image;
             self.active_path = path.to_string();
+            if let Some(surf) = &mut self.surf_host {
+                surf.ensure_size(gpu, self.screen_w as u32, self.screen_h as u32);
+            }
             self.show_host_window();
             self.render_preset_or_image(gpu);
         } else if let Some(path) = id.strip_prefix("video:") {
             self.active_kind = WallpaperKind::Video;
             self.active_path = path.to_string();
-            self.show_host_window();
-            // Instant matte obsidian dark frame while first video frame decodes (~100ms!)
-            if let Some(surf) = &mut self.surf_host {
-                let w = self.screen_w as f32;
-                let h = self.screen_h as f32;
-                surf.draw(gpu, |ctx| {
-                    ctx.fill_rrect(Rect::new(0.0, 0.0, w, h), 0.0, theme::CANVAS);
-                });
-            }
-            if !self.paused {
-                self.spawn_video_decoder(path);
-            }
+            // AuraWallpaper.exe owns its own WorkerW window + GPU surface — trim AuraShell's host to 2x2!
+            self.hide_and_trim_host(gpu);
+            self.spawn_video_worker(path);
         } else if let Some(path) = id.strip_prefix("web:") {
             self.active_kind = WallpaperKind::Web;
             self.active_path = path.to_string();
-            self.show_host_window();
-            // Clean dark backdrop during the ~150ms Edge embeds directly into WorkerW
-            if let Some(surf) = &mut self.surf_host {
-                let w = self.screen_w as f32;
-                let h = self.screen_h as f32;
-                surf.draw(gpu, |ctx| {
-                    ctx.fill_rrect(Rect::new(0.0, 0.0, w, h), 0.0, theme::CANVAS);
-                });
-            }
+            self.hide_and_trim_host(gpu);
             self.start_web(path);
         }
     }
@@ -468,12 +554,62 @@ impl WallpaperEngine {
         }
     }
 
-    fn spawn_video_decoder(&mut self, path: &str) {
+    fn find_video_worker_hwnd() -> Option<HWND> {
+        find_video_worker_ipc_hwnd()
+    }
+
+    fn spawn_video_worker(&mut self, path: &str) {
         self.video_html_fallback_active = false;
-        let max_fps = if self.performance_mode { 20 } else { 30 };
-        let max_w = if self.performance_mode { 960 } else { VIDEO_W };
-        let max_h = if self.performance_mode { 540 } else { VIDEO_H };
-        self.video_stream = NativeVideoStream::spawn(path, max_w, max_h, max_fps);
+        self.video_paused_synced = false;
+        if !Path::new(path).exists() {
+            return;
+        }
+        let Some(worker_exe) = resolve_wallpaper_worker_exe() else {
+            // Graceful fallback if AuraWallpaper.exe is missing during dev
+            self.start_video_html_fallback(path);
+            return;
+        };
+        let max_fps = if self.performance_mode { 30 } else { 60 };
+        let max_w = if self.performance_mode {
+            1280
+        } else {
+            (self.screen_w as u32).clamp(1280, 2560)
+        };
+        let max_h = if self.performance_mode {
+            720
+        } else {
+            (self.screen_h as u32).clamp(720, 1440)
+        };
+        let parent_pid = std::process::id();
+
+        match Command::new(worker_exe)
+            .args([
+                "--video",
+                path,
+                "--max-w",
+                &max_w.to_string(),
+                "--max-h",
+                &max_h.to_string(),
+                "--max-fps",
+                &max_fps.to_string(),
+                "--perf",
+                if self.performance_mode { "1" } else { "0" },
+                "--paused",
+                if self.paused { "1" } else { "0" },
+                "--parent-pid",
+                &parent_pid.to_string(),
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+        {
+            Ok(child) => {
+                self.video_child = Some(child);
+                self.video_paused_synced = self.paused;
+            }
+            Err(_) => {
+                self.start_video_html_fallback(path);
+            }
+        }
     }
 
     fn start_video_html_fallback(&mut self, video_path: &str) {
@@ -498,10 +634,23 @@ impl WallpaperEngine {
     }
 
     fn stop_video(&mut self) {
-        if let Some(mut vs) = self.video_stream.take() {
-            vs.stop_now();
+        if let Some(hw) = Self::find_video_worker_hwnd() {
+            unsafe {
+                let _ = PostMessageW(hw, WM_AURA_WP_QUIT, WPARAM(0), LPARAM(0));
+            }
+        }
+        if let Some(mut child) = self.video_child.take() {
+            for _ in 0..8 {
+                if let Ok(Some(_)) = child.try_wait() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
         }
         self.video_html_fallback_active = false;
+        self.video_paused_synced = false;
     }
 
     fn start_web(&mut self, html_path: &str) {
@@ -679,21 +828,20 @@ impl WallpaperEngine {
         }
     }
 
-    /// Pause/Resume automatically when maximized, fullscreen, or Launchpad/Overview covers the desktop (0% CPU/GPU!)
+    /// Pause/Resume automatically via instant Win32 IPC to isolated `AuraWallpaper.exe`!
+    /// (0.0% CPU while paused, ZERO Media Foundation tear-down/re-open virtual memory leaks!)
     pub fn set_paused(&mut self, paused: bool) {
         if self.paused == paused {
             return;
         }
         self.paused = paused;
-        if self.active_kind == WallpaperKind::Video {
-            if paused {
-                // Stop decoder completely -> 0.0% CPU & 0 MB decoder RAM while gaming/working!
-                // Last crisp video frame remains rendered on hwnd_host!
-                self.stop_video();
-                self.stop_web();
-            } else if !self.active_path.is_empty() && self.video_stream.is_none() && !self.video_html_fallback_active {
-                let p = self.active_path.clone();
-                self.spawn_video_decoder(&p);
+        if self.active_kind == WallpaperKind::Video && !self.video_html_fallback_active {
+            if let Some(hw) = Self::find_video_worker_hwnd() {
+                let msg = if paused { WM_AURA_WP_PAUSE } else { WM_AURA_WP_RESUME };
+                unsafe {
+                    let _ = PostMessageW(hw, msg, WPARAM(0), LPARAM(0));
+                }
+                self.video_paused_synced = paused;
             }
         }
     }
@@ -704,30 +852,30 @@ impl WallpaperEngine {
             self.enforce_web_embedded();
             return;
         }
-        if self.paused || self.active_kind == WallpaperKind::External {
+        if self.active_kind == WallpaperKind::Video {
+            // Deliver deferred pause/resume if AuraWallpaperWorker finished initializing just after set_paused
+            if self.video_paused_synced != self.paused {
+                if let Some(hw) = Self::find_video_worker_hwnd() {
+                    let msg = if self.paused { WM_AURA_WP_PAUSE } else { WM_AURA_WP_RESUME };
+                    unsafe {
+                        let _ = PostMessageW(hw, msg, WPARAM(0), LPARAM(0));
+                    }
+                    self.video_paused_synced = self.paused;
+                }
+            }
+            // If isolated worker exited with failure (unsupported exotic codec), trigger HTML5 fallback cleanly
+            if let Some(child) = &mut self.video_child {
+                if let Ok(Some(_)) = child.try_wait() {
+                    self.video_child = None;
+                    if !self.active_path.is_empty() && !self.video_html_fallback_active {
+                        let p = self.active_path.clone();
+                        self.start_video_html_fallback(&p);
+                    }
+                }
+            }
             return;
         }
-        if self.active_kind == WallpaperKind::Video {
-            let mut failed = false;
-            let mut dims: Option<(u32, u32)> = None;
-            if let Some(vs) = &self.video_stream {
-                if vs.has_failed() {
-                    failed = true;
-                } else {
-                    dims = vs.swap_latest_frame(&mut self.last_video_seq, &mut self.frame_scratch);
-                }
-            }
-            if failed {
-                self.stop_video();
-                let p = self.active_path.clone();
-                self.start_video_html_fallback(&p);
-                return;
-            }
-            if let Some((fw, fh)) = dims {
-                if let Some(surf) = &mut self.surf_host {
-                    surf.draw_video_frame(fw, fh, &self.frame_scratch);
-                }
-            }
+        if self.paused || self.active_kind == WallpaperKind::External {
             return;
         }
         if self.active_kind == WallpaperKind::Image || self.active_path == "matte_grid" || self.performance_mode {

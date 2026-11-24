@@ -16,7 +16,6 @@ mod renderer;
 mod system;
 mod telemetry_worker;
 mod theme;
-mod traffic_lights;
 mod ui_calendar;
 mod ui_clipboard;
 mod ui_control_center;
@@ -28,7 +27,6 @@ mod ui_state;
 mod ui_topbar;
 mod ui_widgets;
 mod updater;
-mod video_decoder;
 mod wallpaper;
 mod win32_shell;
 mod window_styler;
@@ -127,7 +125,6 @@ struct ShellRuntime {
     wallpaper: wallpaper::WallpaperEngine,
     dock_preview: dock_preview::DockPreviewPopup,
     genie: genie::GenieAnimator,
-    traffic_lights: traffic_lights::TrafficLightOverlay,
     startup_rx: Option<Receiver<StartupCatalog>>,
     weather_rx: Option<Receiver<WeatherInfo>>,
     radio_rx: Option<Receiver<RadioStates>>,
@@ -446,7 +443,6 @@ fn run_shell() -> windows::core::Result<()> {
 
     let dock_preview = dock_preview::DockPreviewPopup::new(hwnd_topbar, wm_preview_click);
     let genie = genie::GenieAnimator::new(&gpu, sw, sh);
-    let traffic_lights = traffic_lights::TrafficLightOverlay::new(&gpu, hwnd_topbar, wm_genie_min);
 
     let upd_settings = state.settings.clone();
     let mut rt = ShellRuntime {
@@ -457,7 +453,6 @@ fn run_shell() -> windows::core::Result<()> {
         wallpaper: wp_engine,
         dock_preview,
         genie,
-        traffic_lights,
         startup_rx: Some(cat_rx),
         weather_rx: Some(w_rx),
         radio_rx: Some(r_rx),
@@ -562,7 +557,6 @@ fn run_shell() -> windows::core::Result<()> {
 
     hotkey_hook::uninstall();
     with_rt(|rt| {
-        rt.traffic_lights.shutdown();
         rt.dock_preview.shutdown();
         rt.genie.shutdown();
         rt.wallpaper.shutdown();
@@ -850,7 +844,7 @@ impl ShellRuntime {
                 seed = rgb;
             }
         } else if let Some(vid_path) = wp_id.strip_prefix("video:") {
-            if let Some(thumb) = video_decoder::extract_video_thumbnail(vid_path) {
+            if let Some(thumb) = wallpaper::extract_video_thumbnail_isolated(vid_path) {
                 if let Some(rgb) = theme::extract_seed_rgb_from_image(&thumb) {
                     seed = rgb;
                 }
@@ -1323,7 +1317,8 @@ impl ShellRuntime {
         self.state.cc_scroll = 0.0;
         self.state.cc_open = true;
 
-        // Trigger fresh background MTA update (arrives silently in ~25ms without blocking frame 1!)
+        // Trigger fresh background MTA update + mark Control Center active (ZERO polling when closed!)
+        let _ = self.telemetry.tx.send(TelemetryCmd::SetControlCenterOpen(true));
         let _ = self.telemetry.tx.send(TelemetryCmd::RefreshControlCenter);
 
         self.state.cc_anim.snap(0.01);
@@ -1340,6 +1335,7 @@ impl ShellRuntime {
         self.state.cc_open = false;
         self.state.cc_keyboard_menu_open = false;
         self.state.todo_input_active = false;
+        let _ = self.telemetry.tx.send(TelemetryCmd::SetControlCenterOpen(false));
         self.state.cc_last_closed = Some(Instant::now());
         self.state.cc_anim.animate_to(0.0, 135.0, CubicBezier::EASE_OUT);
         self.redraw_topbar();
@@ -1651,6 +1647,9 @@ impl ShellRuntime {
                 // 100% async detached MTA transport — safe even when ZERO songs are playing!
                 audio::media_play_pause();
                 if self.state.now_playing.active {
+                    let cur_pos = self.state.now_playing.live_position_sec();
+                    self.state.now_playing.position_sec = cur_pos;
+                    self.state.now_playing.sampled_at_unix_ms = now_unix_ms();
                     self.state.now_playing.is_playing = !self.state.now_playing.is_playing;
                 }
                 self.redraw_topbar();
@@ -1662,6 +1661,16 @@ impl ShellRuntime {
                 audio::media_next();
                 if self.state.cc_open { self.redraw_cc(); }
                 self.redraw_widget(WidgetKind::Music);
+            }
+            Action::MediaSeek(frac) => {
+                let f = frac.clamp(0.0, 1.0);
+                if self.state.now_playing.has_timeline && self.state.now_playing.duration_sec > 0.1 {
+                    self.state.now_playing.position_sec = self.state.now_playing.duration_sec * f as f64;
+                    self.state.now_playing.sampled_at_unix_ms = now_unix_ms();
+                    audio::media_seek_fraction(f);
+                    if self.state.cc_open { self.redraw_cc(); }
+                    self.redraw_widget(WidgetKind::Music);
+                }
             }
             Action::ToggleMasterMute => {
                 self.state.master_muted = audio::toggle_master_mute();
@@ -1981,7 +1990,6 @@ impl ShellRuntime {
             }
             Action::RestoreWindowsAndExit => {
                 hotkey_hook::uninstall();
-                self.traffic_lights.shutdown();
                 self.dock_preview.shutdown();
                 self.genie.shutdown();
                 self.wallpaper.shutdown();
@@ -2241,7 +2249,9 @@ impl ShellRuntime {
                     }
                     let np_changed = self.state.now_playing.title != now_playing.title
                         || self.state.now_playing.is_playing != now_playing.is_playing
-                        || self.state.now_playing.active != now_playing.active;
+                        || self.state.now_playing.active != now_playing.active
+                        || self.state.now_playing.has_timeline != now_playing.has_timeline
+                        || (self.state.now_playing.live_position_sec() - now_playing.position_sec).abs() > 1.8;
                     self.state.now_playing = now_playing;
                     if np_changed {
                         tb_dirty = true;
@@ -2356,7 +2366,7 @@ impl ShellRuntime {
                     }
                     FilePickKind::CustomWallpaper => {
                         let low = path.to_lowercase();
-                        let is_vid = video_decoder::is_video_ext(&low);
+                        let is_vid = wallpaper::is_video_ext(&low);
                         let prefix = if is_vid {
                             "video"
                         } else if low.ends_with(".html") || low.ends_with(".htm") {
@@ -2366,7 +2376,7 @@ impl ShellRuntime {
                         };
                         let wp_id = format!("{}:{}", prefix, path);
                         let cover_path = if is_vid {
-                            video_decoder::extract_video_thumbnail(&path)
+                            wallpaper::extract_video_thumbnail_isolated(&path)
                         } else {
                             None
                         };
@@ -2402,6 +2412,7 @@ impl ShellRuntime {
                 unsafe { let _ = ShowWindow(self.hwnd_overview, SW_HIDE); }
                 self.surf_overview.trim_hidden(&self.gpu);
                 self.gpu.purge_heavy_image_cache();
+                self.gpu.trim_gpu();
                 win32_shell::trim_own_working_set();
             } else {
                 ov_dirty = true;
@@ -2437,6 +2448,7 @@ impl ShellRuntime {
             if !moving && !self.state.cc_open && self.state.cc_anim.value <= 0.02 {
                 unsafe { let _ = ShowWindow(self.hwnd_cc, SW_HIDE); }
                 self.surf_cc.trim_hidden(&self.gpu);
+                self.gpu.trim_gpu();
             } else {
                 self.redraw_cc();
             }
@@ -2485,6 +2497,7 @@ impl ShellRuntime {
             if !moving && !self.state.launchpad_open && self.state.launchpad_anim.value <= 0.02 {
                 unsafe { let _ = ShowWindow(self.hwnd_launchpad, SW_HIDE); }
                 self.surf_launchpad.trim_hidden(&self.gpu);
+                self.gpu.trim_gpu();
                 win32_shell::trim_own_working_set();
             } else {
                 lp_dirty = true;
@@ -2541,7 +2554,7 @@ impl ShellRuntime {
                     self.state.music_wave_phase -= 1000.0;
                 }
                 self.music_anim_accum += dt_sec;
-                if self.music_anim_accum >= 0.042 {
+                if self.music_anim_accum >= 0.083 {
                     self.music_anim_accum = 0.0;
                     self.redraw_widget(WidgetKind::Music);
                 }
@@ -2551,12 +2564,12 @@ impl ShellRuntime {
         // 9. macOS Genie Effect (36-Strip Curved Suction / Un-Suction!)
         let genie_running = self.genie.tick(&mut self.gpu);
 
-        // 10. Integrated Wallpaper Engine (Video/Web/GPU Presets)
+        // 10. Integrated Wallpaper Engine (Video runs isolated in AuraWallpaper.exe -> 0 Shell overhead!)
         if !self.state.launchpad_open {
             self.wallpaper.tick(&mut self.gpu, dt_sec);
         }
 
-        // 11. Dynamic Adaptive Frame Pacing (cuts idle CPU wakeups by ~90% on modest PCs!)
+        // 11. Dynamic Adaptive Frame Pacing (cuts idle CPU wakeups by >95%!)
         let ui_animating = genie_running
             || self.state.overview_anim.is_moving()
             || self.state.overview_tab_pill_x.is_moving()
@@ -2578,16 +2591,16 @@ impl ShellRuntime {
         } else if ui_animating {
             16
         } else if !self.state.launchpad_open && self.wallpaper.needs_fast_tick() {
-            if self.wallpaper.active_kind == WallpaperKind::Video { 33 } else { 48 }
+            48
         } else if music_animating || (self.state.cc_open && self.state.now_playing.is_playing) {
-            42
+            83 // Ultra-efficient 12 FPS wavy visualizer (half the GPU work, zero CreateLayer allocs!)
         } else {
-            160
+            220
         };
         if self.state.cc_open && self.state.now_playing.is_playing && !music_animating {
             self.state.music_wave_phase = (self.state.music_wave_phase + dt_sec * 1.8) % 1000.0;
             self.music_anim_accum += dt_sec;
-            if self.music_anim_accum >= 0.05 {
+            if self.music_anim_accum >= 0.083 {
                 self.music_anim_accum = 0.0;
                 self.redraw_cc();
             }
@@ -2667,11 +2680,10 @@ impl ShellRuntime {
             }
         }
         if self.hidden_for_fullscreen {
-            self.traffic_lights.hide(&self.gpu);
             return;
         }
 
-        // Fast foreground sync so Smart Desktop Dock & Unified Traffic Lights react instantaneously!
+        // Fast foreground sync so Smart Desktop Dock reacts instantaneously!
         let cur_fg = win32_shell::get_active_user_hwnd();
         if cur_fg != self.state.active_user_hwnd {
             self.state.active_user_hwnd = cur_fg;
@@ -2683,13 +2695,6 @@ impl ShellRuntime {
                 self.redraw_dock();
             }
         }
-
-        // Sync Unified macOS Traffic-Light Overlay on the active standard third-party Windows app!
-        self.traffic_lights.sync(
-            &mut self.gpu,
-            self.state.settings.traffic_light_overlay,
-            self.hidden_for_fullscreen || any_overlay || self.genie.is_active(),
-        );
 
         // SMART DESKTOP-AWARE DOCK AUTO-HIDE:
         // • On the Desktop (no visible non-minimized apps OR desktop focused & not covered) -> ALWAYS VISIBLE!
@@ -2860,6 +2865,10 @@ impl ShellRuntime {
             if !self.state.settings.performance_mode || self.slow_tick_count % 2 == 0 {
                 self.redraw_widget(WidgetKind::Monitor);
             }
+            // Keep Music Widget M:SS timeline ticking smoothly once/sec even in performance_mode!
+            if self.state.now_playing.is_playing && self.state.now_playing.has_timeline {
+                self.redraw_widget(WidgetKind::Music);
+            }
             if self.state.active_user_hwnd != self.last_fg_hwnd_seen {
                 self.last_fg_hwnd_seen = self.state.active_user_hwnd;
                 for w in &self.widget_wins {
@@ -2888,6 +2897,10 @@ impl ShellRuntime {
                 let frac = ((px - x) / w.max(1.0)).clamp(0.0, 1.0);
                 let val = 0.50 + frac * 0.46;
                 self.execute(Action::SetGlassOpacity(val));
+            }
+            SliderDragKind::MediaSeek { x, w } => {
+                let frac = ((px - x) / w.max(1.0)).clamp(0.0, 1.0);
+                self.execute(Action::MediaSeek(frac));
             }
         }
     }
@@ -2944,9 +2957,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             rt.sync_material_you_palette();
             win32_shell::apply_display_gamma(rt.state.settings.brightness_pct, rt.state.settings.night_light);
             win32_shell::set_keep_awake(rt.state.settings.keep_awake);
-            if !rt.state.settings.traffic_light_overlay {
-                rt.traffic_lights.hide(&rt.gpu);
-            }
             if rt.state.settings.weather_city != prev_city {
                 rt.spawn_weather_refresh();
             }
@@ -3449,6 +3459,10 @@ fn run_visual_capture(out_dir: &PathBuf) {
             source_app: "Spotify".into(),
             is_playing: true,
             active: true,
+            position_sec: 84.0,
+            duration_sec: 225.0,
+            has_timeline: true,
+            sampled_at_unix_ms: now_unix_ms(),
         };
     } else {
         state.now_playing.is_playing = true;

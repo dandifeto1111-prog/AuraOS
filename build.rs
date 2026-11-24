@@ -211,6 +211,7 @@ fn main() {
 
     let bins = [
         "AuraShell",
+        "AuraWallpaper",
         "AuraFiles",
         "AuraPhotos",
         "AuraPlayer",
@@ -223,7 +224,8 @@ fn main() {
     ];
 
     for bin in bins {
-        let ico = icons_dir.join(format!("{}.ico", bin));
+        let ico_name = if bin == "AuraWallpaper" { "AuraShell" } else { bin };
+        let ico = icons_dir.join(format!("{}.ico", ico_name));
         println!("cargo:rerun-if-changed={}", ico.display());
         if ico.exists() {
             let obj_path = out_dir.join(format!("{}_icon.o", bin));

@@ -50,7 +50,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory2, IDXGIDevice, IDXGIFactory2, IDXGISurface, IDXGISwapChain1,
+    CreateDXGIFactory2, IDXGIDevice, IDXGIDevice3, IDXGIFactory2, IDXGISurface, IDXGISwapChain1,
     DXGI_CREATE_FACTORY_FLAGS, DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
     DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
@@ -219,6 +219,15 @@ impl GpuEngine {
                 asset_tx: None,
                 asset_rx: None,
             })
+        }
+    }
+
+    /// Hints DXGI/D3D11 to release temporary GPU staging & driver caches immediately (zero visual flicker!).
+    pub fn trim_gpu(&self) {
+        unsafe {
+            if let Ok(dxgi3) = self.d3d_device.cast::<IDXGIDevice3>() {
+                dxgi3.Trim();
+            }
         }
     }
 
@@ -564,11 +573,13 @@ impl GpuEngine {
             rt.BeginDraw();
             rt.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
             let mut local_bmps = HashMap::new();
+            let cached_brush = rt.CreateSolidColorBrush(&D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, None).ok();
             {
                 let mut ctx = DrawCtx {
                     rt: &rt,
                     gpu: self,
                     bmp_cache: &mut local_bmps,
+                    solid_brush: cached_brush.as_ref(),
                 };
                 draw_fn(&mut ctx);
             }
@@ -762,6 +773,7 @@ pub struct WindowSurface {
     d2d_ctx: ID2D1DeviceContext,
     _target: IDCompositionTarget,
     _visual: IDCompositionVisual,
+    solid_brush: Option<ID2D1SolidColorBrush>,
     bmp_cache: HashMap<String, Option<ID2D1Bitmap>>,
     video_bmp: Option<(u32, u32, ID2D1Bitmap)>,
 }
@@ -790,6 +802,9 @@ impl WindowSurface {
             visual.SetContent(&swap_chain)?;
             target.SetRoot(&visual)?;
             gpu.dcomp.Commit()?;
+            let solid_brush = d2d_ctx
+                .CreateSolidColorBrush(&D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, None)
+                .ok();
 
             let mut surf = Self {
                 width: w,
@@ -798,6 +813,7 @@ impl WindowSurface {
                 d2d_ctx,
                 _target: target,
                 _visual: visual,
+                solid_brush,
                 bmp_cache: HashMap::new(),
                 video_bmp: None,
             };
@@ -881,6 +897,7 @@ impl WindowSurface {
                     rt: &rt,
                     gpu,
                     bmp_cache: &mut self.bmp_cache,
+                    solid_brush: self.solid_brush.as_ref(),
                 };
                 draw_fn(&mut ctx);
             }
@@ -975,11 +992,18 @@ pub struct DrawCtx<'a> {
     pub rt: &'a ID2D1RenderTarget,
     pub gpu: &'a mut GpuEngine,
     bmp_cache: &'a mut HashMap<String, Option<ID2D1Bitmap>>,
+    solid_brush: Option<&'a ID2D1SolidColorBrush>,
 }
 
 impl<'a> DrawCtx<'a> {
     fn brush(&self, color: D2D1_COLOR_F) -> Option<ID2D1SolidColorBrush> {
-        unsafe { self.rt.CreateSolidColorBrush(&color, None).ok() }
+        unsafe {
+            if let Some(b) = self.solid_brush {
+                b.SetColor(&color);
+                return Some(b.clone());
+            }
+            self.rt.CreateSolidColorBrush(&color, None).ok()
+        }
     }
 
     pub fn set_transform_scale_origin(&self, scale: f32, origin_x: f32, origin_y: f32, dx: f32, dy: f32) {
@@ -1926,43 +1950,48 @@ impl<'a> DrawCtx<'a> {
         track_col: D2D1_COLOR_F,
     ) {
         let mid_y = r.y + r.h * 0.5;
-        let split_x = r.x + r.w * progress.clamp(0.05, 1.0);
+        let prog = progress.clamp(0.0, 1.0);
+        let split_x = r.x + r.w * prog;
         // Inactive smooth straight rail on the right
-        if split_x < r.x + r.w - 2.0 {
-            self.draw_line(split_x + 4.0, mid_y, r.x + r.w, mid_y, track_col, 2.4);
+        if split_x < r.x + r.w - 1.5 {
+            let start_x = if prog <= 0.01 { r.x } else { (split_x + 4.0).min(r.x + r.w) };
+            self.draw_line(start_x, mid_y, r.x + r.w, mid_y, track_col, 2.4);
         }
         // Active Material 3 sine-wave progress trail on the left!
-        let amp = if playing { 3.2f32 } else { 0.8f32 };
-        let steps = ((split_x - r.x) / 3.0).ceil().clamp(6.0, 96.0) as usize;
-        unsafe {
-            if let Ok(geo) = self.gpu.d2d_factory.CreatePathGeometry() {
-                if let Ok(sink) = geo.Open() {
-                    let mut started = false;
-                    for i in 0..=steps {
-                        let frac = i as f32 / steps as f32;
-                        let x = r.x + (split_x - r.x) * frac;
-                        let env = (frac * std::f32::consts::PI).sin().clamp(0.25, 1.0);
-                        let y = mid_y + ((x - r.x) * 0.26 - phase * 3.8).sin() * amp * env;
-                        let pt = D2D_POINT_2F { x, y };
-                        if !started {
-                            sink.BeginFigure(pt, D2D1_FIGURE_BEGIN_HOLLOW);
-                            started = true;
-                        } else {
-                            sink.AddLine(pt);
+        if split_x > r.x + 3.0 {
+            let amp = if playing { 3.0f32 } else { 0.6f32 };
+            let steps = ((split_x - r.x) / 3.0).ceil().clamp(4.0, 96.0) as usize;
+            unsafe {
+                if let Ok(geo) = self.gpu.d2d_factory.CreatePathGeometry() {
+                    if let Ok(sink) = geo.Open() {
+                        let mut started = false;
+                        for i in 0..=steps {
+                            let frac = i as f32 / steps as f32;
+                            let x = r.x + (split_x - r.x) * frac;
+                            let env = (frac * std::f32::consts::PI).sin().clamp(0.25, 1.0);
+                            let y = mid_y + ((x - r.x) * 0.26 - phase * 3.8).sin() * amp * env;
+                            let pt = D2D_POINT_2F { x, y };
+                            if !started {
+                                sink.BeginFigure(pt, D2D1_FIGURE_BEGIN_HOLLOW);
+                                started = true;
+                            } else {
+                                sink.AddLine(pt);
+                            }
                         }
-                    }
-                    if started {
-                        sink.EndFigure(D2D1_FIGURE_END_OPEN);
-                    }
-                    let _ = sink.Close();
-                    if let Some(b) = self.brush(active_col) {
-                        self.rt.DrawGeometry(&geo, &b, 2.6, &self.gpu.round_stroke);
+                        if started {
+                            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                        }
+                        let _ = sink.Close();
+                        if let Some(b) = self.brush(active_col) {
+                            self.rt.DrawGeometry(&geo, &b, 2.6, &self.gpu.round_stroke);
+                        }
                     }
                 }
             }
         }
         // Crisp rounded vertical pill thumb
-        self.fill_rrect(Rect::new(split_x - 2.0, mid_y - 6.0, 4.0, 12.0), 2.0, active_col);
+        let thumb_x = split_x.clamp(r.x + 2.0, r.x + r.w - 2.0);
+        self.fill_rrect(Rect::new(thumb_x - 2.0, mid_y - 6.0, 4.0, 12.0), 2.0, active_col);
     }
 
     fn draw_polygon(&self, pts: &[D2D_POINT_2F], color: D2D1_COLOR_F) {

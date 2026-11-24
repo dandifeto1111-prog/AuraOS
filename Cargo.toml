@@ -1,11 +1,15 @@
 [package]
 name = "aura_os"
-version = "5.1.0"
+version = "5.2.0"
 edition = "2021"
 
 [[bin]]
 name = "AuraShell"
 path = "src/main.rs"
+
+[[bin]]
+name = "AuraWallpaper"
+path = "src/bin/aura_wallpaper.rs"
 
 [[bin]]
 name = "AuraFiles"

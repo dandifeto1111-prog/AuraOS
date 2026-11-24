@@ -231,13 +231,12 @@ fn render_music_widget(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32, 
     };
     ctx.fill_card(card, 22.0, theme::with_alpha(p.surface, 0.90), border);
 
-    let _clip = ctx.push_rrect_mask_layer(card, card, 22.0, 1.0);
+    // Zero-allocation axis-aligned clip (replaces heavy per-frame CreateLayer offscreen GPU surface!)
+    ctx.push_clip(card.inset(2.0, 2.0));
     if energy > 0.02 {
-        let gx = card.x + 68.0 + (phase * 0.7).sin() * 24.0;
-        let gy = card.y + 52.0 + (phase * 0.5).cos() * 14.0;
-        ctx.fill_radial_glow(gx, gy, 150.0, theme::with_alpha(p.accent, 0.24 * energy), theme::with_alpha(p.accent, 0.0));
-        let gx2 = card.x + card.w - 64.0 + (phase * 0.9).cos() * 20.0;
-        ctx.fill_radial_glow(gx2, card.y + card.h - 24.0, 120.0, theme::with_alpha(p.accent_light, 0.16 * energy), theme::with_alpha(p.accent_light, 0.0));
+        let gx = card.x + 68.0 + (phase * 0.7).sin() * 20.0;
+        let gy = card.y + 52.0 + (phase * 0.5).cos() * 12.0;
+        ctx.fill_radial_glow(gx, gy, 130.0, theme::with_alpha(p.accent, 0.20 * energy), theme::with_alpha(p.accent, 0.0));
     }
 
     let pulse = 1.0 + 0.04 * energy * (phase * 3.2).sin();
@@ -304,19 +303,40 @@ fn render_music_widget(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32, 
         ctx.fill_rrect(Rect::new(x, y, bar_w, bar_h), bar_w * 0.5, col);
     }
 
-    let wave_prog = if playing { 0.32 + ((phase * 0.04).sin() * 0.5 + 0.5) * 0.48 } else { 0.40 };
+    // Real SMTC-synced Material 3 Wavy Timeline Bar + Live MM:SS Timestamps + Click/Drag-to-Seek!
+    let has_tl = state.now_playing.has_timeline;
+    let wave_prog = state.now_playing.live_progress();
+    let (bar_x, bar_w) = if has_tl {
+        let pos_txt = crate::models::NowPlaying::format_time(state.now_playing.live_position_sec());
+        let dur_txt = crate::models::NowPlaying::format_time(state.now_playing.duration_sec);
+        let ty = card.y + card.h - 24.0;
+        ctx.draw_text(&pos_txt, Rect::new(card.x + 16.0, ty, 44.0, 14.0), TextStyle::Small9Reg, p.text_secondary);
+        ctx.draw_text_right(&dur_txt, Rect::new(card.x + card.w - 60.0, ty, 44.0, 14.0), TextStyle::Small9Reg, p.text_tertiary);
+        (card.x + 62.0, (card.w - 124.0).max(60.0))
+    } else {
+        (card.x + 18.0, (card.w - 36.0).max(60.0))
+    };
+    let bar_r = Rect::new(bar_x, card.y + card.h - 23.0, bar_w, 14.0);
     ctx.draw_wavy_progress_bar(
-        Rect::new(card.x + 18.0, card.y + card.h - 22.0, card.w - 36.0, 12.0),
+        bar_r,
         wave_prog,
         phase,
-        playing,
+        playing && has_tl,
         p.accent_light,
-        theme::with_alpha(p.border_strong, 0.7),
+        theme::with_alpha(p.border_strong, 0.72),
     );
-
-    if _clip.is_some() {
-        ctx.pop_layer();
+    if has_tl {
+        hits.push(HitRegion {
+            id: "mw_seek".into(),
+            rect: Rect::new(bar_r.x - 4.0, bar_r.y - 4.0, bar_r.w + 8.0, bar_r.h + 8.0),
+            action: Action::MediaSeek(wave_prog),
+            right_action: None,
+            tooltip: Some("Saltar a cualquier punto de la pista".into()),
+            slider: Some(crate::ui_state::SliderDragKind::MediaSeek { x: bar_r.x, w: bar_r.w }),
+        });
     }
+
+    ctx.pop_clip();
 }
 
 // ==================== 3. LIVE WEATHER CARD WIDGET ====================
