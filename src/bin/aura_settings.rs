@@ -1289,7 +1289,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
 
     ctx.draw_text("Configuración de AuraOS", Rect::new(82.0, 0.0, 240.0, TOP_H), TextStyle::Title14Semi, theme::TEXT_PRIMARY);
     ctx.draw_text_right(
-        &format!("{} · {} · v5.2.0 Rust", s.username, s.hostname),
+        &format!("{} · {} · v{} Rust", s.username, s.hostname, env!("CARGO_PKG_VERSION")),
         Rect::new(w - 340.0, 0.0, 322.0, TOP_H),
         TextStyle::Small10Med,
         theme::TEXT_TERTIARY,
@@ -1929,8 +1929,13 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
         Tab::Updates => {
             let uc = Rect::new(cx, y, cw, 92.0);
             ctx.fill_card(uc, 16.0, theme::SURFACE, theme::VIOLET_BORDER);
-            ctx.draw_text("AuraOS v5.2.0 (Motor Video Aislado 60 FPS + Ultra-Ligero)", Rect::new(uc.x + 16.0, uc.y + 14.0, 520.0, 24.0), TextStyle::Title16Semi, theme::TEXT_PRIMARY);
-            ctx.draw_text("AuraShell · AuraPDF · AuraPhotos · AuraShot · AuraTasks · AuraFiles · AuraLock · AuraSettings", Rect::new(uc.x + 16.0, uc.y + 42.0, cw - 32.0, 18.0), TextStyle::Body11Reg, theme::TEXT_SECONDARY);
+            ctx.draw_text(
+                &format!("AuraOS v{} (Aura Studio · AuraBeats · Motor 60 FPS)", env!("CARGO_PKG_VERSION")),
+                Rect::new(uc.x + 16.0, uc.y + 14.0, 560.0, 24.0),
+                TextStyle::Title16Semi,
+                theme::TEXT_PRIMARY,
+            );
+            ctx.draw_text("AuraShell · AuraWallpaper · AuraBeats DAW · AuraPDF · AuraPhotos · AuraShot · AuraTasks · AuraFiles", Rect::new(uc.x + 16.0, uc.y + 42.0, cw - 32.0, 18.0), TextStyle::Body11Reg, theme::TEXT_SECONDARY);
             ctx.draw_text("Actualizaciones automáticas silenciosas compatibles con GitHub Releases y Discord", Rect::new(uc.x + 16.0, uc.y + 63.0, cw - 32.0, 16.0), TextStyle::Small10Med, theme::VIOLET_LIGHT);
             y += 108.0;
 
