@@ -1,11 +1,11 @@
 <div align="center">
-  <img src="AuraShell_256.png" alt="AuraOS Logo" width="112" />
+  <img src="assets/icons/AuraShell_256.png" alt="AuraOS Logo" width="112" />
   <h1>AuraOS</h1>
   <p><strong>Un entorno de escritorio híbrido 100% nativo en Rust + Direct2D sobre Windows 11.</strong></p>
   <p>Conserva toda la compatibilidad de juegos, DirectX, drivers y anti-cheats de Windows (Riot Vanguard, Steam, Epic), mientras reemplaza la interfaz pesada por una suite ultrarrápida estilo <em>Drool Dark Mode</em>.</p>
 
   <p>
-    <a href="https://github.com/dandifeto1111-prog/AuraOS/releases/latest"><img src="https://img.shields.io/badge/Release-v5.2.1-7C5CFF?style=for-the-badge&logo=github" alt="Release v5.2.1" /></a>
+    <a href="https://github.com/dandifeto1111-prog/AuraOS/releases/latest"><img src="https://img.shields.io/badge/Release-v5.2.2-7C5CFF?style=for-the-badge&logo=github" alt="Release v5.2.2" /></a>
     <img src="https://img.shields.io/badge/100%25_Rust-Direct2D_%2B_DirectComposition-F4727F?style=for-the-badge&logo=rust" alt="100% Rust" />
     <img src="https://img.shields.io/badge/OS-Windows_11_x64-34D399?style=for-the-badge&logo=windows11" alt="Windows 11" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-FBBF24?style=for-the-badge" alt="MIT License" /></a>
@@ -22,9 +22,15 @@ Cada aplicación del sistema está acelerada por hardware con **Direct2D y Direc
 
 ---
 
-## 🖼️ Galería del Sistema (Capturas Reales v5.2.1)
+## 🖼️ Galería del Sistema y Novedades (`v5.2.2`)
 
-### 🎹 Nuevo en v5.2.1: Hub Creativo `Aura Studio` + `AuraBeats DAW` (Fork Nativo de Lemon-Studio en Rust)
+### 🧹 Nuevo en `v5.2.2`: Repositorio Limpio, Instalador Rápido (sin APB) + Descarga Automática, `AuraFiles` OLE Drag & Drop y `AuraLock`
+- **Carpeta principal 100% ordenada:** Al descargar el `.zip` o abrir el proyecto, **solo `AuraShell-Setup.exe`** queda fuera de subcarpetas; todos los binarios viven en `app/`, los iconos HD en `assets/icons/` y los scripts PowerShell en `scripts/`.
+- **Instalador Inteligente mejorado (`AuraShell-Setup.exe`):** Incluye botón **`Actualización rápida (sin APB)`** / **`Instalación rápida (sin APB)`** visible desde el inicio, y descarga automáticamente el paquete oficial desde GitHub si ejecutas `AuraShell-Setup.exe` suelto.
+- **`AuraFiles` Multiselección + Drag & Drop OLE (`CF_HDROP`):** Arrastra múltiples archivos desde `AuraFiles` directo a cualquier app de Windows.
+- **Widget de Música 60 FPS** y cierre limpio con mutex en **`AuraLock.exe`**.
+
+### 🎹 Nuevo en `v5.2.1`: Hub Creativo `Aura Studio` + `AuraBeats DAW` (Fork Nativo de Lemon-Studio en Rust)
 Nuevo modo **`Studio`** en la barra superior (`PC | Dev | Gamer | Studio | Fondos`) con lanzamiento en 1 clic de **`AuraBeats DAW`** (estación de audio digital en Rust puro bajo GPL-3.0, proceso aislado con 0 MB en reposo, tema **Aura Obsidian Violet**, semáforos macOS unificados, 28 plugins DSP nativos, soporte **VST3 / VST2 / CLAP**, **WASAPI + ASIO**, Piano Roll, Channel Rack, Mixer e importación nativa de proyectos `.flp` / `.lsp`), junto a **`AuraPhotos Studio`**, espacio reservado para el próximo **Editor de Video** open-source y accesos rápidos a `AuraPDF`, `AuraShot OCR`, `AuraPlayer` y `AuraNotes`.
 
 <table>
@@ -161,9 +167,9 @@ Control de audio maestro, cambio de salida/micrófono en 1 clic, mezclador por a
 ## 📖 Cómo Instalar y Usar AuraOS
 
 ### 1. Instalación rápida (Recomendada)
-1. Ve a la pestaña **[Releases](https://github.com/dandifeto1111-prog/AuraOS/releases/latest)** y descarga **`AuraOS-v4.5.0-Windows-x64.zip`**.
-2. Extrae el archivo ZIP y ejecuta **`AuraShell-Setup.exe`**.
-3. Elige tus opciones (inicio directo con Windows, ocultar barra clásica, posición del Dock, optimización opcional con `APBOptimizer`) y haz clic en **Instalar / Aplicar ajustes**.
+1. Ve a la pestaña **[Releases](https://github.com/dandifeto1111-prog/AuraOS/releases/latest)** y descarga **`AuraOS-v5.2.2-Windows-x64.zip`** (o incluso **`AuraShell-Setup.exe`** suelto: el instalador descargará el paquete oficial automáticamente).
+2. Si descargaste el ZIP, extráelo: verás **únicamente `AuraShell-Setup.exe`** fuera de carpetas y todo lo demás ordenado dentro de `app/`. Ejecuta **`AuraShell-Setup.exe`**.
+3. Pulsa **`Instalación rápida (sin APB)`** (o **`Actualización rápida (sin APB)`** si ya lo tienes) para instalar en 1 clic, o elige **`Personalizar instalación →`** para ajustar tu perfil.
 4. ¡Listo! AuraOS iniciará automáticamente en tu escritorio y recibirá futuras actualizaciones desde GitHub Releases.
 
 ### 2. Atajos de Teclado Integrados con AuraOS
@@ -193,15 +199,15 @@ Requisitos: **Rust estable** (`rustup` / `cargo`) en Windows 10/11 x64 y `.NET F
 ```powershell
 git clone https://github.com/dandifeto1111-prog/AuraOS.git
 cd AuraOS
-.\build.ps1 -Version "4.3.0"
+.\scripts\build.ps1 -Version "5.2.2"
 .\AuraShell-Setup.exe
 ```
 
 ### Publicar una nueva versión (CI/CD Automático)
-El workflow [.github/workflows/release.yml](.github/workflows/release.yml) compila automáticamente los 7 binarios y publica la release en GitHub cada vez que subes un tag `v*.*.*`:
+El workflow [.github/workflows/release.yml](.github/workflows/release.yml) compila automáticamente los 11 binarios y publica la release organizada en GitHub cada vez que subes un tag `v*.*.*`:
 
 ```powershell
-.\release.ps1 -Version "4.4.0" -Changelog "Descripción de mejoras" -Push
+.\scripts\release.ps1 -Version "5.2.2" -Changelog "Descripción de mejoras" -Push
 ```
 
 ---

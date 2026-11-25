@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version tag (e.g. 4.3.0)"
+        description: "Version tag (e.g. 5.2.2)"
         required: true
-        default: "4.3.0"
+        default: "5.2.2"
 
 permissions:
   contents: write
@@ -36,32 +36,25 @@ jobs:
           echo "version=$clean" >> $env:GITHUB_OUTPUT
           echo "tag=v$clean" >> $env:GITHUB_OUTPUT
 
-      - name: Compile AuraOS Suite (7 Pure-Rust binaries + AuraShell-Setup.exe)
+      - name: Compile AuraOS Suite (11 Pure-Rust binaries + AuraShell-Setup.exe)
         shell: pwsh
         run: |
-          .\build.ps1 -Version "${{ steps.ver.outputs.version }}"
+          .\scripts\build.ps1 -Version "${{ steps.ver.outputs.version }}"
 
-      - name: Package Release ZIP + latest.json manifest
+      - name: Package Organized Release ZIP + latest.json manifest
         shell: pwsh
         run: |
           $v = "${{ steps.ver.outputs.version }}"
           $tag = "${{ steps.ver.outputs.tag }}"
-          New-Item -ItemType Directory -Force -Path dist\pkg | Out-Null
-          $files = @(
-            "AuraShell.exe", "AuraWallpaper.exe", "AuraFiles.exe", "AuraPhotos.exe", "AuraPlayer.exe",
-            "AuraNotes.exe", "AuraLock.exe", "AuraSettings.exe", "AuraTasks.exe",
-            "AuraPDF.exe", "AuraShot.exe", "AuraShell-Setup.exe",
-            "restore-windows.ps1", "APBOptimizer.ps1", "version.json"
-          )
-          foreach ($f in $files) {
-            if (Test-Path $f) { Copy-Item $f "dist\pkg\$f" -Force }
-          }
-          Get-ChildItem -File | Where-Object { $_.Extension -in ".ico", ".png" -and $_.Name -like "Aura*" } | ForEach-Object {
-            Copy-Item $_.FullName "dist\pkg\$($_.Name)" -Force
-          }
+          New-Item -ItemType Directory -Force -Path dist\pkg\app | Out-Null
+
+          # Keep the extracted package spotless: ONLY AuraShell-Setup.exe at root, all payload inside app/
+          Copy-Item "AuraShell-Setup.exe" "dist\pkg\AuraShell-Setup.exe" -Force
+          Copy-Item "AuraShell-Setup.exe" "dist\AuraShell-Setup.exe" -Force
+          Copy-Item "app\*" "dist\pkg\app\" -Recurse -Force
+
           $zipName = "AuraOS-v$v-Windows-x64.zip"
           Compress-Archive -Path "dist\pkg\*" -DestinationPath "dist\$zipName" -Force
-          Copy-Item "AuraShell-Setup.exe" "dist\AuraShell-Setup.exe" -Force
 
           $hash = (Get-FileHash "dist\$zipName" -Algorithm SHA256).Hash
           $repo = "${{ github.repository }}"
@@ -71,7 +64,7 @@ jobs:
             DownloadUrl = "https://github.com/$repo/releases/download/$tag/$zipName"
             SetupUrl = "https://github.com/$repo/releases/download/$tag/AuraShell-Setup.exe"
             Sha256 = $hash
-            Changelog = "AuraOS v$v — Suite 100% Pure-Rust Direct2D (AuraShell, AuraSettings, AuraLock, AuraTasks, AuraFiles, AuraPhotos, AuraPlayer, AuraNotes)."
+            Changelog = "AuraOS v$v — Paquete organizado (solo AuraShell-Setup.exe en raiz + app/), instalacion y actualizacion rapida sin APB, descarga automatica desde GitHub y mejoras de AuraLock/AuraFiles/Widget 60 FPS."
           }
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
           [System.IO.File]::WriteAllText((Join-Path $PWD "dist\latest.json"), ($manifest | ConvertTo-Json -Depth 4), $utf8NoBom)

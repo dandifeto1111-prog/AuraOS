@@ -405,6 +405,8 @@ namespace AuraShellInstaller
             "AuraShell");
 
         public const string ApbScriptUrl = "https://raw.githubusercontent.com/OptiJuegos/host/refs/heads/main/APBOptimizer.ps1";
+        public const string LatestReleaseApiUrl = "https://api.github.com/repos/dandifeto1111-prog/AuraOS/releases/latest";
+        private static string _downloadedSourceDir = "";
         private const string UninstallRegKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\AuraShell";
         private static readonly UTF8Encoding Utf8NoBom = new UTF8Encoding(false);
 
@@ -578,12 +580,16 @@ namespace AuraShellInstaller
         public static string ResolveApbScriptPath()
         {
             string srcDir = ResolveSourceDir();
-            string fromSrc = Path.Combine(srcDir, "APBOptimizer.ps1");
-            if (File.Exists(fromSrc)) return fromSrc;
-
-            string fromInst = Path.Combine(InstallDir, "APBOptimizer.ps1");
-            if (File.Exists(fromInst)) return fromInst;
-
+            foreach (string cand in new[]
+            {
+                Path.Combine(srcDir, "APBOptimizer.ps1"),
+                Path.Combine(srcDir, @"scripts\APBOptimizer.ps1"),
+                Path.Combine(srcDir, @"..\scripts\APBOptimizer.ps1"),
+                Path.Combine(InstallDir, "APBOptimizer.ps1")
+            })
+            {
+                if (File.Exists(cand)) return cand;
+            }
             return null;
         }
 
@@ -685,26 +691,131 @@ namespace AuraShellInstaller
             string exeDir = NormalizeDir(AppDomain.CurrentDomain.BaseDirectory);
             string instDir = NormalizeDir(InstallDir);
 
+            // 1. Organized package layout: Setup.exe at root + binaries cleanly inside app/
+            string exeAppDir = NormalizeDir(Path.Combine(exeDir, "app"));
+            if (!AreSamePath(exeAppDir, instDir) && File.Exists(Path.Combine(exeAppDir, "AuraShell.exe")))
+                return exeAppDir;
+
+            // 2. Legacy flat folder layout beside Setup.exe
             if (!AreSamePath(exeDir, instDir) && File.Exists(Path.Combine(exeDir, "AuraShell.exe")))
                 return exeDir;
 
+            // 3. Auto-downloaded payload from GitHub Releases (when running standalone Setup.exe)
+            if (!string.IsNullOrEmpty(_downloadedSourceDir) && File.Exists(Path.Combine(_downloadedSourceDir, "AuraShell.exe")))
+                return _downloadedSourceDir;
+
+            // 4. Saved SourceDir from previous install
             var installedMeta = ReadManifest(instDir);
             if (installedMeta != null && !string.IsNullOrWhiteSpace(installedMeta.SourceDir))
             {
-                string candidate = NormalizeDir(installedMeta.SourceDir);
-                if (Directory.Exists(candidate) && File.Exists(Path.Combine(candidate, "AuraShell.exe")))
-                    return candidate;
+                foreach (string cand in new[] { NormalizeDir(installedMeta.SourceDir), NormalizeDir(Path.Combine(installedMeta.SourceDir, "app")) })
+                {
+                    if (!AreSamePath(cand, instDir) && Directory.Exists(cand) && File.Exists(Path.Combine(cand, "AuraShell.exe")))
+                        return cand;
+                }
             }
 
+            // 5. Developer workspace paths
             string userProf = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            foreach (string rel in new[] { @".gemini\antigravity\scratch\AuraOS-Rust", @".gemini\antigravity\scratch\AuraShell" })
+            foreach (string rel in new[] { @".gemini\antigravity\scratch\AuraOS-Rust\app", @".gemini\antigravity\scratch\AuraOS-Rust", @".gemini\antigravity\scratch\AuraShell" })
             {
                 string cand = Path.Combine(userProf, rel);
                 if (Directory.Exists(cand) && File.Exists(Path.Combine(cand, "AuraShell.exe")))
                     return NormalizeDir(cand);
             }
 
-            return exeDir;
+            return Directory.Exists(exeAppDir) ? exeAppDir : exeDir;
+        }
+
+        public static bool EnsureSourcePayloadReady(Action<int, string> onProgress, out string sourceDir, out string errorMsg)
+        {
+            errorMsg = "";
+            sourceDir = ResolveSourceDir();
+            if (File.Exists(Path.Combine(sourceDir, "AuraShell.exe")))
+                return true;
+
+            try
+            {
+                if (onProgress != null) onProgress(6, "Descargando última versión de AuraOS desde GitHub...");
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
+
+                string json;
+                using (var wc = new WebClient())
+                {
+                    wc.Headers.Add("User-Agent", "AuraOS-Installer/5.2.2");
+                    json = wc.DownloadString(LatestReleaseApiUrl);
+                }
+
+                var js = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                var rel = js.Deserialize<Dictionary<string, object>>(json);
+                string zipUrl = "";
+                string zipName = "AuraOS-latest.zip";
+                if (rel != null && rel.ContainsKey("assets") && rel["assets"] is System.Collections.ArrayList)
+                {
+                    foreach (object item in (System.Collections.ArrayList)rel["assets"])
+                    {
+                        var asset = item as Dictionary<string, object>;
+                        if (asset == null) continue;
+                        string name = asset.ContainsKey("name") && asset["name"] != null ? asset["name"].ToString() : "";
+                        string url = asset.ContainsKey("browser_download_url") && asset["browser_download_url"] != null ? asset["browser_download_url"].ToString() : "";
+                        if (name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(url))
+                        {
+                            zipName = name;
+                            zipUrl = url;
+                            break;
+                        }
+                    }
+                }
+
+                if (string.IsNullOrEmpty(zipUrl))
+                {
+                    errorMsg = "No se encontró el paquete .zip en la última Release de GitHub.";
+                    return false;
+                }
+
+                string cacheRoot = Path.Combine(Path.GetTempPath(), "AuraOS-Setup-Cache");
+                string extDir = Path.Combine(cacheRoot, Path.GetFileNameWithoutExtension(zipName));
+                if (Directory.Exists(extDir)) { try { Directory.Delete(extDir, true); } catch { } }
+                Directory.CreateDirectory(cacheRoot);
+
+                string zipPath = Path.Combine(cacheRoot, zipName);
+                if (onProgress != null) onProgress(10, "Descargando " + zipName + "...");
+                using (var wc = new WebClient())
+                {
+                    wc.Headers.Add("User-Agent", "AuraOS-Installer/5.2.2");
+                    wc.DownloadFile(zipUrl, zipPath);
+                }
+
+                if (onProgress != null) onProgress(16, "Descomprimiendo paquete oficial...");
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = "-ExecutionPolicy Bypass -NoProfile -Command \"Expand-Archive -LiteralPath '" + zipPath.Replace("'", "''") + "' -DestinationPath '" + extDir.Replace("'", "''") + "' -Force\"",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using (var p = Process.Start(psi))
+                {
+                    if (p != null) p.WaitForExit(120000);
+                }
+
+                string candApp = Path.Combine(extDir, "app");
+                if (File.Exists(Path.Combine(candApp, "AuraShell.exe"))) sourceDir = candApp;
+                else if (File.Exists(Path.Combine(extDir, "AuraShell.exe"))) sourceDir = extDir;
+                else
+                {
+                    errorMsg = "El paquete descargado no contiene AuraShell.exe.";
+                    return false;
+                }
+
+                _downloadedSourceDir = sourceDir;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                errorMsg = "No se pudo descargar el paquete desde GitHub: " + ex.Message;
+                return false;
+            }
         }
 
         public static bool HasNewerVersionAvailable(out VersionManifest installed, out VersionManifest available)
@@ -731,12 +842,13 @@ namespace AuraShellInstaller
 
         public static bool PerformQuickUpdate(bool relaunchShell, Action<int, string> onProgress, out string statusMessage)
         {
+            bool alreadyInstalled = IsInstalled();
             var hw = HardwareProfile.Scan();
-            var opts = BuildRecommendedOptions(hw, true);
-            opts.RunApbOptimizerFirst = false; // NEVER re-prompt APB on updates!
+            var opts = BuildRecommendedOptions(hw, alreadyInstalled);
+            opts.RunApbOptimizerFirst = false; // NEVER run or prompt APB on quick install / quick update!
             opts.LaunchAfter = relaunchShell;
-            opts.PreserveExistingSettings = true;
-            opts.ApplyHardwareProfileToSettings = false;
+            opts.PreserveExistingSettings = alreadyInstalled;
+            opts.ApplyHardwareProfileToSettings = !alreadyInstalled;
             return PerformInstall(opts, onProgress, out statusMessage);
         }
 
@@ -772,19 +884,22 @@ namespace AuraShellInstaller
             try
             {
                 string srcDir = ResolveSourceDir();
-                string buildPs1 = Path.Combine(srcDir, "build.ps1");
+                string buildPs1 = File.Exists(Path.Combine(srcDir, "build.ps1"))
+                    ? Path.Combine(srcDir, "build.ps1")
+                    : Path.Combine(srcDir, @"..\scripts\build.ps1");
                 if (!File.Exists(buildPs1))
                 {
-                    errorMsg = "No se encontró build.ps1 en " + srcDir;
+                    errorMsg = "No se encontró scripts\\build.ps1 en " + srcDir;
                     return false;
                 }
+                string repoRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(buildPs1), ".."));
 
                 if (onProgress != null) onProgress(10, "Compilando suite completa AuraOS desde código fuente...");
                 var psi = new ProcessStartInfo
                 {
                     FileName = "powershell.exe",
                     Arguments = "-ExecutionPolicy Bypass -NoProfile -File \"" + buildPs1 + "\"",
-                    WorkingDirectory = srcDir,
+                    WorkingDirectory = Directory.Exists(repoRoot) ? repoRoot : srcDir,
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
@@ -832,13 +947,10 @@ namespace AuraShellInstaller
                     }
                 }
 
-                string sourceDir = ResolveSourceDir();
-                string srcShell = Path.Combine(sourceDir, "AuraShell.exe");
-                if (!File.Exists(srcShell))
-                {
-                    statusMessage = "No se encontró AuraShell.exe en " + sourceDir;
+                string sourceDir;
+                if (!EnsureSourcePayloadReady(onProgress, out sourceDir, out statusMessage))
                     return false;
-                }
+                string srcShell = Path.Combine(sourceDir, "AuraShell.exe");
 
                 report(20, "Deteniendo instancias previas de AuraShell y AuraWallpaper...");
                 StopRunningApps();
@@ -864,6 +976,7 @@ namespace AuraShellInstaller
                         string assetName = stem + extAsset;
                         string sAsset = Path.Combine(sourceDir, assetName);
                         if (!File.Exists(sAsset)) sAsset = Path.Combine(Path.Combine(sourceDir, @"assets\icons"), assetName);
+                        if (!File.Exists(sAsset)) sAsset = Path.Combine(Path.Combine(sourceDir, @"..\assets\icons"), assetName);
                         if (File.Exists(sAsset)) SafeCopyFileWithRetry(sAsset, Path.Combine(InstallDir, assetName));
                     }
                 }
@@ -873,6 +986,7 @@ namespace AuraShellInstaller
                 {
                     string sAsset = Path.Combine(sourceDir, studioAsset);
                     if (!File.Exists(sAsset)) sAsset = Path.Combine(Path.Combine(sourceDir, @"assets\icons"), studioAsset);
+                    if (!File.Exists(sAsset)) sAsset = Path.Combine(Path.Combine(sourceDir, @"..\assets\icons"), studioAsset);
                     if (File.Exists(sAsset)) SafeCopyFileWithRetry(sAsset, Path.Combine(InstallDir, studioAsset));
                 }
 
@@ -881,11 +995,14 @@ namespace AuraShellInstaller
                 string dstApb = Path.Combine(InstallDir, "APBOptimizer.ps1");
                 string dstSetup = Path.Combine(InstallDir, "AuraShell-Setup.exe");
                 string dstVersion = Path.Combine(InstallDir, "version.json");
-                if (File.Exists(Path.Combine(sourceDir, "restore-windows.ps1"))) SafeCopyFileWithRetry(Path.Combine(sourceDir, "restore-windows.ps1"), dstRestore);
-                if (File.Exists(Path.Combine(sourceDir, "APBOptimizer.ps1"))) SafeCopyFileWithRetry(Path.Combine(sourceDir, "APBOptimizer.ps1"), dstApb);
+                string sRestore = File.Exists(Path.Combine(sourceDir, "restore-windows.ps1")) ? Path.Combine(sourceDir, "restore-windows.ps1") : Path.Combine(sourceDir, @"..\scripts\restore-windows.ps1");
+                string sApb = File.Exists(Path.Combine(sourceDir, "APBOptimizer.ps1")) ? Path.Combine(sourceDir, "APBOptimizer.ps1") : Path.Combine(sourceDir, @"..\scripts\APBOptimizer.ps1");
+                if (File.Exists(sRestore)) SafeCopyFileWithRetry(sRestore, dstRestore);
+                if (File.Exists(sApb)) SafeCopyFileWithRetry(sApb, dstApb);
                 if (File.Exists(Path.Combine(sourceDir, "version.json"))) SafeCopyFileWithRetry(Path.Combine(sourceDir, "version.json"), dstVersion);
 
                 string srcSetup = Path.Combine(sourceDir, "AuraShell-Setup.exe");
+                if (!File.Exists(srcSetup)) srcSetup = Path.Combine(sourceDir, @"..\AuraShell-Setup.exe");
                 if (!File.Exists(srcSetup)) srcSetup = Assembly.GetExecutingAssembly().Location;
                 SafeCopySelfUpdater(srcSetup, dstSetup);
 
@@ -1025,7 +1142,7 @@ namespace AuraShellInstaller
                 }
 
                 var verMeta = ReadManifest(InstallDir) ?? ReadManifest(sourceDir);
-                string verLabel = verMeta != null && !string.IsNullOrEmpty(verMeta.Version) ? verMeta.Version : "5.2.1";
+                string verLabel = verMeta != null && !string.IsNullOrEmpty(verMeta.Version) ? verMeta.Version : "5.2.2";
 
                 using (RegistryKey key = Registry.CurrentUser.CreateSubKey(UninstallRegKey))
                 {
@@ -1444,7 +1561,7 @@ namespace AuraShellInstaller
                 Margin = new Thickness(10, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center
             };
-            _versionBadgeTxt = new TextBlock { Text = "v5.2.1", Foreground = Brushes.White, FontSize = 10.6, FontWeight = FontWeights.SemiBold };
+            _versionBadgeTxt = new TextBlock { Text = "v5.2.2", Foreground = Brushes.White, FontSize = 10.6, FontWeight = FontWeights.SemiBold };
             _versionBadge.Child = _versionBadgeTxt;
             titleRow.Children.Add(_versionBadge);
             titleStack.Children.Add(titleRow);
@@ -1512,7 +1629,7 @@ namespace AuraShellInstaller
         {
             VersionManifest inst, avail;
             bool hasNewer = InstallerProgram.HasNewerVersionAvailable(out inst, out avail);
-            string verStr = avail != null && !string.IsNullOrEmpty(avail.Version) ? avail.Version : "5.2.1";
+            string verStr = avail != null && !string.IsNullOrEmpty(avail.Version) ? avail.Version : "5.2.2";
             if (!_isInstalled)
             {
                 _versionBadge.Background = new SolidColorBrush(Violet);
@@ -1601,7 +1718,7 @@ namespace AuraShellInstaller
             vcGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.2, GridUnitType.Star) });
 
             vcGrid.Children.Add(MakeStatCell("INSTALADA ACTUALMENTE", inst != null ? ("v" + inst.Version) : (_isInstalled ? "Instalada" : "Sin instalar"), Brushes.White));
-            var c2 = MakeStatCell("PAQUETE DISPONIBLE", avail != null ? ("v" + avail.Version) : "v5.2.1", new SolidColorBrush(VioletHover));
+            var c2 = MakeStatCell("PAQUETE DISPONIBLE", avail != null ? ("v" + avail.Version) : "v5.2.2", new SolidColorBrush(VioletHover));
             Grid.SetColumn(c2, 1); vcGrid.Children.Add(c2);
             var c3 = MakeStatCell("SISTEMA DETECTADO", _hw.WindowsLabel, TextPrimary);
             Grid.SetColumn(c3, 2); vcGrid.Children.Add(c3);
@@ -2068,7 +2185,7 @@ namespace AuraShellInstaller
                 _footerLeft.Children.Add(unBtn);
 
                 string srcDir = InstallerProgram.ResolveSourceDir();
-                if (File.Exists(Path.Combine(srcDir, "build.ps1")))
+                if (File.Exists(Path.Combine(srcDir, "build.ps1")) || File.Exists(Path.Combine(srcDir, @"..\scripts\build.ps1")))
                 {
                     var bBtn = MakeActionBtn("Compilar + Actualizar", CardBg, CardBorder, Colors.White, () => StartInstallFlow(true, false));
                     bBtn.Margin = new Thickness(8, 0, 0, 0);
@@ -2083,12 +2200,10 @@ namespace AuraShellInstaller
             // Right Footer Controls
             if (_step == 0)
             {
-                if (_isInstalled)
-                {
-                    var quickBtn = MakeActionBtn("Actualización rápida (sin APB)", Color.FromRgb(24, 52, 38), Emerald, Color.FromRgb(167, 243, 208), () => StartInstallFlow(false, true));
-                    quickBtn.Margin = new Thickness(0, 0, 8, 0);
-                    _footerRight.Children.Add(quickBtn);
-                }
+                string quickLbl = _isInstalled ? "Actualización rápida (sin APB)" : "Instalación rápida (sin APB)";
+                var quickBtn = MakeActionBtn(quickLbl, Color.FromRgb(24, 52, 38), Emerald, Color.FromRgb(167, 243, 208), () => StartInstallFlow(false, true));
+                quickBtn.Margin = new Thickness(0, 0, 8, 0);
+                _footerRight.Children.Add(quickBtn);
                 _footerRight.Children.Add(MakeActionBtn("Personalizar instalación →", Violet, VioletHover, Colors.White, () => { _step = 1; RenderStep(); }));
             }
             else if (_step == 1)

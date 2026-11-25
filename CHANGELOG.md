@@ -1,5 +1,21 @@
 # Historial de Versiones — AuraOS
 
+## v5.2.2 (2026-11-25)
+- **Carpeta y Paquete Oficial Reorganizados (`AuraShell-Setup.exe` único en raíz + subcarpeta `app/`):**
+  - El paquete de lanzamiento (`AuraOS-v5.2.2-Windows-x64.zip`) y el repositorio ahora mantienen limpia la carpeta principal: **solo `AuraShell-Setup.exe`** queda fuera de subcarpetas; todos los binarios (`.exe`), iconos HD (`assets/icons/`), scripts de PowerShell (`scripts/`) y manifiesto quedan ordenados dentro de `app/`, `assets/icons/` y `scripts/`.
+- **Instalador Inteligente v5.2.2 con Modo Rápido Siempre Visible y Auto-Descarga desde GitHub (`installer/Installer.cs`):**
+  - Botón rápido verde **`Actualización rápida (sin APB)`** o **`Instalación rápida (sin APB)`** disponible desde el Paso 1 tanto si ya tenías AuraOS instalado como si es tu primera vez.
+  - Si un usuario descarga únicamente `AuraShell-Setup.exe` suelto desde GitHub Releases (sin bajar el `.zip` completo), el instalador detecta la ausencia de `app/AuraShell.exe`, descarga automáticamente la última versión desde GitHub Releases y la instala sin errores.
+- **Arreglos de Estabilidad y Productividad (`db12031`):**
+  - **`AuraLock.exe`:** Guard de instancia única (mutex) y salida limpia sin procesos zombies al desbloquear.
+  - **Widget de Música a 60 FPS en el Escritorio:** Barra ondulada ultra-fluida sincronizada con SMTC mientras reproduces.
+  - **`AuraFiles.exe` Multiselección + Drag & Drop Nativo hacia Windows (`ole_dnd.rs`):** Selecciona varios archivos/carpetas (`Ctrl+Clic`, `Shift+Clic` o marquee) y arrástralos directamente hacia programas externos de Windows mediante `CF_HDROP` OLE (`DoDragDrop`).
+
+## v5.2.1 (2026-11-24)
+- **Nuevo Hub Creativo `Aura Studio` + Integración Nativa con `AuraBeats DAW`:**
+  - Nuevo modo **`Studio`** en la barra superior (`PC | Dev | Gamer | Studio | Fondos`) con lanzador de 1 clic para `AuraBeats DAW`, `AuraPhotos Studio`, herramientas creativas y espacio reservado para el próximo Editor de Video.
+  - Asociaciones automáticas para `.flp` y `.lsp`, iconos HD `AuraBeats` y registro automático en Launchpad, Spotlight y Mezclador de Audio.
+
 ## v5.2.0 (2026-11-24)
 - **Motor de Video Wallpaper 100% Aislado (`AuraWallpaper.exe`) — Resolución Nativa 1080p/1440p a 60 FPS + Decodificación Hardware DXVA:**
   - `AuraShell.exe` ya **no carga ni importa** librerías de Windows Media Foundation (`mfplat.dll`, `mfcore.dll`, `mfreadwrite.dll`, `mfmp4srcsnk.dll`), eliminando definitivamente los picos de `574 MB – 1.4 GB` y `21.3% CPU` provocados por el reciclado de decodificadores en proceso.
