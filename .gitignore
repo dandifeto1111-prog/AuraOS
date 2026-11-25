@@ -11,7 +11,23 @@
 /dist/
 /version.json
 
-# User local state & temporary captures
+# User local state & runtime files (when installed inside %LOCALAPPDATA%\AuraShell)
+/ui_trees/
+/wp_thumbs/
+/settings_v3.json
+/widgets_v3.json
+/install_state.json
+/active_palette.json
+/weather_cache.json
+/files_pins.json
+/tags_v3.json
+/ai_quotas.json
+/todos.json
+/custom_items_v3.json
+/*.ico
+/*_256.png
+/APBOptimizer.ps1
+/restore-windows.ps1
 *.tmp
 .DS_Store
 Thumbs.db

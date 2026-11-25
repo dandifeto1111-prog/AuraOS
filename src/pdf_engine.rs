@@ -32,85 +32,107 @@ pub struct RenderedPdfPage {
 #[link(name = "user32")]
 extern "system" {}
 
-/// Returns total page count of a `.pdf` file in `<10 ms` via native WinRT `PdfDocument`.
+/// Runs any WinRT PDF async closure on a dedicated fresh MTA worker thread so calling from an
+/// STA/OLE UI thread (like AuraFiles or after FileOpenDialog) NEVER raises `0x0000087a` or deadlocks!
+fn run_on_mta<T: Send + 'static, F: FnOnce() -> Option<T> + Send + 'static>(f: F) -> Option<T> {
+    std::thread::spawn(move || {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        }
+        let res = f();
+        unsafe {
+            windows::Win32::System::Com::CoUninitialize();
+        }
+        res
+    })
+    .join()
+    .ok()
+    .flatten()
+}
+
+/// Returns total page count of a `.pdf` file in `<10 ms` via native WinRT `PdfDocument` (MTA-safe!).
 pub fn get_pdf_page_count(path: &Path) -> Option<u32> {
     let abs = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let clean = strip_verbatim_prefix(&abs.to_string_lossy());
-    let hpath = HSTRING::from(clean.as_str());
-    let file = StorageFile::GetFileFromPathAsync(&hpath).ok()?.get().ok()?;
-    let doc = PdfDocument::LoadFromFileAsync(&file).ok()?.get().ok()?;
-    doc.PageCount().ok()
+    if !Path::new(&clean).exists() {
+        return None;
+    }
+    run_on_mta(move || {
+        let hpath = HSTRING::from(clean.as_str());
+        let file = StorageFile::GetFileFromPathAsync(&hpath).ok()?.get().ok()?;
+        let doc = PdfDocument::LoadFromFileAsync(&file).ok()?.get().ok()?;
+        doc.PageCount().ok()
+    })
 }
 
-/// Renders `page_index` (0-based) of `path` scaled cleanly so its longest side <= `max_dim`.
+/// Renders `page_index` (0-based) of `path` scaled cleanly so its longest side <= `max_dim` (MTA-safe!).
 pub fn render_pdf_page_bgra(
     path: &Path,
     page_index: u32,
     max_dim: u32,
 ) -> Option<RenderedPdfPage> {
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-    }
     let abs = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let clean = strip_verbatim_prefix(&abs.to_string_lossy());
     if !Path::new(&clean).exists() {
         return None;
     }
 
-    let hpath = HSTRING::from(clean.as_str());
-    let file = StorageFile::GetFileFromPathAsync(&hpath).ok()?.get().ok()?;
-    let doc = PdfDocument::LoadFromFileAsync(&file).ok()?.get().ok()?;
-    let total = doc.PageCount().ok()?;
-    if total == 0 || page_index >= total {
-        return None;
-    }
-
-    let page = doc.GetPage(page_index).ok()?;
-    let sz = page.Size().ok()?;
-    let pw = sz.Width.max(1.0);
-    let ph = sz.Height.max(1.0);
-    let scale = (max_dim.max(256) as f32 / pw.max(ph)).clamp(0.35, 3.5);
-    let dst_w = ((pw * scale).round() as u32).max(64);
-    let dst_h = ((ph * scale).round() as u32).max(64);
-
-    let opts = PdfPageRenderOptions::new().ok()?;
-    let _ = opts.SetDestinationWidth(dst_w);
-    let _ = opts.SetDestinationHeight(dst_h);
-
-    let ras = InMemoryRandomAccessStream::new().ok()?;
-    page.RenderWithOptionsToStreamAsync(&ras, &opts)
-        .ok()?
-        .get()
-        .ok()?;
-
-    let size_bytes = ras.Size().ok()? as u32;
-    if size_bytes == 0 || size_bytes > 64 * 1024 * 1024 {
-        return None;
-    }
-    let input = ras.GetInputStreamAt(0).ok()?;
-    let reader = DataReader::CreateDataReader(&input).ok()?;
-    reader.LoadAsync(size_bytes).ok()?.get().ok()?;
-    let mut png_bytes = vec![0u8; size_bytes as usize];
-    reader.ReadBytes(&mut png_bytes).ok()?;
-
-    let (w, h, mut bgra) = decode_png_bytes_to_bgra(&png_bytes)?;
-    // Composite over crisp white paper if PDF has transparent background
-    for px in bgra.chunks_exact_mut(4) {
-        let a = px[3] as u32;
-        if a < 255 {
-            let inv = 255 - a;
-            px[0] = (px[0] as u32 + inv).min(255) as u8;
-            px[1] = (px[1] as u32 + inv).min(255) as u8;
-            px[2] = (px[2] as u32 + inv).min(255) as u8;
-            px[3] = 255;
+    run_on_mta(move || {
+        let hpath = HSTRING::from(clean.as_str());
+        let file = StorageFile::GetFileFromPathAsync(&hpath).ok()?.get().ok()?;
+        let doc = PdfDocument::LoadFromFileAsync(&file).ok()?.get().ok()?;
+        let total = doc.PageCount().ok()?;
+        if total == 0 || page_index >= total {
+            return None;
         }
-    }
 
-    Some(RenderedPdfPage {
-        width: w,
-        height: h,
-        bgra,
-        page_count: total,
+        let page = doc.GetPage(page_index).ok()?;
+        let sz = page.Size().ok()?;
+        let pw = sz.Width.max(1.0);
+        let ph = sz.Height.max(1.0);
+        let scale = (max_dim.max(256) as f32 / pw.max(ph)).clamp(0.35, 3.5);
+        let dst_w = ((pw * scale).round() as u32).max(64);
+        let dst_h = ((ph * scale).round() as u32).max(64);
+
+        let opts = PdfPageRenderOptions::new().ok()?;
+        let _ = opts.SetDestinationWidth(dst_w);
+        let _ = opts.SetDestinationHeight(dst_h);
+
+        let ras = InMemoryRandomAccessStream::new().ok()?;
+        page.RenderWithOptionsToStreamAsync(&ras, &opts)
+            .ok()?
+            .get()
+            .ok()?;
+
+        let size_bytes = ras.Size().ok()? as u32;
+        if size_bytes == 0 || size_bytes > 64 * 1024 * 1024 {
+            return None;
+        }
+        let input = ras.GetInputStreamAt(0).ok()?;
+        let reader = DataReader::CreateDataReader(&input).ok()?;
+        reader.LoadAsync(size_bytes).ok()?.get().ok()?;
+        let mut png_bytes = vec![0u8; size_bytes as usize];
+        reader.ReadBytes(&mut png_bytes).ok()?;
+
+        let (w, h, mut bgra) = decode_png_bytes_to_bgra(&png_bytes)?;
+        // Composite over crisp white paper if PDF has transparent background
+        for px in bgra.chunks_exact_mut(4) {
+            let a = px[3] as u32;
+            if a < 255 {
+                let inv = 255 - a;
+                px[0] = (px[0] as u32 + inv).min(255) as u8;
+                px[1] = (px[1] as u32 + inv).min(255) as u8;
+                px[2] = (px[2] as u32 + inv).min(255) as u8;
+                px[3] = 255;
+            }
+        }
+
+        Some(RenderedPdfPage {
+            width: w,
+            height: h,
+            bgra,
+            page_count: total,
+        })
     })
 }
 

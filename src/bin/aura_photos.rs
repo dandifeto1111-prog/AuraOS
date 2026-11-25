@@ -1752,6 +1752,14 @@ unsafe extern "system" fn photos_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 }
                 true
             }
+            0x0215 | 0x001F => {
+                // WM_CAPTURECHANGED / WM_CANCELMODE: release any stuck canvas/slider capture!
+                rt.active_slider = None;
+                rt.active_stroke.clear();
+                rt.drag_shape = None;
+                rt.dragging = false;
+                true
+            }
             WM_RBUTTONDOWN => {
                 let px = (lparam.0 & 0xFFFF) as i16 as f32;
                 let py = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;

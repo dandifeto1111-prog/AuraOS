@@ -19,9 +19,11 @@ use aura_os::pdf_engine::{self, RenderedPdfPage};
 use aura_os::renderer::{DrawCtx, GpuEngine, Rect, TextStyle, WindowSurface};
 use aura_os::system::get_local_drives;
 use aura_os::theme::{self, VectorIcon};
-use aura_os::win32_shell::{launch_target, to_wide};
+use aura_os::win32_shell::{self, to_wide};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
+use std::os::windows::fs::MetadataExt;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -49,12 +51,31 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 const TIMER_POLL: usize = 10;
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const WM_XBUTTONDOWN: u32 = 0x020B;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SortBy {
     Name,
+    Type,
     Size,
     Date,
+}
+
+#[derive(Debug, Clone)]
+enum CtxMenuKind {
+    Folder(String),
+    File(String),
+    Multi(usize),
+    EmptySpace,
+    PathBar,
+}
+
+#[derive(Debug, Clone)]
+struct CtxMenuState {
+    kind: CtxMenuKind,
+    x: f32,
+    y: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -158,12 +179,28 @@ enum FileAction {
     GoBack,
     GoForward,
     GoUp,
+    RefreshDir,
     Navigate(PathBuf),
+    OpenInNewTab(PathBuf),
+    StartPathEdit,
+    CopyCurrentPath,
+    PasteAndGoPath,
     SetSort(SortBy),
+    ToggleHiddenFiles,
     NewFolder,
+    NewTextFile,
     SelectRow(usize),
     ToggleSelectRow(usize),
     OpenRow(usize),
+    StartRename(String),
+    CopyPathText(String),
+    CopySelectedPaths,
+    PasteIntoDir(PathBuf),
+    OpenWithDialog(String),
+    RevealInExplorer(String),
+    ShowProperties(String),
+    TogglePinFavorite(String),
+    PermanentDeletePaths(Vec<String>),
     MultiCopySelected(bool),
     MultiZipSelected,
     MultiDeleteSelected,
@@ -175,6 +212,7 @@ enum FileAction {
     QuickDuplicate(String),
     QuickOpenTerminal(String),
     QuickDeleteRecycle(String),
+    CloseContextMenu,
     // WinDirStat-style Disk Space Analyzer actions
     ToggleAnalyzer,
     AnalyzePath(PathBuf),
@@ -261,6 +299,13 @@ struct FilesRuntime {
     filtered_indices: Vec<usize>,
     drives: Vec<DriveInfo>,
     tags: HashMap<String, u8>,
+    pinned_favs: Vec<String>,
+    show_hidden: bool,
+    path_editing: bool,
+    path_buf: String,
+    path_select_all: bool,
+    path_bar_rect: Rect,
+    ctx_menu: Option<CtxMenuState>,
     search: String,
     search_focused: bool,
     search_running: bool,
@@ -279,6 +324,7 @@ struct FilesRuntime {
     quicklook_open: bool,
     renaming_path: Option<PathBuf>,
     rename_buf: String,
+    rename_select_all: bool,
     file_clip: Option<(Vec<PathBuf>, bool)>, // (paths, is_cut)
     list_rect: Rect,
     drag_candidate: Option<(f32, f32, usize, bool)>, // (down_x, down_y, row_idx, defer_collapse)
@@ -352,6 +398,81 @@ fn save_tags(tags: &HashMap<String, u8>) {
     }
 }
 
+fn load_pinned_favs() -> Vec<String> {
+    let p = app_data_dir().join("files_pins.json");
+    std::fs::read_to_string(p)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn save_pinned_favs(pins: &[String]) {
+    let p = app_data_dir().join("files_pins.json");
+    if let Ok(j) = serde_json::to_string_pretty(pins) {
+        let _ = std::fs::write(p, j);
+    }
+}
+
+/// Resolves user-entered or pasted Windows paths: strips surrounding quotes, expands `~` and `%ENV%`
+/// variables (like `%USERPROFILE%\Downloads`, `%APPDATA%`, `%LOCALAPPDATA%`), and normalizes slashes!
+fn resolve_user_path(raw: &str) -> PathBuf {
+    let mut s = raw.trim().trim_matches('"').trim().to_string();
+    if s == "~" || s.starts_with("~/") || s.starts_with("~\\") {
+        if let Ok(up) = std::env::var("USERPROFILE") {
+            s = format!("{}{}", up, &s[1..]);
+        }
+    }
+    // Expand %VAR% environment variables
+    while let Some(start) = s.find('%') {
+        if let Some(rel_end) = s[start + 1..].find('%') {
+            let end = start + 1 + rel_end;
+            let var_name = &s[start + 1..end];
+            if !var_name.is_empty() {
+                if let Ok(val) = std::env::var(var_name) {
+                    s = format!("{}{}{}", &s[..start], val, &s[end + 1..]);
+                    continue;
+                }
+            }
+        }
+        break;
+    }
+    let normalized = s.replace('/', "\\");
+    // Ensure bare drive letter like "C:" becomes "C:\"
+    if normalized.len() == 2 && normalized.as_bytes()[1] == b':' {
+        PathBuf::from(format!("{}\\", normalized))
+    } else {
+        PathBuf::from(normalized)
+    }
+}
+
+/// Splits a Path into interactive breadcrumb segments: `[(label, full_path)]`.
+fn build_breadcrumbs(path: &Path) -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    let mut acc = PathBuf::new();
+    for comp in path.components() {
+        use std::path::Component;
+        match comp {
+            Component::Prefix(pre) => {
+                let s = pre.as_os_str().to_string_lossy().to_string();
+                acc.push(pre.as_os_str());
+                acc.push("\\");
+                out.push((s, acc.clone()));
+            }
+            Component::RootDir => {
+                if acc.as_os_str().is_empty() {
+                    acc.push("\\");
+                }
+            }
+            Component::Normal(part) => {
+                acc.push(part);
+                out.push((part.to_string_lossy().to_string(), acc.clone()));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 fn run_aurafiles(start_dir: PathBuf) -> windows::core::Result<()> {
     ole_dnd::init_ole();
     let gpu = GpuEngine::new()?;
@@ -408,6 +529,13 @@ fn run_aurafiles(start_dir: PathBuf) -> windows::core::Result<()> {
         filtered_indices: Vec::new(),
         drives: get_local_drives(),
         tags: load_tags(),
+        pinned_favs: load_pinned_favs(),
+        show_hidden: false,
+        path_editing: false,
+        path_buf: start_dir.to_string_lossy().to_string(),
+        path_select_all: false,
+        path_bar_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
+        ctx_menu: None,
         search: String::new(),
         search_focused: false,
         search_running: false,
@@ -426,6 +554,7 @@ fn run_aurafiles(start_dir: PathBuf) -> windows::core::Result<()> {
         quicklook_open: false,
         renaming_path: None,
         rename_buf: String::new(),
+        rename_select_all: false,
         file_clip: None,
         list_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
         drag_candidate: None,
@@ -475,7 +604,7 @@ impl FilesRuntime {
     fn load_current_dir_instant(&mut self) {
         let gen = self.loading_gen.fetch_add(1, Ordering::SeqCst) + 1;
         let dir = self.cur_path();
-        self.entries = read_dir_fast(&dir);
+        self.entries = read_dir_fast(&dir, self.show_hidden);
         self.rebuild_filtered();
 
         // Spawn background parallel exact folder size worker (never freezes UI!)
@@ -609,6 +738,7 @@ impl FilesRuntime {
             }
             let ord = match sort_by {
                 SortBy::Name => ea.name.to_lowercase().cmp(&eb.name.to_lowercase()),
+                SortBy::Type => ea.ext.cmp(&eb.ext).then_with(|| ea.name.to_lowercase().cmp(&eb.name.to_lowercase())),
                 SortBy::Size => ea.size_bytes.unwrap_or(0).cmp(&eb.size_bytes.unwrap_or(0)),
                 SortBy::Date => ea.modified_ts.cmp(&eb.modified_ts),
             };
@@ -619,6 +749,7 @@ impl FilesRuntime {
 
     fn navigate_to(&mut self, next: PathBuf) {
         if !next.is_dir() {
+            self.show_toast(format!("Ruta no encontrada: {}", next.display()), false);
             return;
         }
         let tab = &mut self.tabs[self.active_tab];
@@ -626,10 +757,15 @@ impl FilesRuntime {
             let prev = tab.path.clone();
             tab.history_back.push(prev);
             tab.history_fwd.clear();
-            tab.path = next;
+            tab.path = next.clone();
             tab.scroll = 0.0;
             tab.clear_selection();
         }
+        self.path_editing = false;
+        self.path_select_all = false;
+        self.path_buf = next.to_string_lossy().to_string();
+        self.ctx_menu = None;
+        self.analyzer.open = false;
         self.search.clear();
         self.search_entries.clear();
         self.search_running = false;
@@ -637,6 +773,116 @@ impl FilesRuntime {
         self.search_gen.fetch_add(1, Ordering::SeqCst);
         self.load_current_dir_instant();
         self.redraw();
+    }
+
+    fn navigate_user_input(&mut self, raw: &str) {
+        let resolved = resolve_user_path(raw);
+        if resolved.is_dir() {
+            self.navigate_to(resolved);
+        } else if resolved.is_file() {
+            if let Some(parent) = resolved.parent().map(|p| p.to_path_buf()) {
+                let target_str = resolved.to_string_lossy().to_string();
+                self.navigate_to(parent);
+                if let Some(vis_i) = self.filtered_indices.iter().position(|&ri| {
+                    self.entries
+                        .get(ri)
+                        .map(|e| e.path.eq_ignore_ascii_case(&target_str))
+                        .unwrap_or(false)
+                }) {
+                    self.tabs[self.active_tab].select_only(vis_i);
+                    self.ensure_row_visible(vis_i);
+                }
+                self.redraw();
+            }
+        } else {
+            self.show_toast(format!("No existe la ruta: {}", resolved.display()), false);
+        }
+    }
+
+    fn ensure_row_visible(&mut self, vis_i: usize) {
+        let row_h = 34.0f32;
+        let list_h = self.list_rect.h.max(120.0);
+        let tab = &mut self.tabs[self.active_tab];
+        let row_top = vis_i as f32 * row_h;
+        let row_bot = row_top + row_h;
+        if row_top < tab.scroll {
+            tab.scroll = row_top;
+        } else if row_bot > tab.scroll + list_h {
+            tab.scroll = (row_bot - list_h).max(0.0);
+        }
+    }
+
+    fn paste_clipboard_into(&mut self, dst_dir: PathBuf) {
+        // Read native Windows Explorer CF_HDROP clipboard FIRST so cross-app paste works seamlessly!
+        let clip_data = ole_dnd::read_files_from_clipboard().or_else(|| self.file_clip.clone());
+        let Some((srcs, is_cut)) = clip_data else {
+            self.show_toast("No hay archivos en el portapapeles para pegar", false);
+            return;
+        };
+        let mut ok_cnt = 0usize;
+        for src in &srcs {
+            if !src.exists() {
+                continue;
+            }
+            // Prevent pasting a folder inside itself!
+            if src.is_dir() && dst_dir.starts_with(src) {
+                continue;
+            }
+            if let Some(fname) = src.file_name() {
+                let mut dst = dst_dir.join(fname);
+                if dst.exists() {
+                    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("archivo");
+                    let ext = if src.is_dir() {
+                        ""
+                    } else {
+                        src.extension().and_then(|e| e.to_str()).unwrap_or("")
+                    };
+                    for n in 1..200 {
+                        let cand = if ext.is_empty() {
+                            format!("{} (copia {})", stem, n)
+                        } else {
+                            format!("{} (copia {}).{}", stem, n, ext)
+                        };
+                        let p = dst_dir.join(&cand);
+                        if !p.exists() {
+                            dst = p;
+                            break;
+                        }
+                    }
+                }
+                let ok = if is_cut {
+                    std::fs::rename(src, &dst).is_ok()
+                        || (copy_path_recursive(src, &dst).is_ok() && {
+                            if src.is_dir() {
+                                std::fs::remove_dir_all(src).is_ok()
+                            } else {
+                                std::fs::remove_file(src).is_ok()
+                            }
+                        })
+                } else {
+                    copy_path_recursive(src, &dst).is_ok()
+                };
+                if ok {
+                    ok_cnt += 1;
+                }
+            }
+        }
+        if ok_cnt > 0 {
+            if is_cut {
+                self.file_clip = None;
+            }
+            self.load_current_dir_instant();
+            self.show_toast(
+                if is_cut {
+                    format!("{} elemento(s) movido(s) aquí", ok_cnt)
+                } else {
+                    format!("{} elemento(s) pegado(s) aquí", ok_cnt)
+                },
+                true,
+            );
+        } else {
+            self.show_toast("No se pudieron pegar los elementos (permisos o destino inválido)", false);
+        }
     }
 
     fn selected_paths(&self) -> Vec<String> {
@@ -866,36 +1112,96 @@ impl FilesRuntime {
                 self.redraw();
             }
             FileAction::GoBack => {
-                let prev = self.tabs[self.active_tab].history_back.pop();
-                if let Some(p) = prev {
-                    let cur = self.tabs[self.active_tab].path.clone();
-                    self.tabs[self.active_tab].history_fwd.push(cur);
-                    self.tabs[self.active_tab].path = p;
-                    self.tabs[self.active_tab].scroll = 0.0;
-                    self.tabs[self.active_tab].clear_selection();
-                    self.load_current_dir_instant();
-                    self.redraw();
+                self.ctx_menu = None;
+                self.path_editing = false;
+                self.analyzer.open = false;
+                while let Some(p) = self.tabs[self.active_tab].history_back.pop() {
+                    if p.is_dir() {
+                        let cur = self.tabs[self.active_tab].path.clone();
+                        self.tabs[self.active_tab].history_fwd.push(cur);
+                        self.tabs[self.active_tab].path = p.clone();
+                        self.tabs[self.active_tab].scroll = 0.0;
+                        self.tabs[self.active_tab].clear_selection();
+                        self.path_buf = p.to_string_lossy().to_string();
+                        self.search.clear();
+                        self.search_entries.clear();
+                        self.search_running = false;
+                        self.search_focused = false;
+                        self.load_current_dir_instant();
+                        self.redraw();
+                        break;
+                    }
                 }
             }
             FileAction::GoForward => {
-                let next = self.tabs[self.active_tab].history_fwd.pop();
-                if let Some(p) = next {
-                    let cur = self.tabs[self.active_tab].path.clone();
-                    self.tabs[self.active_tab].history_back.push(cur);
-                    self.tabs[self.active_tab].path = p;
-                    self.tabs[self.active_tab].scroll = 0.0;
-                    self.tabs[self.active_tab].clear_selection();
-                    self.load_current_dir_instant();
-                    self.redraw();
+                self.ctx_menu = None;
+                self.path_editing = false;
+                self.analyzer.open = false;
+                while let Some(p) = self.tabs[self.active_tab].history_fwd.pop() {
+                    if p.is_dir() {
+                        let cur = self.tabs[self.active_tab].path.clone();
+                        self.tabs[self.active_tab].history_back.push(cur);
+                        self.tabs[self.active_tab].path = p.clone();
+                        self.tabs[self.active_tab].scroll = 0.0;
+                        self.tabs[self.active_tab].clear_selection();
+                        self.path_buf = p.to_string_lossy().to_string();
+                        self.search.clear();
+                        self.search_entries.clear();
+                        self.search_running = false;
+                        self.search_focused = false;
+                        self.load_current_dir_instant();
+                        self.redraw();
+                        break;
+                    }
                 }
             }
             FileAction::GoUp => {
+                self.ctx_menu = None;
                 if let Some(parent) = self.cur_path().parent().map(|p| p.to_path_buf()) {
                     self.navigate_to(parent);
                 }
             }
+            FileAction::RefreshDir => {
+                self.ctx_menu = None;
+                self.drives = get_local_drives();
+                self.load_current_dir_instant();
+                self.show_toast("Carpeta actualizada", true);
+            }
             FileAction::Navigate(p) => self.navigate_to(p),
+            FileAction::OpenInNewTab(p) => {
+                self.ctx_menu = None;
+                if p.is_dir() {
+                    self.tabs.push(TabState::new(p.clone()));
+                    self.active_tab = self.tabs.len() - 1;
+                    self.path_buf = p.to_string_lossy().to_string();
+                    self.load_current_dir_instant();
+                    self.redraw();
+                }
+            }
+            FileAction::StartPathEdit => {
+                self.ctx_menu = None;
+                self.search_focused = false;
+                self.path_editing = true;
+                self.path_buf = self.cur_path().to_string_lossy().to_string();
+                self.path_select_all = true;
+                self.redraw();
+            }
+            FileAction::CopyCurrentPath => {
+                self.ctx_menu = None;
+                let s = self.cur_path().to_string_lossy().to_string();
+                win32_shell::copy_text_to_clipboard(&s);
+                self.show_toast(format!("Ruta copiada: {}", s), true);
+            }
+            FileAction::PasteAndGoPath => {
+                self.ctx_menu = None;
+                if let Some(txt) = win32_shell::read_clipboard_text() {
+                    self.navigate_user_input(&txt);
+                } else {
+                    self.show_toast("El portapapeles no contiene una ruta de texto", false);
+                }
+            }
             FileAction::SetSort(s) => {
+                self.ctx_menu = None;
                 if self.sort_by == s {
                     self.sort_asc = !self.sort_asc;
                 } else {
@@ -905,7 +1211,17 @@ impl FilesRuntime {
                 self.rebuild_filtered();
                 self.redraw();
             }
+            FileAction::ToggleHiddenFiles => {
+                self.ctx_menu = None;
+                self.show_hidden = !self.show_hidden;
+                self.load_current_dir_instant();
+                self.show_toast(
+                    if self.show_hidden { "Mostrando archivos ocultos" } else { "Archivos ocultos escondidos" },
+                    true,
+                );
+            }
             FileAction::NewFolder => {
+                self.ctx_menu = None;
                 let base = self.cur_path();
                 let mut idx = 1;
                 loop {
@@ -914,12 +1230,126 @@ impl FilesRuntime {
                     if !p.exists() {
                         if std::fs::create_dir(&p).is_ok() {
                             self.load_current_dir_instant();
-                            self.show_toast(format!("Carpeta '{}' creada", name), true);
+                            self.renaming_path = Some(p);
+                            self.rename_buf = name.clone();
+                            self.rename_select_all = true;
+                            self.show_toast(format!("Carpeta '{}' creada · escribe su nombre y pulsa Enter", name), true);
+                        } else {
+                            self.show_toast("Sin permisos para crear carpeta aquí", false);
                         }
                         break;
                     }
                     idx += 1;
                 }
+            }
+            FileAction::NewTextFile => {
+                self.ctx_menu = None;
+                let base = self.cur_path();
+                let mut idx = 1;
+                loop {
+                    let name = if idx == 1 {
+                        "Nuevo documento.txt".to_string()
+                    } else {
+                        format!("Nuevo documento ({}).txt", idx)
+                    };
+                    let p = base.join(&name);
+                    if !p.exists() {
+                        if std::fs::write(&p, b"").is_ok() {
+                            self.load_current_dir_instant();
+                            self.renaming_path = Some(p);
+                            self.rename_buf = name.clone();
+                            self.rename_select_all = true;
+                            self.show_toast(format!("Archivo '{}' creado · renómbralo y pulsa Enter", name), true);
+                        } else {
+                            self.show_toast("Sin permisos para crear archivo aquí", false);
+                        }
+                        break;
+                    }
+                    idx += 1;
+                }
+            }
+            FileAction::StartRename(path) => {
+                self.ctx_menu = None;
+                let p = PathBuf::from(&path);
+                let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                if !name.is_empty() {
+                    self.renaming_path = Some(p);
+                    self.rename_buf = name;
+                    self.rename_select_all = true;
+                    self.redraw();
+                }
+            }
+            FileAction::CopyPathText(path) => {
+                self.ctx_menu = None;
+                win32_shell::copy_text_to_clipboard(&path);
+                self.show_toast("Ruta completa copiada al portapapeles", true);
+            }
+            FileAction::CopySelectedPaths => {
+                self.ctx_menu = None;
+                let paths = self.selected_paths();
+                if !paths.is_empty() {
+                    let joined = paths.join("\r\n");
+                    win32_shell::copy_text_to_clipboard(&joined);
+                    self.show_toast(format!("{} ruta(s) copiada(s)", paths.len()), true);
+                } else {
+                    let cur = self.cur_path().to_string_lossy().to_string();
+                    win32_shell::copy_text_to_clipboard(&cur);
+                    self.show_toast("Ruta actual copiada", true);
+                }
+            }
+            FileAction::PasteIntoDir(dst) => {
+                self.ctx_menu = None;
+                self.paste_clipboard_into(dst);
+            }
+            FileAction::OpenWithDialog(path) => {
+                self.ctx_menu = None;
+                win32_shell::open_with_dialog(&path);
+            }
+            FileAction::RevealInExplorer(path) => {
+                self.ctx_menu = None;
+                win32_shell::reveal_in_windows_explorer(&path);
+            }
+            FileAction::ShowProperties(path) => {
+                self.ctx_menu = None;
+                win32_shell::show_file_properties(&path);
+            }
+            FileAction::TogglePinFavorite(path) => {
+                self.ctx_menu = None;
+                if let Some(pos) = self.pinned_favs.iter().position(|x| x.eq_ignore_ascii_case(&path)) {
+                    self.pinned_favs.remove(pos);
+                    save_pinned_favs(&self.pinned_favs);
+                    self.show_toast("Quitado de Favoritos", true);
+                } else {
+                    self.pinned_favs.push(path);
+                    save_pinned_favs(&self.pinned_favs);
+                    self.show_toast("Anclado a Favoritos en la barra lateral", true);
+                }
+            }
+            FileAction::PermanentDeletePaths(paths) => {
+                self.ctx_menu = None;
+                let mut ok_cnt = 0usize;
+                for p_str in &paths {
+                    let p = Path::new(p_str);
+                    let ok = if p.is_dir() {
+                        std::fs::remove_dir_all(p).is_ok()
+                    } else {
+                        std::fs::remove_file(p).is_ok()
+                    };
+                    if ok {
+                        ok_cnt += 1;
+                    }
+                }
+                self.tabs[self.active_tab].clear_selection();
+                self.load_current_dir_instant();
+                if ok_cnt > 0 {
+                    self.show_toast(format!("{} elemento(s) eliminado(s) permanentemente", ok_cnt), true);
+                } else {
+                    self.show_toast("No se pudo eliminar (en uso o sin permisos)", false);
+                }
+            }
+            FileAction::CloseContextMenu => {
+                self.ctx_menu = None;
+                self.redraw();
             }
             FileAction::SelectRow(vis_i) => {
                 self.tabs[self.active_tab].select_only(vis_i);
@@ -966,6 +1396,7 @@ impl FilesRuntime {
                         );
                         let ok = std::process::Command::new("powershell.exe")
                             .args(["-NoProfile", "-Command", &cmd])
+                            .creation_flags(CREATE_NO_WINDOW)
                             .status()
                             .map(|s| s.success())
                             .unwrap_or(false);
@@ -1093,6 +1524,7 @@ impl FilesRuntime {
                     };
                     let ok = std::process::Command::new("powershell.exe")
                         .args(["-NoProfile", "-Command", &cmd])
+                        .creation_flags(CREATE_NO_WINDOW)
                         .status()
                         .map(|s| s.success())
                         .unwrap_or(false);
@@ -1104,24 +1536,31 @@ impl FilesRuntime {
                 });
             }
             FileAction::QuickDuplicate(path) => {
+                self.ctx_menu = None;
                 let p = Path::new(&path);
-                if p.is_file() {
-                    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("copia");
-                    let ext = p.extension().and_then(|s| s.to_str()).map(|e| format!(".{}", e)).unwrap_or_default();
-                    let dst = p.parent().unwrap_or(Path::new(".")).join(format!("{}_copia{}", stem, ext));
-                    if std::fs::copy(p, &dst).is_ok() {
-                        self.load_current_dir_instant();
-                        self.show_toast("Archivo duplicado", true);
-                    }
+                let parent = p.parent().unwrap_or(Path::new("."));
+                let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("copia");
+                let ext = if p.is_dir() {
+                    String::new()
+                } else {
+                    p.extension().and_then(|s| s.to_str()).map(|e| format!(".{}", e)).unwrap_or_default()
+                };
+                let mut dst = parent.join(format!("{}_copia{}", stem, ext));
+                let mut n = 2usize;
+                while dst.exists() && n < 200 {
+                    dst = parent.join(format!("{}_copia_{}{}", stem, n, ext));
+                    n += 1;
+                }
+                if copy_path_recursive(p, &dst).is_ok() {
+                    self.load_current_dir_instant();
+                    self.show_toast(if p.is_dir() { "Carpeta duplicada" } else { "Archivo duplicado" }, true);
+                } else {
+                    self.show_toast("No se pudo duplicar el elemento", false);
                 }
             }
             FileAction::QuickOpenTerminal(path) => {
-                let dir = if Path::new(&path).is_dir() {
-                    path
-                } else {
-                    Path::new(&path).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_else(|| self.cur_path().to_string_lossy().to_string())
-                };
-                launch_target("wt.exe", &format!("-d \"{}\"", dir));
+                self.ctx_menu = None;
+                win32_shell::open_terminal_at(&path);
             }
             FileAction::QuickDeleteRecycle(path) => {
                 if recycle_bin_delete(&path) {
@@ -1273,6 +1712,7 @@ impl FilesRuntime {
         let mut hits = Vec::new();
         let mut tm_rect = Rect::new(0.0, 0.0, 0.0, 0.0);
         let mut list_out_rect = Rect::new(0.0, 0.0, 0.0, 0.0);
+        let mut path_out_rect = Rect::new(0.0, 0.0, 0.0, 0.0);
         let active_ents: &[FileEntry] = if !self.search.trim().is_empty() && !self.search_entries.is_empty() {
             &self.search_entries
         } else {
@@ -1281,6 +1721,7 @@ impl FilesRuntime {
         let marquee_rect = self.marquee.as_ref().map(|&(x0, y0, x1, y1, _)| {
             Rect::new(x0.min(x1), y0.min(y1), (x1 - x0).abs().max(2.0), (y1 - y0).abs().max(2.0))
         });
+        let can_paste = self.file_clip.is_some() || ole_dnd::has_files_in_clipboard();
         let snap = RenderSnap {
             tabs: &self.tabs,
             active_tab: self.active_tab,
@@ -1288,6 +1729,13 @@ impl FilesRuntime {
             filtered: &self.filtered_indices,
             drives: &self.drives,
             tags: &self.tags,
+            pinned_favs: &self.pinned_favs,
+            show_hidden: self.show_hidden,
+            path_editing: self.path_editing,
+            path_buf: &self.path_buf,
+            path_select_all: self.path_select_all,
+            ctx_menu: self.ctx_menu.as_ref(),
+            can_paste,
             search: &self.search,
             search_focused: self.search_focused,
             search_running: self.search_running,
@@ -1301,9 +1749,10 @@ impl FilesRuntime {
             analyzer: &self.analyzer,
         };
         self.surf.draw(&mut self.gpu, |ctx| {
-            let (tr, lr) = render_files_ui(ctx, &snap, w, h, &mut hits);
+            let (tr, lr, pr) = render_files_ui(ctx, &snap, w, h, &mut hits);
             tm_rect = tr;
             list_out_rect = lr;
+            path_out_rect = pr;
         });
         let raw_nodes: Vec<(String, String, f32, f32, f32, f32)> = hits
             .iter()
@@ -1314,6 +1763,7 @@ impl FilesRuntime {
         self.hits = hits;
         self.analyzer.treemap_rect = tm_rect;
         self.list_rect = list_out_rect;
+        self.path_bar_rect = path_out_rect;
     }
 }
 
@@ -1324,6 +1774,13 @@ struct RenderSnap<'a> {
     filtered: &'a [usize],
     drives: &'a [DriveInfo],
     tags: &'a HashMap<String, u8>,
+    pinned_favs: &'a [String],
+    show_hidden: bool,
+    path_editing: bool,
+    path_buf: &'a str,
+    path_select_all: bool,
+    ctx_menu: Option<&'a CtxMenuState>,
+    can_paste: bool,
     search: &'a str,
     search_focused: bool,
     search_running: bool,
@@ -1348,9 +1805,10 @@ fn tag_color(id: u8) -> D2D1_COLOR_F {
     }
 }
 
-fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hits: &mut Vec<Hit>) -> (Rect, Rect) {
+fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hits: &mut Vec<Hit>) -> (Rect, Rect, Rect) {
     let mut treemap_out_rect = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut list_out_rect = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let path_out_rect: Rect;
     let win_r = Rect::new(0.0, 0.0, w, h);
     let corner_r = 18.0;
 
@@ -1436,13 +1894,35 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
         ctx.draw_vector_icon(VectorIcon::Folder, r.x + 16.0, r.y + 16.0, 12.0, if active { theme::TEXT_PRIMARY } else { theme::VIOLET_LIGHT });
         ctx.draw_text(lbl, Rect::new(r.x + 30.0, r.y, r.w - 36.0, 32.0), TextStyle::Body11Med, if active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY });
         hits.push(Hit { id, rect: r, action: FileAction::Navigate(path), dbl_action: None });
-        sy += 35.0;
+        sy += 33.0;
     }
 
-    sy += 12.0;
+    if !s.pinned_favs.is_empty() {
+        sy += 6.0;
+        ctx.draw_text("ANCLADOS", Rect::new(16.0, sy, 180.0, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
+        sy += 20.0;
+        for (idx, p_str) in s.pinned_favs.iter().take(4).enumerate() {
+            let p = PathBuf::from(p_str);
+            let lbl = p.file_name().and_then(|n| n.to_str()).unwrap_or(p_str);
+            let r = Rect::new(10.0, sy, sb_w - 20.0, 28.0);
+            let active = cur_p == &p;
+            let id = format!("sb_pin_{}", idx);
+            let hov = s.hovered == Some(id.as_str());
+            ctx.fill_rrect(r, 9.0, if active { theme::VIOLET } else if hov { theme::ELEVATED } else { theme::rgba(0, 0, 0, 0.0) });
+            ctx.draw_vector_icon(VectorIcon::Sparkle, r.x + 14.0, r.y + 14.0, 10.5, if active { theme::CRISP_WHITE } else { theme::AMBER });
+            ctx.draw_text(lbl, Rect::new(r.x + 28.0, r.y, r.w - 34.0, 28.0), TextStyle::Body11Med, if active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY });
+            hits.push(Hit { id, rect: r, action: FileAction::Navigate(p), dbl_action: None });
+            sy += 30.0;
+        }
+    }
+
+    sy += 8.0;
     ctx.draw_text("DISCOS LOCALES", Rect::new(16.0, sy, 180.0, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
     sy += 22.0;
     for (idx, d) in s.drives.iter().enumerate() {
+        if sy + 50.0 > h - 8.0 {
+            break;
+        }
         let p = PathBuf::from(format!("{}\\", d.letter));
         let r = Rect::new(10.0, sy, sb_w - 20.0, 48.0);
         let id = format!("sb_drv_{}", idx);
@@ -1465,35 +1945,122 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
         sy += 54.0;
     }
 
-    // 3. MAIN TOOLBAR (Back/Fwd/Up + Path Breadcrumb + Search + Analizar espacio + New Folder)
+    // 3. MAIN TOOLBAR (Back/Fwd/Up/Refresh + Interactive Editable Address/Breadcrumb Bar + Search + Hidden + Analyzer + New Folder)
     let main_x = sb_w + 2.0;
     let insp_w = 276.0;
     let list_w = (w - main_x - insp_w - 2.0).max(360.0);
     let tb_y = body_y + 10.0;
 
+    let tab_cur = &s.tabs[s.active_tab];
+    let can_back = !tab_cur.history_back.is_empty();
+    let can_fwd = !tab_cur.history_fwd.is_empty();
+    let can_up = cur_p.parent().is_some();
+
     let nav_btns = [
-        ("nav_back", "<", FileAction::GoBack),
-        ("nav_fwd", ">", FileAction::GoForward),
-        ("nav_up", "^", FileAction::GoUp),
+        ("nav_back", "←", FileAction::GoBack, can_back),
+        ("nav_fwd", "→", FileAction::GoForward, can_fwd),
+        ("nav_up", "↑", FileAction::GoUp, can_up),
+        ("nav_ref", "↻", FileAction::RefreshDir, true),
     ];
     let mut nx = main_x + 12.0;
-    for (id, lbl, act) in nav_btns {
+    for (id, lbl, act, enabled) in nav_btns {
         let br = Rect::new(nx, tb_y, 28.0, 28.0);
-        ctx.fill_card(br, 9.0, theme::CARD_BG, theme::BORDER);
-        ctx.draw_text_center(lbl, br, TextStyle::Body12Semi, theme::TEXT_SECONDARY);
+        let hov = enabled && s.hovered == Some(id);
+        ctx.fill_card(
+            br,
+            9.0,
+            if hov { theme::ELEVATED_HOVER } else { theme::CARD_BG },
+            if hov { theme::VIOLET_LIGHT } else { theme::BORDER },
+        );
+        ctx.draw_text_center(
+            lbl,
+            br,
+            TextStyle::Body12Semi,
+            if enabled { theme::TEXT_PRIMARY } else { theme::rgba(110, 110, 130, 0.45) },
+        );
         hits.push(Hit { id: id.into(), rect: br, action: act, dbl_action: None });
-        nx += 32.0;
+        nx += 31.0;
     }
 
-    // Right-anchored Analyzer toggle + New Folder buttons, then clean non-overlapping Search + Breadcrumb!
-    let an_r = Rect::new(main_x + list_w - 164.0, tb_y, 120.0, 28.0);
-    let srch_w = 166.0f32;
-    let srch_x = (an_r.x - srch_w - 8.0).max(nx + 122.0);
-    let path_x = nx + 4.0;
-    let path_w = (srch_x - path_x - 8.0).max(110.0);
+    // Right-anchored Analyzer toggle + New Folder buttons, then Search + Editable Address Bar!
+    let an_r = Rect::new(main_x + list_w - 154.0, tb_y, 110.0, 28.0);
+    let srch_w = 152.0f32;
+    let srch_x = (an_r.x - srch_w - 6.0).max(nx + 132.0);
+    let path_x = nx + 3.0;
+    let path_w = (srch_x - path_x - 6.0).max(120.0);
     let path_r = Rect::new(path_x, tb_y, path_w, 28.0);
-    ctx.fill_card(path_r, 9.0, theme::CARD_BG, theme::BORDER);
-    ctx.draw_text(&cur_p.to_string_lossy(), Rect::new(path_r.x + 10.0, path_r.y, path_r.w - 20.0, 28.0), TextStyle::Mono11Med, theme::TEXT_SECONDARY);
+    path_out_rect = path_r;
+
+    let path_hov = s.hovered == Some("tb_path_edit");
+    ctx.fill_card(
+        path_r,
+        9.0,
+        if s.path_editing { theme::ELEVATED } else if path_hov { theme::ELEVATED_HOVER } else { theme::CARD_BG },
+        if s.path_editing { theme::VIOLET_LIGHT } else if path_hov { theme::VIOLET_BORDER } else { theme::BORDER },
+    );
+
+    // Clicking anywhere on the empty path bar enters Edit Mode (`Ctrl+L`)!
+    hits.push(Hit {
+        id: "tb_path_edit".into(),
+        rect: Rect::new(path_r.x, path_r.y, (path_r.w - 30.0).max(40.0), path_r.h),
+        action: FileAction::StartPathEdit,
+        dbl_action: None,
+    });
+
+    if s.path_editing {
+        if s.path_select_all && !s.path_buf.is_empty() {
+            let sel_w = ((s.path_buf.len() as f32 * 6.8) + 8.0).min((path_r.w - 42.0).max(20.0));
+            ctx.fill_rrect(Rect::new(path_r.x + 8.0, path_r.y + 4.0, sel_w, 20.0), 4.0, theme::VIOLET_TINT);
+        }
+        let disp_path = format!("{}|", s.path_buf);
+        ctx.draw_text(
+            &disp_path,
+            Rect::new(path_r.x + 10.0, path_r.y, (path_r.w - 40.0).max(40.0), 28.0),
+            TextStyle::Mono11Med,
+            theme::CRISP_WHITE,
+        );
+    } else {
+        // Interactive Clickable Breadcrumbs (click a segment to jump; click empty space to edit!)
+        let crumbs = build_breadcrumbs(cur_p);
+        let max_bx = path_r.x + path_r.w - 34.0;
+        let mut bx = path_r.x + 6.0;
+        let start_idx = if crumbs.len() > 4 { crumbs.len() - 4 } else { 0 };
+        if start_idx > 0 {
+            ctx.draw_text("… ›", Rect::new(bx, path_r.y, 22.0, 28.0), TextStyle::Small10Med, theme::TEXT_TERTIARY);
+            bx += 22.0;
+        }
+        for (ci, (lbl, target_p)) in crumbs.into_iter().enumerate().skip(start_idx) {
+            let seg_w = (lbl.chars().count() as f32 * 6.6 + 14.0).clamp(28.0, 128.0);
+            if bx + seg_w > max_bx {
+                break;
+            }
+            let sr = Rect::new(bx, path_r.y + 3.0, seg_w, 22.0);
+            let cid = format!("crumb_{}", ci);
+            let chov = s.hovered == Some(cid.as_str());
+            if chov {
+                ctx.fill_rrect(sr, 6.0, theme::ELEVATED);
+            }
+            ctx.draw_text(
+                &lbl,
+                Rect::new(sr.x + 6.0, sr.y, sr.w - 10.0, 22.0),
+                TextStyle::Small10Bold,
+                if chov { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY },
+            );
+            hits.push(Hit { id: cid, rect: sr, action: FileAction::Navigate(target_p), dbl_action: None });
+            bx += seg_w;
+            if bx + 12.0 < max_bx {
+                ctx.draw_text("›", Rect::new(bx, path_r.y, 10.0, 28.0), TextStyle::Small10Med, theme::TEXT_TERTIARY);
+                bx += 10.0;
+            }
+        }
+    }
+
+    // 1-Click Copy Path Button at right end of Address Bar!
+    let cp_r = Rect::new(path_r.x + path_r.w - 28.0, path_r.y + 3.0, 24.0, 22.0);
+    let cp_hov = s.hovered == Some("tb_copy_path");
+    ctx.fill_rrect(cp_r, 6.0, if cp_hov { theme::VIOLET } else { theme::ELEVATED });
+    ctx.draw_text_center("⧉", cp_r, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
+    hits.push(Hit { id: "tb_copy_path".into(), rect: cp_r, action: FileAction::CopyCurrentPath, dbl_action: None });
 
     // Interactive Clickable Recursive Search Box (with live caret & clear button!)
     let srch_r = Rect::new(srch_x, tb_y, srch_w, 28.0);
@@ -1561,17 +2128,20 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
         treemap_out_rect = render_analyzer_main(ctx, s, body_area, hits);
     } else {
 
-    // 4. SORTABLE COLUMN HEADERS
+    // 4. SORTABLE COLUMN HEADERS (Nombre / Tipo / Tamaño / Fecha)
     let hdr_y = tb_y + 38.0;
     ctx.draw_line(main_x + 12.0, hdr_y + 24.0, main_x + list_w - 12.0, hdr_y + 24.0, theme::BORDER, 1.0);
-    let col_name_r = Rect::new(main_x + 16.0, hdr_y, list_w - 220.0, 22.0);
-    let col_size_r = Rect::new(main_x + list_w - 200.0, hdr_y, 88.0, 22.0);
+    let col_name_r = Rect::new(main_x + 16.0, hdr_y, (list_w - 284.0).max(120.0), 22.0);
+    let col_type_r = Rect::new(main_x + list_w - 266.0, hdr_y, 64.0, 22.0);
+    let col_size_r = Rect::new(main_x + list_w - 196.0, hdr_y, 84.0, 22.0);
     let col_date_r = Rect::new(main_x + list_w - 106.0, hdr_y, 90.0, 22.0);
     let arrow = if s.sort_asc { " ▲" } else { " ▼" };
-    ctx.draw_text(&format!("NOMBRE{}", if s.sort_by == SortBy::Name { arrow } else { "" }), col_name_r, TextStyle::Small10Bold, theme::TEXT_TERTIARY);
-    ctx.draw_text_right(&format!("TAMAÑO{}", if s.sort_by == SortBy::Size { arrow } else { "" }), col_size_r, TextStyle::Small10Bold, theme::TEXT_TERTIARY);
-    ctx.draw_text_right(&format!("FECHA{}", if s.sort_by == SortBy::Date { arrow } else { "" }), col_date_r, TextStyle::Small10Bold, theme::TEXT_TERTIARY);
+    ctx.draw_text(&format!("NOMBRE{}", if s.sort_by == SortBy::Name { arrow } else { "" }), col_name_r, TextStyle::Small10Bold, if s.sort_by == SortBy::Name { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY });
+    ctx.draw_text_right(&format!("TIPO{}", if s.sort_by == SortBy::Type { arrow } else { "" }), col_type_r, TextStyle::Small10Bold, if s.sort_by == SortBy::Type { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY });
+    ctx.draw_text_right(&format!("TAMAÑO{}", if s.sort_by == SortBy::Size { arrow } else { "" }), col_size_r, TextStyle::Small10Bold, if s.sort_by == SortBy::Size { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY });
+    ctx.draw_text_right(&format!("FECHA{}", if s.sort_by == SortBy::Date { arrow } else { "" }), col_date_r, TextStyle::Small10Bold, if s.sort_by == SortBy::Date { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY });
     hits.push(Hit { id: "sort_name".into(), rect: col_name_r, action: FileAction::SetSort(SortBy::Name), dbl_action: None });
+    hits.push(Hit { id: "sort_type".into(), rect: col_type_r, action: FileAction::SetSort(SortBy::Type), dbl_action: None });
     hits.push(Hit { id: "sort_size".into(), rect: col_size_r, action: FileAction::SetSort(SortBy::Size), dbl_action: None });
     hits.push(Hit { id: "sort_date".into(), rect: col_date_r, action: FileAction::SetSort(SortBy::Date), dbl_action: None });
 
@@ -1638,13 +2208,22 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
             nx_off = 68.0;
         }
 
-        ctx.draw_text(&entry.name, Rect::new(rr.x + nx_off, rr.y, rr.w - nx_off - 196.0, 32.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
+        ctx.draw_text(&entry.name, Rect::new(rr.x + nx_off, rr.y, (rr.w - nx_off - 260.0).max(80.0), 32.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
+
+        let type_lbl = if entry.is_dir {
+            "Carpeta".to_string()
+        } else if entry.ext.is_empty() {
+            "Archivo".to_string()
+        } else {
+            entry.ext.to_uppercase()
+        };
+        ctx.draw_text_right(&type_lbl, Rect::new(rr.x + rr.w - 256.0, rr.y, 62.0, 32.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
 
         let sz_str = match entry.size_bytes {
             Some(b) => format_size(b),
             None => "...".to_string(),
         };
-        ctx.draw_text_right(&sz_str, Rect::new(rr.x + rr.w - 192.0, rr.y, 92.0, 32.0), TextStyle::Mono11Med, if entry.is_dir { theme::VIOLET_LIGHT } else { theme::TEXT_SECONDARY });
+        ctx.draw_text_right(&sz_str, Rect::new(rr.x + rr.w - 190.0, rr.y, 88.0, 32.0), TextStyle::Mono11Med, if entry.is_dir { theme::VIOLET_LIGHT } else { theme::TEXT_SECONDARY });
         ctx.draw_text_right(&entry.modified_str, Rect::new(rr.x + rr.w - 96.0, rr.y, 88.0, 32.0), TextStyle::Small10Med, theme::TEXT_TERTIARY);
 
         hits.push(Hit {
@@ -1972,9 +2551,130 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
         ctx.draw_text("Enter = Guardar nombre   ·   Esc = Cancelar", Rect::new(mr.x + 16.0, mr.y + 86.0, mr.w - 32.0, 18.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
     }
 
+    // v5.3 Complete Windows Explorer Right-Click Context Menu Overlay (Folder / File / Multi / Empty / PathBar!)
+    if let Some(cm) = s.ctx_menu {
+        let mut items: Vec<(&'static str, String, &'static str, FileAction, bool, bool)> = Vec::new();
+        let cur_dir_str = cur_p.to_string_lossy().to_string();
+        match &cm.kind {
+            CtxMenuKind::Folder(path) => {
+                let pbuf = PathBuf::from(path);
+                let is_pinned = s.pinned_favs.iter().any(|x| x.eq_ignore_ascii_case(path));
+                items.push(("cm_open", "Abrir".into(), "Enter", FileAction::Navigate(pbuf.clone()), false, false));
+                items.push(("cm_newtab", "Abrir en nueva pestaña".into(), "", FileAction::OpenInNewTab(pbuf.clone()), false, false));
+                items.push(("cm_term", "Abrir en Terminal".into(), "", FileAction::QuickOpenTerminal(path.clone()), false, false));
+                items.push(("cm_map", "Analizar espacio en mapa".into(), "", FileAction::AnalyzePath(pbuf.clone()), false, false));
+                items.push(("cm_cut", "Cortar".into(), "Ctrl+X", FileAction::MultiCopySelected(true), false, true));
+                items.push(("cm_copy", "Copiar".into(), "Ctrl+C", FileAction::MultiCopySelected(false), false, false));
+                if s.can_paste {
+                    items.push(("cm_paste_in", "Pegar dentro de la carpeta".into(), "", FileAction::PasteIntoDir(pbuf.clone()), false, false));
+                }
+                items.push(("cm_cpath", "Copiar ruta completa".into(), "Ctrl+Shift+C", FileAction::CopyPathText(path.clone()), false, false));
+                items.push(("cm_ren", "Renombrar".into(), "F2", FileAction::StartRename(path.clone()), false, false));
+                items.push(("cm_dup", "Duplicar carpeta".into(), "", FileAction::QuickDuplicate(path.clone()), false, false));
+                items.push(("cm_zip", "Comprimir en .ZIP".into(), "", FileAction::QuickZipOrUnzip(path.clone()), false, false));
+                items.push((
+                    "cm_pin",
+                    if is_pinned { "Quitar de Favoritos".into() } else { "Anclar a Favoritos".into() },
+                    "",
+                    FileAction::TogglePinFavorite(path.clone()),
+                    false,
+                    true,
+                ));
+                items.push(("cm_expl", "Mostrar en Explorador Windows".into(), "", FileAction::RevealInExplorer(path.clone()), false, false));
+                items.push(("cm_props", "Propiedades".into(), "Alt+Enter", FileAction::ShowProperties(path.clone()), false, false));
+                items.push(("cm_del", "Mover a la Papelera".into(), "Supr", FileAction::QuickDeleteRecycle(path.clone()), true, true));
+                items.push(("cm_pdel", "Eliminar permanentemente".into(), "Shift+Supr", FileAction::PermanentDeletePaths(vec![path.clone()]), true, false));
+            }
+            CtxMenuKind::File(path) => {
+                let is_zip = Path::new(path).extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("zip")).unwrap_or(false);
+                items.push(("cm_open", "Abrir".into(), "Enter", FileAction::OpenRow(s.tabs[s.active_tab].selected_idx.unwrap_or(0)), false, false));
+                items.push(("cm_openwith", "Abrir con...".into(), "", FileAction::OpenWithDialog(path.clone()), false, false));
+                items.push(("cm_ql", "Vista rápida (Quick Look)".into(), "Espacio", FileAction::ToggleQuickLook, false, false));
+                items.push(("cm_cut", "Cortar".into(), "Ctrl+X", FileAction::MultiCopySelected(true), false, true));
+                items.push(("cm_copy", "Copiar".into(), "Ctrl+C", FileAction::MultiCopySelected(false), false, false));
+                items.push(("cm_cpath", "Copiar ruta completa".into(), "Ctrl+Shift+C", FileAction::CopyPathText(path.clone()), false, false));
+                items.push(("cm_ren", "Renombrar".into(), "F2", FileAction::StartRename(path.clone()), false, false));
+                items.push(("cm_dup", "Duplicar archivo".into(), "", FileAction::QuickDuplicate(path.clone()), false, false));
+                items.push(("cm_zip", if is_zip { "Extraer ZIP aquí".into() } else { "Comprimir en .ZIP".into() }, "", FileAction::QuickZipOrUnzip(path.clone()), false, false));
+                items.push(("cm_expl", "Mostrar en Explorador Windows".into(), "", FileAction::RevealInExplorer(path.clone()), false, true));
+                items.push(("cm_props", "Propiedades".into(), "Alt+Enter", FileAction::ShowProperties(path.clone()), false, false));
+                items.push(("cm_del", "Mover a la Papelera".into(), "Supr", FileAction::QuickDeleteRecycle(path.clone()), true, true));
+                items.push(("cm_pdel", "Eliminar permanentemente".into(), "Shift+Supr", FileAction::PermanentDeletePaths(vec![path.clone()]), true, false));
+            }
+            CtxMenuKind::Multi(n) => {
+                items.push(("cm_cut", format!("Cortar {} elementos", n), "Ctrl+X", FileAction::MultiCopySelected(true), false, false));
+                items.push(("cm_copy", format!("Copiar {} elementos", n), "Ctrl+C", FileAction::MultiCopySelected(false), false, false));
+                items.push(("cm_cpath", format!("Copiar {} rutas", n), "Ctrl+Shift+C", FileAction::CopySelectedPaths, false, false));
+                items.push(("cm_zip", format!("Comprimir {} elementos en .ZIP", n), "", FileAction::MultiZipSelected, false, true));
+                items.push(("cm_del", format!("Mover {} elementos a Papelera", n), "Supr", FileAction::MultiDeleteSelected, true, true));
+            }
+            CtxMenuKind::EmptySpace => {
+                items.push(("cm_newdir", "Nueva carpeta".into(), "Ctrl+Shift+N", FileAction::NewFolder, false, false));
+                items.push(("cm_newtxt", "Nuevo documento de texto".into(), "", FileAction::NewTextFile, false, false));
+                if s.can_paste {
+                    items.push(("cm_paste", "Pegar aquí".into(), "Ctrl+V", FileAction::PasteIntoDir(cur_p.clone()), false, true));
+                }
+                items.push(("cm_s_name", "Ordenar por Nombre".into(), "", FileAction::SetSort(SortBy::Name), false, true));
+                items.push(("cm_s_type", "Ordenar por Tipo".into(), "", FileAction::SetSort(SortBy::Type), false, false));
+                items.push(("cm_s_size", "Ordenar por Tamaño".into(), "", FileAction::SetSort(SortBy::Size), false, false));
+                items.push(("cm_s_date", "Ordenar por Fecha".into(), "", FileAction::SetSort(SortBy::Date), false, false));
+                items.push((
+                    "cm_hid",
+                    if s.show_hidden { "✓ Mostrar archivos ocultos".into() } else { "Mostrar archivos ocultos".into() },
+                    "Ctrl+H",
+                    FileAction::ToggleHiddenFiles,
+                    false,
+                    true,
+                ));
+                items.push(("cm_ref", "Actualizar".into(), "F5", FileAction::RefreshDir, false, false));
+                items.push(("cm_term", "Abrir Terminal aquí".into(), "", FileAction::QuickOpenTerminal(cur_dir_str.clone()), false, true));
+                items.push(("cm_cpath", "Copiar ruta de esta carpeta".into(), "Ctrl+Shift+C", FileAction::CopyCurrentPath, false, false));
+                items.push(("cm_expl", "Abrir en Explorador Windows".into(), "", FileAction::RevealInExplorer(cur_dir_str.clone()), false, false));
+                items.push(("cm_props", "Propiedades de la carpeta".into(), "", FileAction::ShowProperties(cur_dir_str), false, false));
+            }
+            CtxMenuKind::PathBar => {
+                items.push(("cm_editp", "Editar dirección".into(), "Ctrl+L", FileAction::StartPathEdit, false, false));
+                items.push(("cm_copyp", "Copiar dirección como texto".into(), "", FileAction::CopyCurrentPath, false, false));
+                items.push(("cm_pastep", "Pegar e ir a la dirección".into(), "", FileAction::PasteAndGoPath, false, false));
+                items.push(("cm_term", "Abrir Terminal aquí".into(), "", FileAction::QuickOpenTerminal(cur_dir_str), false, true));
+            }
+        }
+
+        let mw = 276.0f32;
+        let sep_count = items.iter().filter(|x| x.5).count() as f32;
+        let mh = 12.0 + items.len() as f32 * 27.0 + sep_count * 7.0;
+        let mx = cm.x.clamp(8.0, (w - mw - 8.0).max(8.0));
+        let my = cm.y.clamp(48.0, (h - mh - 8.0).max(48.0));
+        ctx.fill_card(Rect::new(mx, my, mw, mh), 13.0, theme::rgba(15, 15, 24, 0.98), theme::VIOLET_BORDER);
+        let mut cy_m = my + 6.0;
+        for (id, lbl, kbd, act, danger, sep_before) in items {
+            if sep_before {
+                ctx.draw_line(mx + 10.0, cy_m + 2.0, mx + mw - 10.0, cy_m + 2.0, theme::BORDER, 1.0);
+                cy_m += 7.0;
+            }
+            let rr = Rect::new(mx + 6.0, cy_m, mw - 12.0, 26.0);
+            let hov = s.hovered == Some(id);
+            let bg = if danger {
+                if hov { theme::CORAL } else { theme::rgba(0, 0, 0, 0.0) }
+            } else if hov {
+                theme::VIOLET_TINT
+            } else {
+                theme::rgba(0, 0, 0, 0.0)
+            };
+            ctx.fill_rrect(rr, 7.0, bg);
+            let fg = if danger && !hov { theme::CORAL } else { theme::TEXT_PRIMARY };
+            ctx.draw_text(&lbl, Rect::new(rr.x + 10.0, rr.y, rr.w - 86.0, 26.0), TextStyle::Body11Med, fg);
+            if !kbd.is_empty() {
+                ctx.draw_text_right(kbd, Rect::new(rr.x + rr.w - 82.0, rr.y, 72.0, 26.0), TextStyle::Small9Reg, if hov { theme::TEXT_PRIMARY } else { theme::TEXT_TERTIARY });
+            }
+            hits.push(Hit { id: id.into(), rect: rr, action: act, dbl_action: None });
+            cy_m += 27.0;
+        }
+    }
+
     // Toast notification pill at bottom center
     if let Some((txt, ok)) = s.toast {
-        let tr = Rect::new((w - 360.0) * 0.5, h - 48.0, 360.0, 34.0);
+        let tr = Rect::new((w - 380.0) * 0.5, h - 48.0, 380.0, 34.0);
         ctx.fill_card(tr, 12.0, theme::ELEVATED, if ok { theme::EMERALD } else { theme::CORAL });
         ctx.draw_text_center(txt, tr, TextStyle::Body11Med, theme::TEXT_PRIMARY);
     }
@@ -1984,7 +2684,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
     }
     // Crisp 1px outer AuraOS rounded border on top (uniform across all 4 rounded corners!)
     ctx.stroke_rrect(win_r, corner_r, theme::BORDER_STRONG, 1.2);
-    (treemap_out_rect, list_out_rect)
+    (treemap_out_rect, list_out_rect, path_out_rect)
 }
 
 // ==================== WINDIRSTAT-STYLE DISK SPACE ANALYZER UI (DROOL DARK MODE) ====================
@@ -2365,13 +3065,21 @@ fn render_analyzer_inspector(
     }
 }
 
-fn read_dir_fast(dir: &Path) -> Vec<FileEntry> {
+fn read_dir_fast(dir: &Path, show_hidden: bool) -> Vec<FileEntry> {
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
     let mut items = Vec::new();
     let Ok(rd) = std::fs::read_dir(dir) else { return items };
     for e in rd.flatten() {
         let path = e.path();
         let name = e.file_name().to_string_lossy().to_string();
         let meta = e.metadata().ok();
+        if !show_hidden {
+            if let Some(m) = &meta {
+                if (m.file_attributes() & FILE_ATTRIBUTE_HIDDEN) != 0 {
+                    continue;
+                }
+            }
+        }
         let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
         let size_bytes = if is_dir { None } else { meta.as_ref().map(|m| m.len()) };
         let modified_ts = meta
@@ -2497,17 +3205,34 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
     }
     if msg == WM_SYSKEYDOWN {
         let vk = wparam.0 as u16;
-        if vk == windows::Win32::UI::Input::KeyboardAndMouse::VK_LEFT.0 {
-            aura_window::snap_window(hwnd, SnapZone::LeftHalf);
-            return LRESULT(0);
-        } else if vk == windows::Win32::UI::Input::KeyboardAndMouse::VK_RIGHT.0 {
-            aura_window::snap_window(hwnd, SnapZone::RightHalf);
-            return LRESULT(0);
-        } else if vk == VK_UP.0 {
-            aura_window::snap_window(hwnd, SnapZone::Maximize);
-            return LRESULT(0);
-        } else if vk == VK_DOWN.0 {
-            aura_window::snap_window(hwnd, SnapZone::Center);
+        let handled_nav = FILES_RT.with(|cell| {
+            let Ok(mut g) = cell.try_borrow_mut() else { return false };
+            let Some(rt) = g.as_mut() else { return false };
+            if vk == windows::Win32::UI::Input::KeyboardAndMouse::VK_LEFT.0 {
+                rt.execute(FileAction::GoBack);
+                true
+            } else if vk == windows::Win32::UI::Input::KeyboardAndMouse::VK_RIGHT.0 {
+                rt.execute(FileAction::GoForward);
+                true
+            } else if vk == VK_UP.0 {
+                rt.execute(FileAction::GoUp);
+                true
+            } else if vk == b'D' as u16 {
+                rt.execute(FileAction::StartPathEdit);
+                true
+            } else if vk == VK_RETURN.0 {
+                let target = rt
+                    .selected_paths()
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| rt.cur_path().to_string_lossy().to_string());
+                rt.execute(FileAction::ShowProperties(target));
+                true
+            } else {
+                false
+            }
+        });
+        if handled_nav {
             return LRESULT(0);
         }
     }
@@ -2548,13 +3273,78 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                 }
                 true
             }
+            WM_XBUTTONDOWN => {
+                // Mouse side Back (XBUTTON1 = 1) / Forward (XBUTTON2 = 2) buttons — just like Windows Explorer!
+                let xbtn = ((wparam.0 >> 16) & 0xFFFF) as u16;
+                if xbtn == 1 {
+                    rt.execute(FileAction::GoBack);
+                } else if xbtn == 2 {
+                    rt.execute(FileAction::GoForward);
+                }
+                true
+            }
+            0x0215 | 0x001F => {
+                // WM_CAPTURECHANGED / WM_CANCELMODE: cleanly cancel marquee or drag candidate
+                rt.marquee = None;
+                rt.drag_candidate = None;
+                rt.redraw();
+                true
+            }
             WM_RBUTTONDOWN => {
                 let px = (lparam.0 & 0xFFFF) as i16 as f32;
                 let py = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
-                if let Some(h) = rt.hits.iter().rev().find(|h| h.rect.contains(px, py)) {
-                    if matches!(h.action, FileAction::WindowMaxRestore) {
-                        deferred_snap = Some(SnapZone::LeftHalf);
+                rt.ctx_menu = None;
+                if rt.path_bar_rect.contains(px, py) {
+                    rt.ctx_menu = Some(CtxMenuState {
+                        kind: CtxMenuKind::PathBar,
+                        x: px,
+                        y: py,
+                    });
+                    rt.redraw();
+                    return true;
+                }
+                if let Some(h) = rt.hits.iter().rev().find(|h| h.rect.contains(px, py)).cloned() {
+                    match h.action {
+                        FileAction::WindowMaxRestore => {
+                            deferred_snap = Some(SnapZone::LeftHalf);
+                        }
+                        FileAction::SelectRow(vis_i) | FileAction::ToggleSelectRow(vis_i) => {
+                            let tab = &mut rt.tabs[rt.active_tab];
+                            if !tab.is_selected(vis_i) {
+                                tab.select_only(vis_i);
+                            }
+                            let sel_cnt = rt.tabs[rt.active_tab].selected_set.len();
+                            if sel_cnt > 1 {
+                                rt.ctx_menu = Some(CtxMenuState {
+                                    kind: CtxMenuKind::Multi(sel_cnt),
+                                    x: px,
+                                    y: py,
+                                });
+                            } else if let Some(&ri) = rt.filtered_indices.get(vis_i) {
+                                if let Some(ent) = rt.active_entries().get(ri).cloned() {
+                                    let kind = if ent.is_dir {
+                                        CtxMenuKind::Folder(ent.path)
+                                    } else {
+                                        CtxMenuKind::File(ent.path)
+                                    };
+                                    rt.ctx_menu = Some(CtxMenuState { kind, x: px, y: py });
+                                }
+                            }
+                            rt.redraw();
+                        }
+                        _ => {
+                            rt.redraw();
+                        }
                     }
+                } else if !rt.analyzer.open && rt.list_rect.contains(px, py) {
+                    rt.ctx_menu = Some(CtxMenuState {
+                        kind: CtxMenuKind::EmptySpace,
+                        x: px,
+                        y: py,
+                    });
+                    rt.redraw();
+                } else {
+                    rt.redraw();
                 }
                 true
             }
@@ -2624,8 +3414,17 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                 rt.drag_candidate = None;
 
                 if let Some(h) = rt.hits.iter().rev().find(|h| h.rect.contains(px, py)).cloned() {
+                    if rt.ctx_menu.is_some() && !h.id.starts_with("cm_") {
+                        rt.ctx_menu = None;
+                        rt.redraw();
+                        return true;
+                    }
                     if !matches!(h.action, FileAction::FocusSearch) && rt.search_focused {
                         rt.search_focused = false;
+                    }
+                    if !matches!(h.action, FileAction::StartPathEdit) && rt.path_editing {
+                        rt.path_editing = false;
+                        rt.path_select_all = false;
                     }
                     match h.action {
                         FileAction::WindowMaxRestore => {
@@ -2654,12 +3453,16 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                         }
                         other => rt.execute(other),
                     }
+                } else if rt.ctx_menu.take().is_some() {
+                    rt.redraw();
                 } else if let Some(nid) = treemap_hit_test(&rt.analyzer, px, py) {
                     rt.search_focused = false;
+                    rt.path_editing = false;
                     rt.execute(FileAction::AnalyzerSelectNode(nid));
                 } else if !rt.analyzer.open && rt.list_rect.contains(px, py) {
                     // Clicked empty space inside file list -> start Rubber-Band Marquee Selection!
                     rt.search_focused = false;
+                    rt.path_editing = false;
                     let base = if ctrl {
                         rt.tabs[rt.active_tab].selected_set.clone()
                     } else {
@@ -2671,9 +3474,11 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                     rt.redraw();
                 } else if py <= 42.0 {
                     rt.search_focused = false;
+                    rt.path_editing = false;
                     start_title_drag = true;
-                } else if rt.search_focused {
+                } else if rt.search_focused || rt.path_editing {
                     rt.search_focused = false;
+                    rt.path_editing = false;
                     rt.redraw();
                 }
                 true
@@ -2719,16 +3524,75 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                 let ctrl = (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
                 let shift = (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0;
 
-                // v5.1 F2 Inline Rename Mode Keyboard Capture
+                // 0. Editable Address / Path Bar Keyboard Capture (Ctrl+L / click path bar!)
+                if rt.path_editing {
+                    if vk == VK_ESCAPE.0 {
+                        rt.path_editing = false;
+                        rt.path_select_all = false;
+                        rt.path_buf = rt.cur_path().to_string_lossy().to_string();
+                        rt.redraw();
+                    } else if vk == VK_RETURN.0 {
+                        let typed = rt.path_buf.clone();
+                        rt.path_editing = false;
+                        rt.path_select_all = false;
+                        rt.navigate_user_input(&typed);
+                    } else if ctrl && vk == b'C' as u16 {
+                        win32_shell::copy_text_to_clipboard(&rt.path_buf);
+                        rt.show_toast("Ruta copiada al portapapeles", true);
+                    } else if ctrl && vk == b'A' as u16 {
+                        rt.path_select_all = true;
+                        rt.redraw();
+                    } else if ctrl && vk == b'V' as u16 {
+                        if let Some(pasted) = win32_shell::read_clipboard_text() {
+                            let clean = pasted.lines().next().unwrap_or("").trim().to_string();
+                            if rt.path_select_all {
+                                rt.path_buf = clean;
+                                rt.path_select_all = false;
+                            } else {
+                                rt.path_buf.push_str(&clean);
+                            }
+                            rt.redraw();
+                        }
+                    } else if vk == VK_BACK.0 {
+                        if rt.path_select_all {
+                            rt.path_buf.clear();
+                            rt.path_select_all = false;
+                        } else {
+                            rt.path_buf.pop();
+                        }
+                        rt.redraw();
+                    }
+                    return true;
+                }
+
+                // 1. F2 Inline Rename Mode Keyboard Capture (supports Ctrl+C / Ctrl+V / Ctrl+A!)
                 if rt.renaming_path.is_some() {
                     if vk == VK_ESCAPE.0 {
                         rt.renaming_path = None;
                         rt.rename_buf.clear();
+                        rt.rename_select_all = false;
                         rt.redraw();
+                    } else if ctrl && vk == b'C' as u16 {
+                        win32_shell::copy_text_to_clipboard(&rt.rename_buf);
+                    } else if ctrl && vk == b'A' as u16 {
+                        rt.rename_select_all = true;
+                        rt.redraw();
+                    } else if ctrl && vk == b'V' as u16 {
+                        if let Some(pasted) = win32_shell::read_clipboard_text() {
+                            let clean = pasted.lines().next().unwrap_or("").trim().to_string();
+                            if rt.rename_select_all {
+                                rt.rename_buf = clean;
+                                rt.rename_select_all = false;
+                            } else {
+                                rt.rename_buf.push_str(&clean);
+                            }
+                            rt.redraw();
+                        }
                     } else if vk == VK_RETURN.0 {
                         if let Some(src) = rt.renaming_path.take() {
                             let new_name = rt.rename_buf.trim().to_string();
                             rt.rename_buf.clear();
+                            rt.rename_select_all = false;
                             if !new_name.is_empty() && !new_name.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|']) {
                                 if let Some(parent) = src.parent() {
                                     let dst = parent.join(&new_name);
@@ -2745,9 +3609,50 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                         }
                         rt.redraw();
                     } else if vk == VK_BACK.0 {
-                        rt.rename_buf.pop();
+                        if rt.rename_select_all {
+                            rt.rename_buf.clear();
+                            rt.rename_select_all = false;
+                        } else {
+                            rt.rename_buf.pop();
+                        }
                         rt.redraw();
                     }
+                    return true;
+                }
+
+                // Close context menu on Escape
+                if vk == VK_ESCAPE.0 && rt.ctx_menu.take().is_some() {
+                    rt.redraw();
+                    return true;
+                }
+
+                // Ctrl+L or F4 = Focus Editable Address / Path Bar!
+                if (ctrl && vk == b'L' as u16) || vk == 0x73 {
+                    rt.execute(FileAction::StartPathEdit);
+                    return true;
+                }
+
+                // F5 or Ctrl+R = Refresh current folder!
+                if vk == 0x74 || (ctrl && vk == b'R' as u16) {
+                    rt.execute(FileAction::RefreshDir);
+                    return true;
+                }
+
+                // Ctrl+Shift+N = Create New Folder (with instant inline rename!)
+                if ctrl && shift && vk == b'N' as u16 {
+                    rt.execute(FileAction::NewFolder);
+                    return true;
+                }
+
+                // Ctrl+Shift+C = Copy full path(s) to clipboard!
+                if ctrl && shift && vk == b'C' as u16 {
+                    rt.execute(FileAction::CopySelectedPaths);
+                    return true;
+                }
+
+                // Ctrl+H = Toggle Hidden Files!
+                if ctrl && vk == b'H' as u16 {
+                    rt.execute(FileAction::ToggleHiddenFiles);
                     return true;
                 }
 
@@ -2758,6 +3663,7 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                             if let Some(ent) = rt.active_entries().get(ri).cloned() {
                                 rt.renaming_path = Some(PathBuf::from(&ent.path));
                                 rt.rename_buf = ent.name.clone();
+                                rt.rename_select_all = true;
                                 rt.redraw();
                                 return true;
                             }
@@ -2779,58 +3685,8 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                     rt.execute(FileAction::MultiCopySelected(is_cut));
                     return true;
                 } else if ctrl && vk == 'V' as u16 {
-                    if let Some((srcs, is_cut)) = rt.file_clip.clone() {
-                        let dst_dir = rt.cur_path();
-                        let mut ok_cnt = 0usize;
-                        for src in &srcs {
-                            if let Some(fname) = src.file_name() {
-                                let mut dst = dst_dir.join(fname);
-                                if dst.exists() {
-                                    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("archivo");
-                                    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("");
-                                    for n in 1..100 {
-                                        let cand = if ext.is_empty() {
-                                            format!("{} (copia {})", stem, n)
-                                        } else {
-                                            format!("{} (copia {}).{}", stem, n, ext)
-                                        };
-                                        let p = dst_dir.join(&cand);
-                                        if !p.exists() {
-                                            dst = p;
-                                            break;
-                                        }
-                                    }
-                                }
-                                let ok = if is_cut {
-                                    std::fs::rename(src, &dst).is_ok()
-                                        || (copy_path_recursive(src, &dst).is_ok() && {
-                                            if src.is_dir() { std::fs::remove_dir_all(src).is_ok() } else { std::fs::remove_file(src).is_ok() }
-                                        })
-                                } else {
-                                    copy_path_recursive(src, &dst).is_ok()
-                                };
-                                if ok {
-                                    ok_cnt += 1;
-                                }
-                            }
-                        }
-                        if ok_cnt > 0 {
-                            if is_cut {
-                                rt.file_clip = None;
-                            }
-                            rt.load_current_dir_instant();
-                            rt.show_toast(
-                                if is_cut {
-                                    format!("{} elemento(s) movido(s) aquí", ok_cnt)
-                                } else {
-                                    format!("{} elemento(s) pegado(s) aquí", ok_cnt)
-                                },
-                                true,
-                            );
-                        } else {
-                            rt.show_toast("Error al pegar los elementos", false);
-                        }
-                    }
+                    let dst = rt.cur_path();
+                    rt.paste_clipboard_into(dst);
                     return true;
                 }
 
@@ -2863,6 +3719,7 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                     } else {
                         rt.tabs[rt.active_tab].select_only(next);
                     }
+                    rt.ensure_row_visible(next);
                     rt.redraw();
                 } else if vk == VK_UP.0 && !rt.filtered_indices.is_empty() {
                     let prev = rt.tabs[rt.active_tab].selected_idx.map(|i| i.saturating_sub(1)).unwrap_or(0);
@@ -2871,6 +3728,7 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                     } else {
                         rt.tabs[rt.active_tab].select_only(prev);
                     }
+                    rt.ensure_row_visible(prev);
                     rt.redraw();
                 } else if vk == VK_RETURN.0 {
                     if let Some(i) = rt.tabs[rt.active_tab].selected_idx {
@@ -2879,7 +3737,14 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                         rt.execute(FileAction::OpenRow(0));
                     }
                 } else if vk == VK_DELETE.0 && !rt.search_focused {
-                    rt.execute(FileAction::MultiDeleteSelected);
+                    if shift {
+                        let paths = rt.selected_paths();
+                        if !paths.is_empty() {
+                            rt.execute(FileAction::PermanentDeletePaths(paths));
+                        }
+                    } else {
+                        rt.execute(FileAction::MultiDeleteSelected);
+                    }
                 }
                 true
             }
@@ -2889,8 +3754,23 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                     return true;
                 }
                 if let Some(ch) = char::from_u32(wparam.0 as u32) {
+                    if rt.path_editing {
+                        if !ch.is_control() && rt.path_buf.len() < 320 {
+                            if rt.path_select_all {
+                                rt.path_buf.clear();
+                                rt.path_select_all = false;
+                            }
+                            rt.path_buf.push(ch);
+                            rt.redraw();
+                        }
+                        return true;
+                    }
                     if rt.renaming_path.is_some() {
                         if !ch.is_control() && rt.rename_buf.len() < 180 {
+                            if rt.rename_select_all {
+                                rt.rename_buf.clear();
+                                rt.rename_select_all = false;
+                            }
                             rt.rename_buf.push(ch);
                             rt.redraw();
                         }
@@ -2963,10 +3843,11 @@ fn copy_path_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 fn capture_aurafiles_png(out_png: &Path, dir: PathBuf, analyzer_mode: bool) {
     let Ok(mut gpu) = GpuEngine::new() else { return };
-    let entries = read_dir_fast(&dir);
+    let entries = read_dir_fast(&dir, false);
     let filtered: Vec<usize> = (0..entries.len()).collect();
     let drives = get_local_drives();
     let tags = load_tags();
+    let pinned_favs = load_pinned_favs();
     let mut tab = TabState::new(dir.clone());
     if filtered.len() >= 3 {
         tab.select_only(0);
@@ -2975,6 +3856,7 @@ fn capture_aurafiles_png(out_png: &Path, dir: PathBuf, analyzer_mode: bool) {
     } else if !filtered.is_empty() {
         tab.select_only(0);
     }
+    let dir_str = dir.to_string_lossy().to_string();
     let tabs = vec![tab];
 
     let mut analyzer = AnalyzerState::default();
@@ -3001,6 +3883,13 @@ fn capture_aurafiles_png(out_png: &Path, dir: PathBuf, analyzer_mode: bool) {
         filtered: &filtered,
         drives: &drives,
         tags: &tags,
+        pinned_favs: &pinned_favs,
+        show_hidden: false,
+        path_editing: false,
+        path_buf: &dir_str,
+        path_select_all: false,
+        ctx_menu: None,
+        can_paste: false,
         search: "",
         search_focused: false,
         search_running: false,
@@ -3017,4 +3906,30 @@ fn capture_aurafiles_png(out_png: &Path, dir: PathBuf, analyzer_mode: bool) {
         let mut h = Vec::new();
         let _ = render_files_ui(ctx, &snap, 1240.0, 760.0, &mut h);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_user_path_quotes_and_env() {
+        let p = resolve_user_path("  \"C:/Users/danil/Downloads\"  ");
+        assert_eq!(p, PathBuf::from(r"C:\Users\danil\Downloads"));
+        let d = resolve_user_path("C:");
+        assert_eq!(d, PathBuf::from(r"C:\"));
+        let env_p = resolve_user_path("%USERPROFILE%\\Downloads");
+        assert!(env_p.to_string_lossy().ends_with("Downloads"));
+        assert!(!env_p.to_string_lossy().contains('%'));
+    }
+
+    #[test]
+    fn test_build_breadcrumbs_segments() {
+        let crumbs = build_breadcrumbs(Path::new(r"C:\Users\danil\Downloads"));
+        assert_eq!(crumbs.len(), 4);
+        assert_eq!(crumbs[0].0, "C:");
+        assert_eq!(crumbs[0].1, PathBuf::from(r"C:\"));
+        assert_eq!(crumbs[3].0, "Downloads");
+        assert_eq!(crumbs[3].1, PathBuf::from(r"C:\Users\danil\Downloads"));
+    }
 }

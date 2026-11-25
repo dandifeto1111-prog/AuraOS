@@ -248,7 +248,7 @@ pub fn render_control_center(ctx: &mut DrawCtx<'_>, state: &AppState, win_h: f32
 
     let panel_lnk = Rect::new(lx + cw - 58.0, y + 112.0, 46.0, 26.0);
     ctx.draw_text_right("Panel", panel_lnk, TextStyle::Small10Med, p.text_tertiary);
-    hits.push(HitRegion { id: "cc_snd_panel".into(), rect: panel_lnk, action: Action::LaunchTarget("ms-settings:sound".into()), right_action: None, tooltip: None, slider: None });
+    hits.push(HitRegion { id: "cc_snd_panel".into(), rect: panel_lnk, action: Action::LaunchAuraSettings(Some("sound".into())), right_action: None, tooltip: None, slider: None });
 
     let mut dy_dev = y + 144.0;
     if devices.is_empty() {
@@ -298,17 +298,31 @@ pub fn render_control_center(ctx: &mut DrawCtx<'_>, state: &AppState, win_h: f32
     }
     y += vol_card_h + 12.0;
 
-    // 4. 2x3 MATERIAL 3 QUICK TOGGLES (Red, Bluetooth, Luz Nocturna, Café, Teclado, Captura/Clip!)
+    // 4. 2x4 MATERIAL 3 QUICK TOGGLES (Red/Wi-Fi, Compartir Internet, Bluetooth, Modo Avión, Luz Nocturna, Café, Teclado, AuraShot!)
     ctx.draw_text("CONTROLES RÁPIDOS", Rect::new(lx + 2.0, y, cw, 15.0), TextStyle::Small10Bold, p.text_tertiary);
     y += 19.0;
 
     let wifi_active = state.radios.has_internet || state.radios.wifi_on || state.radios.ethernet_up;
     let (net_title, net_icon, net_accent) = match state.radios.net_kind {
-        crate::radios::NetKind::Ethernet => ("Ethernet", VectorIcon::Ethernet, theme::EMERALD),
-        crate::radios::NetKind::Wifi => ("Wi-Fi", VectorIcon::Wifi, p.accent),
+        crate::radios::NetKind::Ethernet => ("Red · Ethernet", VectorIcon::Ethernet, theme::EMERALD),
+        crate::radios::NetKind::Wifi => ("Red · Wi-Fi", VectorIcon::Wifi, p.accent),
         crate::radios::NetKind::Offline => ("Sin internet", VectorIcon::NoInternet, theme::CORAL),
     };
-    let wifi_sub = if !state.radios.net_label.is_empty() { state.radios.net_label.clone() } else { state.net_status.clone() };
+    let wifi_sub = if !state.radios.net_label.is_empty() {
+        format!("{} ›", state.radios.net_label)
+    } else {
+        format!("{} ›", state.net_status)
+    };
+    let hs = &state.radios.hotspot;
+    let hs_sub = if !hs.supported {
+        "No compatible".to_string()
+    } else if hs.is_on {
+        format!("ON · {}/{} disp.", hs.client_count, hs.max_clients)
+    } else if !hs.ssid.is_empty() {
+        format!("OFF · {}", hs.ssid)
+    } else {
+        "Apagado".to_string()
+    };
     let bt_active = state.radios.bt_on;
     let bt_sub = if !state.radios.bt_available {
         "No disponible".to_string()
@@ -317,21 +331,96 @@ pub fn render_control_center(ctx: &mut DrawCtx<'_>, state: &AppState, win_h: f32
     } else {
         "Desactivado".to_string()
     };
+    let air_on = state.radios.airplane_mode;
 
     let tile_w = (cw - 8.0) * 0.5;
     let tiles = [
-        ("cc_q_net", net_title, wifi_sub, net_icon, wifi_active, net_accent, Action::ToggleWifiRadio, Some(Action::LaunchTarget("ms-settings:network".into()))),
-        ("cc_q_bt", "Bluetooth", bt_sub, VectorIcon::Bluetooth, bt_active, theme::BLUE, Action::ToggleBluetoothRadio, Some(Action::LaunchTarget("ms-settings:bluetooth".into()))),
-        ("cc_q_night", "Luz Nocturna", if state.settings.night_light { "Filtro cálido ON".into() } else { "Filtro cálido OFF".into() }, VectorIcon::Moon, state.settings.night_light, theme::AMBER, Action::ToggleNightLight, None),
-        ("cc_q_awake", "Café / Despierto", if state.settings.keep_awake { "Sin suspensión".into() } else { "Normal".into() }, VectorIcon::Coffee, state.settings.keep_awake, theme::EMERALD, Action::ToggleKeepAwake, None),
-        ("cc_q_lang", "Teclado", format!("{} · {} idiomas", state.keyboard_lang, state.keyboard_layouts.len().max(1)), VectorIcon::Keyboard, state.cc_keyboard_menu_open, p.accent, Action::ToggleKeyboardMenu, Some(Action::CycleKeyboardLayout)),
-        ("cc_q_shot", "AuraShot · Clip", format!("Impr Pant · {} clips", state.clipboard_items.len()), VectorIcon::Maximize, state.clipboard_open, theme::CORAL, Action::LaunchAuraShot, Some(Action::ToggleClipboard)),
+        (
+            "cc_q_net",
+            net_title,
+            wifi_sub,
+            net_icon,
+            wifi_active || state.cc_network_drawer_open,
+            net_accent,
+            Action::ToggleNetworkDrawer,
+            Some(Action::ToggleWifiRadio),
+        ),
+        (
+            "cc_q_hotspot",
+            "Compartir Red",
+            hs_sub,
+            VectorIcon::Sparkle,
+            hs.is_on,
+            theme::EMERALD,
+            Action::ToggleHotspot,
+            Some(Action::LaunchAuraSettings(Some("network".into()))),
+        ),
+        (
+            "cc_q_bt",
+            "Bluetooth",
+            bt_sub,
+            VectorIcon::Bluetooth,
+            bt_active,
+            theme::BLUE,
+            Action::ToggleBluetoothRadio,
+            Some(Action::LaunchAuraSettings(Some("network".into()))),
+        ),
+        (
+            "cc_q_air",
+            "Modo Avión",
+            if air_on { "Radios apagadas".into() } else { "Desactivado".into() },
+            VectorIcon::Power,
+            air_on,
+            theme::AMBER,
+            Action::ToggleAirplaneMode,
+            None,
+        ),
+        (
+            "cc_q_night",
+            "Luz Nocturna",
+            if state.settings.night_light { "Filtro cálido ON".into() } else { "Filtro cálido OFF".into() },
+            VectorIcon::Moon,
+            state.settings.night_light,
+            theme::AMBER,
+            Action::ToggleNightLight,
+            None,
+        ),
+        (
+            "cc_q_awake",
+            "Café / Despierto",
+            if state.settings.keep_awake { "Sin suspensión".into() } else { "Normal".into() },
+            VectorIcon::Coffee,
+            state.settings.keep_awake,
+            theme::EMERALD,
+            Action::ToggleKeepAwake,
+            None,
+        ),
+        (
+            "cc_q_lang",
+            "Teclado",
+            format!("{} · {} idiomas", state.keyboard_lang, state.keyboard_layouts.len().max(1)),
+            VectorIcon::Keyboard,
+            state.cc_keyboard_menu_open,
+            p.accent,
+            Action::ToggleKeyboardMenu,
+            Some(Action::CycleKeyboardLayout),
+        ),
+        (
+            "cc_q_shot",
+            "AuraShot · Clip",
+            format!("Impr Pant · {} clips", state.clipboard_items.len()),
+            VectorIcon::Maximize,
+            state.clipboard_open,
+            theme::CORAL,
+            Action::LaunchAuraShot,
+            Some(Action::ToggleClipboard),
+        ),
     ];
 
     for (idx, (id, title, sub, icon, is_on, accent, act, right_act)) in tiles.into_iter().enumerate() {
         let col = (idx % 2) as f32;
         let row = (idx / 2) as f32;
-        let tr = Rect::new(lx + col * (tile_w + 8.0), y + row * 54.0, tile_w, 46.0);
+        let tr = Rect::new(lx + col * (tile_w + 8.0), y + row * 52.0, tile_w, 45.0);
         let hov = state.hovered_id.as_deref() == Some(id);
         let border = if is_on { theme::with_alpha(accent, 0.58) } else { p.border };
         let tile_bg = if is_on {
@@ -348,7 +437,7 @@ pub fn render_control_center(ctx: &mut DrawCtx<'_>, state: &AppState, win_h: f32
         };
         ctx.fill_card(tr, 14.0, tile_bg, border);
 
-        let ib = Rect::new(tr.x + 10.0, tr.y + 9.0, 28.0, 28.0);
+        let ib = Rect::new(tr.x + 10.0, tr.y + 8.5, 28.0, 28.0);
         let offline_tile = id == "cc_q_net" && state.radios.net_kind == crate::radios::NetKind::Offline;
         ctx.fill_rrect(ib, 14.0, if offline_tile { theme::CORAL_BG } else if is_on { accent } else { p.card_bg });
         if id == "cc_q_net" && state.radios.net_kind == crate::radios::NetKind::Wifi {
@@ -356,11 +445,113 @@ pub fn render_control_center(ctx: &mut DrawCtx<'_>, state: &AppState, win_h: f32
         } else {
             ctx.draw_vector_icon(icon, ib.x + 14.0, ib.y + 14.0, 13.0, if offline_tile { theme::CORAL } else if is_on { theme::CRISP_WHITE } else { p.text_secondary });
         }
-        ctx.draw_text(title, Rect::new(tr.x + 44.0, tr.y + 7.0, tr.w - 50.0, 16.0), TextStyle::Body11Med, p.text_primary);
-        ctx.draw_text(&sub, Rect::new(tr.x + 44.0, tr.y + 24.0, tr.w - 50.0, 14.0), TextStyle::Small9Reg, if is_on { theme::rgba(240, 240, 252, 0.88) } else { p.text_tertiary });
+        ctx.draw_text(title, Rect::new(tr.x + 44.0, tr.y + 6.0, tr.w - 50.0, 16.0), TextStyle::Body11Med, p.text_primary);
+        ctx.draw_text(&sub, Rect::new(tr.x + 44.0, tr.y + 23.0, tr.w - 50.0, 14.0), TextStyle::Small9Reg, if is_on { theme::rgba(240, 240, 252, 0.88) } else { p.text_tertiary });
         hits.push(HitRegion { id: id.into(), rect: tr, action: act, right_action: right_act, tooltip: None, slider: None });
     }
-    y += 166.0;
+    y += 214.0;
+
+    // Inline status toast inside Control Center (Hotspot / Wi-Fi / VPN feedback)
+    if let Some((ref msg, ok, at)) = state.cc_status_toast {
+        if at.elapsed().as_secs_f32() < 4.0 {
+            let tr = Rect::new(lx, y, cw, 28.0);
+            ctx.fill_card(tr, 10.0, p.card_bg, if ok { theme::EMERALD } else { theme::CORAL });
+            ctx.draw_text(msg, Rect::new(tr.x + 10.0, tr.y, tr.w - 20.0, 28.0), TextStyle::Small10Med, if ok { theme::EMERALD } else { theme::CORAL });
+            y += 34.0;
+        }
+    }
+
+    // Inline Windows-11-Style Quick Network & Hotspot Drawer!
+    if state.cc_network_drawer_open {
+        let wifi_cnt = state.cc_wifi_networks.len().min(5);
+        let vpn_cnt = state.cc_vpn_profiles.len().min(3);
+        let drawer_h = 96.0
+            + if wifi_cnt == 0 { 30.0 } else { wifi_cnt as f32 * 34.0 }
+            + if vpn_cnt > 0 { 22.0 + vpn_cnt as f32 * 30.0 } else { 0.0 };
+        ctx.fill_card(Rect::new(lx, y, cw, drawer_h), 15.0, p.card_bg, p.accent_border);
+
+        let ip_info = if !state.cc_net_details.ipv4.is_empty() {
+            format!("{} · IP {} · {} Mbps", state.cc_net_details.adapter_name, state.cc_net_details.ipv4, state.cc_net_details.link_speed_mbps)
+        } else {
+            state.radios.net_label.clone()
+        };
+        ctx.draw_text("Panel de Red y Zona Wi-Fi", Rect::new(lx + 12.0, y + 8.0, cw - 120.0, 16.0), TextStyle::Body11Med, p.text_primary);
+        ctx.draw_text(&ip_info, Rect::new(lx + 12.0, y + 24.0, cw - 110.0, 14.0), TextStyle::Small9Reg, p.text_tertiary);
+
+        let cfg_r = Rect::new(lx + cw - 92.0, y + 8.0, 82.0, 24.0);
+        ctx.fill_rrect(cfg_r, 8.0, p.elevated);
+        ctx.draw_text_center("Ajustes Red", cfg_r, TextStyle::Small9Reg, p.accent_light);
+        hits.push(HitRegion { id: "cc_net_cfg".into(), rect: cfg_r, action: Action::LaunchAuraSettings(Some("network".into())), right_action: None, tooltip: None, slider: None });
+
+        // Quick action pills: Wi-Fi toggle, Hotspot toggle, Scan networks
+        let py = y + 44.0;
+        let bw3 = (cw - 32.0) / 3.0;
+        let w_btn = Rect::new(lx + 10.0, py, bw3, 26.0);
+        ctx.fill_rrect(w_btn, 8.0, if state.radios.wifi_on { p.accent } else { p.elevated });
+        ctx.draw_text_center(if state.radios.wifi_on { "Wi-Fi: ON" } else { "Wi-Fi: OFF" }, w_btn, TextStyle::Small10Bold, theme::CRISP_WHITE);
+        hits.push(HitRegion { id: "cc_nd_wifi".into(), rect: w_btn, action: Action::ToggleWifiRadio, right_action: None, tooltip: None, slider: None });
+
+        let h_btn = Rect::new(lx + 16.0 + bw3, py, bw3, 26.0);
+        ctx.fill_rrect(h_btn, 8.0, if hs.is_on { theme::EMERALD } else { p.elevated });
+        ctx.draw_text_center(if hs.is_on { "Hotspot: ON" } else { "Hotspot: OFF" }, h_btn, TextStyle::Small10Bold, theme::CRISP_WHITE);
+        hits.push(HitRegion { id: "cc_nd_hs".into(), rect: h_btn, action: Action::ToggleHotspot, right_action: None, tooltip: None, slider: None });
+
+        let s_btn = Rect::new(lx + 22.0 + bw3 * 2.0, py, bw3, 26.0);
+        ctx.fill_rrect(s_btn, 8.0, p.elevated);
+        ctx.draw_text_center(if state.cc_wifi_scanning { "Buscando..." } else { "Escanear" }, s_btn, TextStyle::Small10Bold, p.text_primary);
+        hits.push(HitRegion { id: "cc_nd_scan".into(), rect: s_btn, action: Action::ScanWifiNetworks, right_action: None, tooltip: None, slider: None });
+
+        let mut ny = py + 34.0;
+        if state.cc_wifi_networks.is_empty() {
+            let empty_msg = if !state.radios.wifi_available {
+                "Sin adaptador Wi-Fi · Usando Ethernet"
+            } else if !state.radios.wifi_on {
+                "Enciende Wi-Fi para ver redes cercanas"
+            } else if state.cc_wifi_scanning {
+                "Escaneando redes Wi-Fi cercanas..."
+            } else {
+                "Pulsa 'Escanear' para listar redes Wi-Fi"
+            };
+            ctx.draw_text(empty_msg, Rect::new(lx + 12.0, ny, cw - 24.0, 22.0), TextStyle::Small10Med, p.text_tertiary);
+            ny += 26.0;
+        } else {
+            for (i, net) in state.cc_wifi_networks.iter().take(5).enumerate() {
+                let nr = Rect::new(lx + 10.0, ny, cw - 20.0, 28.0);
+                let id = format!("cc_wifi_{}", i);
+                let hov = state.hovered_id.as_deref() == Some(&id);
+                ctx.fill_rrect(nr, 8.0, if net.connected { p.accent_tint } else if hov { p.elevated_hover } else { p.elevated });
+                ctx.draw_wifi_signal(nr.x + 14.0, nr.y + 14.0, 12.0, net.bars.max(1), if net.connected { theme::EMERALD } else { p.accent_light }, theme::rgba(255, 255, 255, 0.18));
+                ctx.draw_text(&net.ssid, Rect::new(nr.x + 30.0, nr.y, nr.w - 114.0, 28.0), TextStyle::Body11Med, p.text_primary);
+                let badge = if net.connected { "Desconectar" } else if net.saved { "Conectar" } else { "Abrir Ajustes" };
+                ctx.draw_text_right(badge, Rect::new(nr.x + nr.w - 82.0, nr.y, 74.0, 28.0), TextStyle::Small9Reg, if net.connected { theme::EMERALD } else { p.accent_light });
+                let act = if net.connected {
+                    Action::DisconnectWifi
+                } else if net.saved || !net.secured {
+                    Action::ConnectWifi(net.ssid.clone())
+                } else {
+                    Action::LaunchAuraSettings(Some("network".into()))
+                };
+                hits.push(HitRegion { id, rect: nr, action: act, right_action: None, tooltip: None, slider: None });
+                ny += 34.0;
+            }
+        }
+
+        if !state.cc_vpn_profiles.is_empty() {
+            ctx.draw_text("PERFILES VPN", Rect::new(lx + 12.0, ny + 2.0, cw - 24.0, 14.0), TextStyle::Small9Reg, p.text_tertiary);
+            ny += 18.0;
+            for (i, vpn) in state.cc_vpn_profiles.iter().take(3).enumerate() {
+                let vr = Rect::new(lx + 10.0, ny, cw - 20.0, 26.0);
+                let id = format!("cc_vpn_{}", i);
+                ctx.fill_rrect(vr, 8.0, if vpn.connected { p.accent_tint } else { p.elevated });
+                ctx.draw_text(&vpn.name, Rect::new(vr.x + 10.0, vr.y, vr.w - 92.0, 26.0), TextStyle::Small10Bold, p.text_primary);
+                ctx.draw_text_right(if vpn.connected { "Conectada" } else { "Conectar" }, Rect::new(vr.x + vr.w - 78.0, vr.y, 70.0, 26.0), TextStyle::Small9Reg, if vpn.connected { theme::EMERALD } else { p.accent_light });
+                hits.push(HitRegion { id, rect: vr, action: Action::ToggleVpnProfile(vpn.name.clone(), vpn.connected), right_action: None, tooltip: None, slider: None });
+                ny += 30.0;
+            }
+        }
+
+        y += drawer_h + 10.0;
+    }
 
     // Inline Keyboard Layout Drawer
     if state.cc_keyboard_menu_open {

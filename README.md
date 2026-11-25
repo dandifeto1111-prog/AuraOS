@@ -5,7 +5,7 @@
   <p>Conserva toda la compatibilidad de juegos, DirectX, drivers y anti-cheats de Windows (Riot Vanguard, Steam, Epic), mientras reemplaza la interfaz pesada por una suite ultrarrápida estilo <em>Drool Dark Mode</em>.</p>
 
   <p>
-    <a href="https://github.com/dandifeto1111-prog/AuraOS/releases/latest"><img src="https://img.shields.io/badge/Release-v5.2.2-7C5CFF?style=for-the-badge&logo=github" alt="Release v5.2.2" /></a>
+    <a href="https://github.com/dandifeto1111-prog/AuraOS/releases/latest"><img src="https://img.shields.io/badge/Release-v5.3.0-7C5CFF?style=for-the-badge&logo=github" alt="Release v5.3.0" /></a>
     <img src="https://img.shields.io/badge/100%25_Rust-Direct2D_%2B_DirectComposition-F4727F?style=for-the-badge&logo=rust" alt="100% Rust" />
     <img src="https://img.shields.io/badge/OS-Windows_11_x64-34D399?style=for-the-badge&logo=windows11" alt="Windows 11" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-FBBF24?style=for-the-badge" alt="MIT License" /></a>
@@ -22,9 +22,16 @@ Cada aplicación del sistema está acelerada por hardware con **Direct2D y Direc
 
 ---
 
-## 🖼️ Galería del Sistema y Novedades (`v5.2.2`)
+## 🖼️ Galería del Sistema y Novedades (`v5.3.0`)
 
-### 🧹 Nuevo en `v5.2.2`: Repositorio Limpio, Instalador Rápido (sin APB) + Descarga Automática, `AuraFiles` OLE Drag & Drop y `AuraLock`
+### 🚀 Nuevo en `v5.3.0`: Cero Bloqueos + Multi-Monitor, Paridad Total en `AuraFiles`, Menú Dock «Finalizar tarea», `AuraTasks` Admin y Redes + Compartir Internet (Hotspot)
+- **Estabilidad Blindada (0 congelamientos):** Reparada la alineación PE `.rsrc` (`RT_MANIFEST` XML íntegro en los 11 binarios: `AuraSettings`, `AuraPhotos`, `AuraLock` ya abren siempre al instante), lanzamiento 100% asíncrono sin bloquear `AuraShell`/`WH_KEYBOARD_LL`, cierre inmediato de Launchpad al abrir apps, Watchdog de overlays, fix de multi-monitor (`MONITORINFOF_PRIMARY`) y fix del crash `0x0000087a` en `AuraPDF`/`AuraFiles` (WinRT MTA dedicado).
+- **Dock con Clic Derecho «Finalizar tarea (Forzar cierre)»:** Haz clic derecho en cualquier app abierta de la barra de tareas para enfocar, minimizar, abrir nueva instancia, abrir carpeta o **forzar el cierre del árbol de procesos** al instante.
+- **`AuraTasks` sin bloqueos de permisos:** `SeDebugPrivilege`, botón **`Modo Admin`**, elevación UAC automática al finalizar tareas o servicios protegidos y menú contextual clic derecho por proceso.
+- **`AuraFiles` nivel Explorador de Windows:** Navegación **`← / → / ↑ / ↻`** + botones laterales del mouse + `Alt+←/→`, barra de ruta editable (`Ctrl+L` / clic / copiar y pegar rutas con `%ENV%`), clic derecho completo en carpetas, archivos, multiselección y fondo (*Abrir con...*, *Propiedades nativas*, *Renombrar F2*, *Pegar desde Explorador Windows `CF_HDROP`*, *Favoritos anclados*, *Ocultos `Ctrl+H`*, *Nuevo `.txt`*, *Ordenar por Nombre/Tipo/Tamaño/Fecha*).
+- **Redes de Windows + Compartir Internet (Mobile Hotspot WinRT):** Toggle en 1 clic de **Compartir Internet (Zona Wi-Fi móvil)**, **Modo Avión**, **Escáner Wi-Fi con contraseña/desconectar/olvidar**, **Perfiles VPN**, **IPv4 / Puerta de enlace / DNS / MAC / Proxy** y **Test de Ping** tanto en el **Centro de Control** como en **`AuraSettings → Red y Bluetooth`**.
+
+### 🧹 v5.2.2: Repositorio Limpio, Instalador Rápido (sin APB) + Descarga Automática, `AuraFiles` OLE Drag & Drop y `AuraLock`
 - **Carpeta principal 100% ordenada:** Al descargar el `.zip` o abrir el proyecto, **solo `AuraShell-Setup.exe`** queda fuera de subcarpetas; todos los binarios viven en `app/`, los iconos HD en `assets/icons/` y los scripts PowerShell en `scripts/`.
 - **Instalador Inteligente mejorado (`AuraShell-Setup.exe`):** Incluye botón **`Actualización rápida (sin APB)`** / **`Instalación rápida (sin APB)`** visible desde el inicio, y descarga automáticamente el paquete oficial desde GitHub si ejecutas `AuraShell-Setup.exe` suelto.
 - **`AuraFiles` Multiselección + Drag & Drop OLE (`CF_HDROP`):** Arrastra múltiples archivos desde `AuraFiles` directo a cualquier app de Windows.

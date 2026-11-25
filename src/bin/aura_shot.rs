@@ -863,6 +863,14 @@ unsafe extern "system" fn shot_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
                 }
                 true
             }
+            0x0215 | 0x001F => {
+                // WM_CAPTURECHANGED / WM_CANCELMODE: release any stuck drag capture cleanly!
+                rt.selecting_region = false;
+                rt.active_stroke.clear();
+                rt.drag_mark_start = None;
+                rt.drag_mark_cur = None;
+                true
+            }
             WM_RBUTTONDOWN => {
                 rt.execute(ShotAct::CancelExit);
                 true

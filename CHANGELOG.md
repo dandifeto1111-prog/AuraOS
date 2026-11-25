@@ -1,5 +1,32 @@
 # Historial de Versiones — AuraOS
 
+## v5.3.0 (2026-11-25)
+- **Corrección Total de Bloqueos del Sistema (Launchpad → Configuración), Multi-Monitor y Crash SxS / PDF:**
+  - **Fix crítico de manifiesto PE `.rsrc` (`build.rs`):** Alineación de recursos a 8/16 bytes (`IMAGE_SCN_ALIGN_8BYTES`) para que el enlazador GNU `ld` nunca trunque los últimos bytes del `RT_MANIFEST` XML en `AuraSettings.exe`, `AuraPhotos.exe` y `AuraLock.exe` (`ERROR_SXS_CANT_GEN_ACTCTX`). Los 11 binarios ahora arrancan y validan su XML SxS al 100%.
+  - **Cero bloqueos al abrir apps desde Launchpad (`Tecla Win`) u Overview (`src/main.rs`, `src/win32_shell.rs`):**
+    - `hide_all_overlays_immediately()` oculta instantáneamente (`SW_HIDE`) Launchpad/Overview antes de lanzar cualquier programa o UAC.
+    - `launch_target()` ahora es **100% asíncrono** en hilo desacoplado con `ShellExecuteExW(SEE_MASK_FLAG_NO_UI | SEE_MASK_ASYNCOK)` y `Command::new` directo para `.exe`, evitando que un acceso directo roto o UAC congele el hilo UI de `AuraShell` o el hook `WH_KEYBOARD_LL`.
+    - `wake_anim_timer()` garantizado en todos los `open_*` / `close_*` + **Watchdog automático de overlays** en `tick_fast_120ms()` que oculta cualquier panel cerrado residual.
+    - `bring_to_front()` protegido contra ventanas colgadas (`IsHungAppWindow`) evitando deadlocks con `AttachThreadInput`.
+    - **Soporte Multi-Monitor corregido:** `is_fullscreen_app_active()` y `is_any_maximized_window_visible()` ahora verifican `MONITORINFOF_PRIMARY`, evitando que ventanas maximizadas o juegos en el Monitor 2 oculten o bloqueen AuraOS en el Monitor 1.
+    - Manejo limpio de `WM_CAPTURECHANGED` y `WM_CANCELMODE` en `AuraShell`, `AuraSettings`, `AuraFiles`, `AuraPhotos`, `AuraPlayer` y `AuraShot`.
+  - **Fix crash `KERNELBASE.dll` (`0x0000087a`) en `AuraPDF.exe` y `AuraFiles.exe` (`src/pdf_engine.rs`):** Todas las llamadas WinRT `Windows.Data.Pdf` ahora corren en un hilo MTA dedicado (`COINIT_MULTITHREADED`), eliminando violaciones de apartamento STA/OLE.
+- **Menú Contextual Clic Derecho en el Dock / Barra de Tareas con «Finalizar tarea (Forzar cierre)» (`src/ui_dock.rs`, `src/main.rs`):**
+  - Clic derecho en cualquier app abierta del Dock abre un menú flotante estilo AuraOS con: **Enfocar/Restaurar**, **Minimizar**, **Nueva instancia**, **Abrir ubicación en AuraFiles**, **Abrir en AuraTasks**, **Cerrar ventana** y **Finalizar tarea (Forzar cierre)** (mata el árbol completo de procesos con elevación UAC automática si se requieren permisos).
+  - En apps ancladas no abiertas ofrece **Abrir**, **Ejecutar como Administrador** y **Abrir ubicación**.
+- **`AuraTasks.exe` — Elevación Automática UAC, `SeDebugPrivilege`, Modo Admin y Clic Derecho (`src/bin/aura_tasks.rs`):**
+  - Habilita `SeDebugPrivilege` al arrancar e incluye botón **`Modo Admin`** / insignia **`Admin Activo`** en la barra superior.
+  - Al finalizar procesos o árboles (`Finalizar`, `Finalizar árbol`, `Supr`) o controlar servicios protegidos, si los permisos estándar fallan con `ERROR_ACCESS_DENIED`, ofrece automáticamente elevación UAC (`taskkill /F /T /PID` o `sc` con `SW_HIDE` en segundo plano) e informa con claridad si un proceso está protegido por el kernel (PPL / Anti-Cheat).
+  - Nuevo **menú contextual clic derecho** en cualquier fila de proceso.
+- **`AuraFiles.exe` — Paridad Completa con el Explorador de Archivos de Windows (`src/bin/aura_files.rs`, `src/ole_dnd.rs`):**
+  - **Navegación completa corregida:** Botones visuales **`←` Atrás**, **`→` Adelante**, **`↑` Subir** y **`↻` Actualizar (`F5`)**, botones laterales del mouse (**`XBUTTON1` / `XBUTTON2`**) y atajos **`Alt+←` / `Alt+→` / `Alt+↑`**.
+  - **Barra de dirección editable + Migas de pan interactivas (`Ctrl+L` / `Alt+D` / `F4`):** Haz clic en cualquier carpeta de la ruta para saltar, haz clic en el espacio libre para escribir/pegar rutas directamente (`C:\Users\...\Downloads`, `%USERPROFILE%`, rutas entre comillas), botón 1-clic **Copiar ruta** (`⧉`) y clic derecho en la barra para *Copiar* o *Pegar e ir*.
+  - **Menú contextual clic derecho completo** en **Carpetas**, **Archivos**, **Multiselección** y **Espacio vacío**: *Abrir*, *Abrir en nueva pestaña*, *Abrir con...* (diálogo nativo Windows), *Abrir en Terminal* (con fallback PowerShell), *Cortar / Copiar / Pegar* (ahora lee también el portapapeles nativo `CF_HDROP` del Explorador de Windows!), *Copiar ruta (`Ctrl+Shift+C`)*, *Renombrar (`F2` con `Ctrl+C/V/A`)*, *Duplicar archivos y carpetas*, *Comprimir / Extraer ZIP sin ventana azul*, *Anclar a Favoritos en barra lateral*, *Mostrar archivos ocultos (`Ctrl+H`)*, *Ordenar por Nombre / Tipo / Tamaño / Fecha*, *Nuevo documento `.txt`*, *Nueva carpeta (`Ctrl+Shift+N` con renombrado inmediato)*, *Mostrar en Explorador de Windows*, *Propiedades nativas de Windows (`Alt+Enter`)* y *Eliminar a Papelera / Permanente (`Shift+Supr`)*.
+- **Suite Completa de Redes de Windows + Compartir Internet (Mobile Hotspot WinRT) (`src/radios.rs`, `src/ui_control_center.rs`, `src/bin/aura_settings.rs`):**
+  - **Compartir Internet (Zona con cobertura inalámbrica móvil):** Implementado nativamente con WinRT `NetworkOperatorTetheringManager` (0 UAC): activa/apaga Hotspot, muestra dispositivos conectados (`N/8`), permite editar **Nombre de red (SSID)** y **Contraseña** en `AuraSettings → Red y Bluetooth`, y se controla en 1 clic desde el Centro de Control.
+  - **Controles Rápidos de Red (2×4 + Cajón de Red en vivo en el Centro de Control):** Tarjetas de **Red/Wi-Fi** (despliega escáner de redes Wi-Fi cercanas, conectar/desconectar, IPv4, velocidad y VPN), **Compartir Red (Hotspot)**, **Bluetooth** y **Modo Avión**.
+  - **`AuraSettings → Red y Bluetooth` renovado:** Telemetría real de adaptador (**IPv4, Puerta de enlace, DNS, MAC, Velocidad Mbps, Proxy**), **Test de Latencia (Ping)** en vivo, **Zona Wi-Fi móvil editable**, **Escáner y conexión Wi-Fi con contraseña/Olvidar red**, **Perfiles VPN de Windows**, **DNS presets (Cloudflare / Google / Quad9 / DHCP)** y **Renovar IP / Flush DNS**.
+
 ## v5.2.2 (2026-11-25)
 - **Carpeta y Paquete Oficial Reorganizados (`AuraShell-Setup.exe` único en raíz + subcarpeta `app/`):**
   - El paquete de lanzamiento (`AuraOS-v5.2.2-Windows-x64.zip`) y el repositorio ahora mantienen limpia la carpeta principal: **solo `AuraShell-Setup.exe`** queda fuera de subcarpetas; todos los binarios (`.exe`), iconos HD (`assets/icons/`), scripts de PowerShell (`scripts/`) y manifiesto quedan ordenados dentro de `app/`, `assets/icons/` y `scripts/`.

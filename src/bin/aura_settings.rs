@@ -159,8 +159,25 @@ enum SetAct {
     // Network
     ToggleWifi,
     ToggleBluetooth,
+    ToggleAirplaneMode,
+    ToggleHotspot,
+    FocusHotspotSsid,
+    FocusHotspotPass,
+    SaveHotspotConfig,
+    ScanWifiNetworks,
+    ConnectWifiSaved(String),
+    PromptWifiPassword(String),
+    FocusWifiPassInput,
+    SubmitWifiPassword,
+    CancelWifiPassword,
+    DisconnectWifi,
+    ForgetWifi(String),
+    ToggleVpn(String, bool),
+    TestPing,
+    RenewIp,
     FlushDns,
     SetDnsPreset(&'static str),
+    OpenWinNetworkSettings,
     // Personalize
     ToggleShellSetting(&'static str),
     SetThemeScheme(&'static str),
@@ -224,6 +241,13 @@ enum BgUpdate {
         apps: Vec<AudioAppSession>,
     },
     Radios(RadioStates),
+    NetworkFull {
+        radios: RadioStates,
+        details: radios::NetworkDetails,
+        wifis: Vec<radios::WifiNetwork>,
+        vpns: Vec<radios::VpnProfile>,
+    },
+    PingMs(Option<u32>),
     PowerPlan(String),
     TempBytes(u64),
     Toast(String, bool),
@@ -533,6 +557,18 @@ struct SettingsRuntime {
     mics: Vec<AudioDevice>,
     app_sessions: Vec<AudioAppSession>,
     radios: RadioStates,
+    net_details: radios::NetworkDetails,
+    wifi_networks: Vec<radios::WifiNetwork>,
+    wifi_scanning: bool,
+    vpn_profiles: Vec<radios::VpnProfile>,
+    ping_ms: Option<u32>,
+    hs_ssid_draft: String,
+    hs_pass_draft: String,
+    hs_ssid_focused: bool,
+    hs_pass_focused: bool,
+    wifi_pwd_target: Option<String>,
+    wifi_pwd_draft: String,
+    wifi_pwd_focused: bool,
     pin_draft: String,
     pin_focused: bool,
     city_draft: String,
@@ -622,11 +658,36 @@ impl SettingsRuntime {
         });
     }
 
-    fn spawn_radios_refresh(&self) {
+    fn spawn_radios_refresh(&mut self) {
+        self.wifi_scanning = true;
         let tx = self.bg_tx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(BgUpdate::Radios(radios::query_radio_states()));
+            unsafe {
+                let _ = windows::Win32::System::Com::CoInitializeEx(
+                    None,
+                    windows::Win32::System::Com::COINIT_MULTITHREADED,
+                );
+            }
+            let r = radios::query_radio_states();
+            let details = radios::query_network_details();
+            let wifis = radios::scan_wifi_networks(&r.wifi_ssid);
+            let vpns = radios::list_vpn_profiles();
+            let _ = tx.send(BgUpdate::NetworkFull {
+                radios: r,
+                details,
+                wifis,
+                vpns,
+            });
         });
+    }
+
+    fn unfocus_all_inputs(&mut self) {
+        self.pin_focused = false;
+        self.city_focused = false;
+        self.github_focused = false;
+        self.hs_ssid_focused = false;
+        self.hs_pass_focused = false;
+        self.wifi_pwd_focused = false;
     }
 
     fn poll_bg(&mut self) {
@@ -648,7 +709,36 @@ impl SettingsRuntime {
                     dirty = true;
                 }
                 BgUpdate::Radios(r) => {
+                    if !self.hs_ssid_focused && !r.hotspot.ssid.is_empty() {
+                        self.hs_ssid_draft = r.hotspot.ssid.clone();
+                    }
+                    if !self.hs_pass_focused && !r.hotspot.passphrase.is_empty() {
+                        self.hs_pass_draft = r.hotspot.passphrase.clone();
+                    }
                     self.radios = r;
+                    dirty = true;
+                }
+                BgUpdate::NetworkFull { radios: r, details, wifis, vpns } => {
+                    if !self.hs_ssid_focused && !r.hotspot.ssid.is_empty() {
+                        self.hs_ssid_draft = r.hotspot.ssid.clone();
+                    }
+                    if !self.hs_pass_focused && !r.hotspot.passphrase.is_empty() {
+                        self.hs_pass_draft = r.hotspot.passphrase.clone();
+                    }
+                    self.radios = r;
+                    self.net_details = details;
+                    self.wifi_networks = wifis;
+                    self.vpn_profiles = vpns;
+                    self.wifi_scanning = false;
+                    dirty = true;
+                }
+                BgUpdate::PingMs(ms) => {
+                    self.ping_ms = ms;
+                    let msg = match ms {
+                        Some(v) => format!("Latencia a Internet: {} ms (Cloudflare 1.1.1.1)", v),
+                        None => "Sin respuesta de Internet (verifica tu conexión)".into(),
+                    };
+                    self.toast = Some((msg, ms.is_some(), Instant::now()));
                     dirty = true;
                 }
                 BgUpdate::PowerPlan(p) => {
@@ -719,9 +809,7 @@ impl SettingsRuntime {
             SetAct::SelectTab(t) => {
                 self.active_tab = t;
                 self.scroll = 0.0;
-                self.pin_focused = false;
-                self.city_focused = false;
-                self.github_focused = false;
+                self.unfocus_all_inputs();
                 if t == Tab::Sound {
                     self.spawn_audio_refresh();
                 } else if t == Tab::Network {
@@ -861,8 +949,15 @@ impl SettingsRuntime {
                 self.radios.wifi_on = !self.radios.wifi_on;
                 let tx = self.bg_tx.clone();
                 std::thread::spawn(move || {
+                    unsafe {
+                        let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+                    }
                     let _ = radios::toggle_wifi();
-                    let _ = tx.send(BgUpdate::Radios(radios::query_radio_states()));
+                    let r = radios::query_radio_states();
+                    let details = radios::query_network_details();
+                    let wifis = radios::scan_wifi_networks(&r.wifi_ssid);
+                    let vpns = radios::list_vpn_profiles();
+                    let _ = tx.send(BgUpdate::NetworkFull { radios: r, details, wifis, vpns });
                 });
                 self.redraw();
             }
@@ -870,10 +965,216 @@ impl SettingsRuntime {
                 self.radios.bt_on = !self.radios.bt_on;
                 let tx = self.bg_tx.clone();
                 std::thread::spawn(move || {
+                    unsafe {
+                        let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+                    }
                     let _ = radios::toggle_bluetooth();
                     let _ = tx.send(BgUpdate::Radios(radios::query_radio_states()));
                 });
                 self.redraw();
+            }
+            SetAct::ToggleAirplaneMode => {
+                let next = !self.radios.airplane_mode;
+                self.radios.airplane_mode = next;
+                let tx = self.bg_tx.clone();
+                std::thread::spawn(move || {
+                    unsafe {
+                        let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+                    }
+                    let ok = radios::set_airplane_mode(next);
+                    let r = radios::query_radio_states();
+                    let _ = tx.send(BgUpdate::Radios(r));
+                    let _ = tx.send(BgUpdate::Toast(
+                        if !ok {
+                            "Sin radios inalámbricas detectadas".into()
+                        } else if next {
+                            "Modo Avión activado".into()
+                        } else {
+                            "Modo Avión desactivado".into()
+                        },
+                        ok,
+                    ));
+                });
+                self.redraw();
+            }
+            SetAct::ToggleHotspot => {
+                let tx = self.bg_tx.clone();
+                self.show_toast("Actualizando Compartir Internet (Hotspot)...", true);
+                std::thread::spawn(move || {
+                    unsafe {
+                        let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+                    }
+                    let res = radios::toggle_hotspot();
+                    let r = radios::query_radio_states();
+                    let _ = tx.send(BgUpdate::Radios(r));
+                    match res {
+                        Ok(true) => { let _ = tx.send(BgUpdate::Toast("Zona Wi-Fi (Compartir Internet) ACTIVADA".into(), true)); }
+                        Ok(false) => { let _ = tx.send(BgUpdate::Toast("Zona Wi-Fi (Compartir Internet) desactivada".into(), true)); }
+                        Err(e) => { let _ = tx.send(BgUpdate::Toast(e, false)); }
+                    }
+                });
+            }
+            SetAct::FocusHotspotSsid => {
+                self.unfocus_all_inputs();
+                self.hs_ssid_focused = true;
+                self.redraw();
+            }
+            SetAct::FocusHotspotPass => {
+                self.unfocus_all_inputs();
+                self.hs_pass_focused = true;
+                self.redraw();
+            }
+            SetAct::SaveHotspotConfig => {
+                let ssid = self.hs_ssid_draft.trim().to_string();
+                let pass = self.hs_pass_draft.trim().to_string();
+                if let Err(e) = radios::validate_hotspot_credentials(&ssid, &pass) {
+                    self.show_toast(e, false);
+                    return;
+                }
+                self.hs_ssid_focused = false;
+                self.hs_pass_focused = false;
+                let tx = self.bg_tx.clone();
+                self.show_toast("Guardando nombre y contraseña del Hotspot...", true);
+                std::thread::spawn(move || {
+                    unsafe {
+                        let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+                    }
+                    match radios::configure_hotspot(&ssid, &pass) {
+                        Ok(()) => {
+                            let _ = tx.send(BgUpdate::Radios(radios::query_radio_states()));
+                            let _ = tx.send(BgUpdate::Toast(format!("Hotspot '{}' configurado correctamente", ssid), true));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(BgUpdate::Toast(e, false));
+                        }
+                    }
+                });
+            }
+            SetAct::ScanWifiNetworks => {
+                self.spawn_radios_refresh();
+                self.show_toast("Escaneando redes Wi-Fi y adaptadores...", true);
+            }
+            SetAct::ConnectWifiSaved(ssid) => {
+                let tx = self.bg_tx.clone();
+                self.show_toast(format!("Conectando a '{}'...", ssid), true);
+                std::thread::spawn(move || {
+                    let res = radios::connect_wifi(&ssid, None);
+                    std::thread::sleep(std::time::Duration::from_millis(900));
+                    let r = radios::query_radio_states();
+                    let details = radios::query_network_details();
+                    let wifis = radios::scan_wifi_networks(&r.wifi_ssid);
+                    let vpns = radios::list_vpn_profiles();
+                    let _ = tx.send(BgUpdate::NetworkFull { radios: r, details, wifis, vpns });
+                    match res {
+                        Ok(m) => { let _ = tx.send(BgUpdate::Toast(m, true)); }
+                        Err(e) => { let _ = tx.send(BgUpdate::Toast(e, false)); }
+                    }
+                });
+            }
+            SetAct::PromptWifiPassword(ssid) => {
+                self.unfocus_all_inputs();
+                self.wifi_pwd_target = Some(ssid);
+                self.wifi_pwd_draft.clear();
+                self.wifi_pwd_focused = true;
+                self.redraw();
+            }
+            SetAct::FocusWifiPassInput => {
+                self.unfocus_all_inputs();
+                self.wifi_pwd_focused = true;
+                self.redraw();
+            }
+            SetAct::CancelWifiPassword => {
+                self.wifi_pwd_target = None;
+                self.wifi_pwd_draft.clear();
+                self.wifi_pwd_focused = false;
+                self.redraw();
+            }
+            SetAct::SubmitWifiPassword => {
+                let Some(ssid) = self.wifi_pwd_target.take() else { return };
+                let pwd = std::mem::take(&mut self.wifi_pwd_draft);
+                self.wifi_pwd_focused = false;
+                let tx = self.bg_tx.clone();
+                self.show_toast(format!("Conectando a '{}'...", ssid), true);
+                std::thread::spawn(move || {
+                    let res = radios::connect_wifi(&ssid, Some(&pwd));
+                    std::thread::sleep(std::time::Duration::from_millis(1200));
+                    let r = radios::query_radio_states();
+                    let details = radios::query_network_details();
+                    let wifis = radios::scan_wifi_networks(&r.wifi_ssid);
+                    let vpns = radios::list_vpn_profiles();
+                    let _ = tx.send(BgUpdate::NetworkFull { radios: r, details, wifis, vpns });
+                    match res {
+                        Ok(m) => { let _ = tx.send(BgUpdate::Toast(m, true)); }
+                        Err(e) => { let _ = tx.send(BgUpdate::Toast(e, false)); }
+                    }
+                });
+            }
+            SetAct::DisconnectWifi => {
+                let tx = self.bg_tx.clone();
+                std::thread::spawn(move || {
+                    let ok = radios::disconnect_wifi();
+                    let r = radios::query_radio_states();
+                    let details = radios::query_network_details();
+                    let wifis = radios::scan_wifi_networks(&r.wifi_ssid);
+                    let vpns = radios::list_vpn_profiles();
+                    let _ = tx.send(BgUpdate::NetworkFull { radios: r, details, wifis, vpns });
+                    let _ = tx.send(BgUpdate::Toast(if ok { "Wi-Fi desconectado".into() } else { "Error al desconectar Wi-Fi".into() }, ok));
+                });
+            }
+            SetAct::ForgetWifi(ssid) => {
+                let tx = self.bg_tx.clone();
+                std::thread::spawn(move || {
+                    let ok = radios::forget_wifi(&ssid);
+                    let r = radios::query_radio_states();
+                    let details = radios::query_network_details();
+                    let wifis = radios::scan_wifi_networks(&r.wifi_ssid);
+                    let vpns = radios::list_vpn_profiles();
+                    let _ = tx.send(BgUpdate::NetworkFull { radios: r, details, wifis, vpns });
+                    let _ = tx.send(BgUpdate::Toast(
+                        if ok { format!("Red '{}' olvidada", ssid) } else { "No se pudo olvidar la red".into() },
+                        ok,
+                    ));
+                });
+            }
+            SetAct::ToggleVpn(name, is_conn) => {
+                let tx = self.bg_tx.clone();
+                self.show_toast(format!("{} VPN '{}'...", if is_conn { "Desconectando" } else { "Conectando" }, name), true);
+                std::thread::spawn(move || {
+                    let res = radios::toggle_vpn(&name, is_conn);
+                    let r = radios::query_radio_states();
+                    let details = radios::query_network_details();
+                    let wifis = radios::scan_wifi_networks(&r.wifi_ssid);
+                    let vpns = radios::list_vpn_profiles();
+                    let _ = tx.send(BgUpdate::NetworkFull { radios: r, details, wifis, vpns });
+                    match res {
+                        Ok(m) => { let _ = tx.send(BgUpdate::Toast(m, true)); }
+                        Err(e) => { let _ = tx.send(BgUpdate::Toast(e, false)); }
+                    }
+                });
+            }
+            SetAct::TestPing => {
+                let tx = self.bg_tx.clone();
+                self.show_toast("Midiendo latencia a Internet...", true);
+                std::thread::spawn(move || {
+                    let ms = radios::measure_internet_latency_ms();
+                    let _ = tx.send(BgUpdate::PingMs(ms));
+                });
+            }
+            SetAct::RenewIp => {
+                let tx = self.bg_tx.clone();
+                self.show_toast("Renovando dirección IP y DNS...", true);
+                std::thread::spawn(move || {
+                    let ok = radios::renew_ip_address();
+                    let r = radios::query_radio_states();
+                    let details = radios::query_network_details();
+                    let wifis = radios::scan_wifi_networks(&r.wifi_ssid);
+                    let vpns = radios::list_vpn_profiles();
+                    let _ = tx.send(BgUpdate::NetworkFull { radios: r, details, wifis, vpns });
+                    let _ = tx.send(BgUpdate::Toast(
+                        if ok { "IP renovada correctamente".into() } else { "No se pudo renovar la IP".into() },
+                        ok,
+                    ));
+                });
             }
             SetAct::FlushDns => {
                 let tx = self.bg_tx.clone();
@@ -894,10 +1195,14 @@ impl SettingsRuntime {
                 let script = match preset {
                     "cf" => "Get-NetAdapter | Where-Object Status -eq 'Up' | Set-DnsClientServerAddress -ServerAddresses ('1.1.1.1','1.0.0.1')",
                     "google" => "Get-NetAdapter | Where-Object Status -eq 'Up' | Set-DnsClientServerAddress -ServerAddresses ('8.8.8.8','8.8.4.4')",
+                    "quad9" => "Get-NetAdapter | Where-Object Status -eq 'Up' | Set-DnsClientServerAddress -ServerAddresses ('9.9.9.9','149.112.112.112')",
                     _ => "Get-NetAdapter | Where-Object Status -eq 'Up' | Set-DnsClientServerAddress -ResetServerAddresses",
                 };
-                win32_shell::launch_target("powershell.exe", &format!("-NoProfile -Command \"Start-Process powershell -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile -Command {}'\"", script));
+                win32_shell::run_as_admin("powershell.exe", &format!("-NoProfile -WindowStyle Hidden -Command \"{}\"", script));
                 self.show_toast("Aplicando DNS (acepta UAC si aparece)...", true);
+            }
+            SetAct::OpenWinNetworkSettings => {
+                win32_shell::launch_target("ms-settings:network", "");
             }
             SetAct::ToggleShellSetting(k) => {
                 match k {
@@ -1080,6 +1385,7 @@ impl SettingsRuntime {
             SetAct::UninstallProgram(cmd) => {
                 let _ = std::process::Command::new("cmd.exe")
                     .args(["/C", &cmd])
+                    .creation_flags(CREATE_NO_WINDOW)
                     .spawn();
                 self.show_toast("Desinstalador iniciado en segundo plano", true);
             }
@@ -1159,6 +1465,18 @@ impl SettingsRuntime {
             mics: &self.mics,
             app_sessions: &self.app_sessions,
             radios: &self.radios,
+            net_details: &self.net_details,
+            wifi_networks: &self.wifi_networks,
+            wifi_scanning: self.wifi_scanning,
+            vpn_profiles: &self.vpn_profiles,
+            ping_ms: self.ping_ms,
+            hs_ssid_draft: &self.hs_ssid_draft,
+            hs_pass_draft: &self.hs_pass_draft,
+            hs_ssid_focused: self.hs_ssid_focused,
+            hs_pass_focused: self.hs_pass_focused,
+            wifi_pwd_target: self.wifi_pwd_target.as_deref(),
+            wifi_pwd_draft: &self.wifi_pwd_draft,
+            wifi_pwd_focused: self.wifi_pwd_focused,
             pin_draft: &self.pin_draft,
             pin_focused: self.pin_focused,
             city_draft: &self.city_draft,
@@ -1214,6 +1532,18 @@ struct SettingsSnap<'a> {
     mics: &'a [AudioDevice],
     app_sessions: &'a [AudioAppSession],
     radios: &'a RadioStates,
+    net_details: &'a radios::NetworkDetails,
+    wifi_networks: &'a [radios::WifiNetwork],
+    wifi_scanning: bool,
+    vpn_profiles: &'a [radios::VpnProfile],
+    ping_ms: Option<u32>,
+    hs_ssid_draft: &'a str,
+    hs_pass_draft: &'a str,
+    hs_ssid_focused: bool,
+    hs_pass_focused: bool,
+    wifi_pwd_target: Option<&'a str>,
+    wifi_pwd_draft: &'a str,
+    wifi_pwd_focused: bool,
     pin_draft: &'a str,
     pin_focused: bool,
     city_draft: &'a str,
@@ -1373,7 +1703,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             let specs = [
                 ("PROCESADOR", format!("{} hilos lógicos", s.cpu_cores), "Arquitectura x64".to_string()),
                 ("MEMORIA RAM", format!("{:.1} / {:.1} GB", s.ram_used, s.ram_total), format!("{}% en uso", s.ram_pct)),
-                ("ENTORNO", "AuraOS v4.3.0".to_string(), "Motor Pure-Rust Direct2D".to_string()),
+                ("ENTORNO", format!("AuraOS v{}", env!("CARGO_PKG_VERSION")), "Motor Pure-Rust Direct2D".to_string()),
             ];
             for (i, (k, v, sub)) in specs.into_iter().enumerate() {
                 let bx = hc.x + 18.0 + i as f32 * col_w;
@@ -1562,7 +1892,8 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             }
         }
         Tab::Network => {
-            let nc = Rect::new(cx, y, cw, 74.0);
+            // 1. HERO CONNECTION STATUS & LIVE ADAPTER TELEMETRY (IPv4, Gateway, DNS, MAC, Link Speed, Ping!)
+            let nc = Rect::new(cx, y, cw, 114.0);
             ctx.fill_card(nc, 16.0, theme::SURFACE, theme::VIOLET_BORDER);
             let net_icon = match s.radios.net_kind {
                 radios::NetKind::Ethernet => VectorIcon::Ethernet,
@@ -1574,29 +1905,241 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 radios::NetKind::Wifi => theme::VIOLET_LIGHT,
                 radios::NetKind::Offline => theme::CORAL,
             };
-            ctx.draw_vector_icon(net_icon, nc.x + 32.0, nc.y + 37.0, 22.0, net_col);
-            ctx.draw_text(&format!("Estado de conexión: {}", s.radios.net_label), Rect::new(nc.x + 62.0, nc.y + 14.0, cw - 80.0, 22.0), TextStyle::Title16Semi, theme::TEXT_PRIMARY);
-            ctx.draw_text("Control directo de adaptadores y radios WinRT sin abrir Windows Settings", Rect::new(nc.x + 62.0, nc.y + 40.0, cw - 80.0, 18.0), TextStyle::Body11Reg, theme::TEXT_SECONDARY);
-            y += 90.0;
+            ctx.draw_vector_icon(net_icon, nc.x + 32.0, nc.y + 34.0, 22.0, net_col);
+            ctx.draw_text(
+                &format!("{}  ·  {}", s.radios.net_label, if s.net_details.adapter_name.is_empty() { "Red" } else { &s.net_details.adapter_name }),
+                Rect::new(nc.x + 62.0, nc.y + 12.0, cw - 208.0, 22.0),
+                TextStyle::Title16Semi,
+                theme::TEXT_PRIMARY,
+            );
+            let ip_line = if !s.net_details.ipv4.is_empty() {
+                format!(
+                    "IPv4: {}   ·   Puerta de enlace: {}   ·   Enlace: {} Mbps",
+                    s.net_details.ipv4,
+                    if s.net_details.gateway.is_empty() { "—" } else { &s.net_details.gateway },
+                    s.net_details.link_speed_mbps
+                )
+            } else {
+                "Sin dirección IPv4 asignada actualmente".to_string()
+            };
+            ctx.draw_text(&ip_line, Rect::new(nc.x + 62.0, nc.y + 38.0, cw - 80.0, 18.0), TextStyle::Mono11Med, theme::TEXT_SECONDARY);
 
-            draw_toggle_row(ctx, Rect::new(cx, y, cw, 52.0), "net_wifi", "Radio Wi-Fi", if s.radios.wifi_available { "Activar o apagar el adaptador Wi-Fi al instante" } else { "Sin adaptador Wi-Fi detectado (PC por Ethernet)" }, s.radios.wifi_on, s.hovered, SetAct::ToggleWifi, hits);
-            y += 60.0;
-            draw_toggle_row(ctx, Rect::new(cx, y, cw, 52.0), "net_bt", "Bluetooth", if s.radios.bt_available { "Activar o apagar radio Bluetooth de Windows" } else { "Sin adaptador Bluetooth detectado" }, s.radios.bt_on, s.hovered, SetAct::ToggleBluetooth, hits);
-            y += 70.0;
+            let dns_str = if s.net_details.dns_servers.is_empty() {
+                "Automático".to_string()
+            } else {
+                s.net_details.dns_servers.join(", ")
+            };
+            let proxy_str = if s.net_details.proxy_enabled {
+                format!("Proxy ON ({})", s.net_details.proxy_server)
+            } else {
+                "Proxy: Directo".to_string()
+            };
+            let mac_line = format!(
+                "DNS: {}   ·   MAC: {}   ·   {}",
+                dns_str,
+                if s.net_details.mac.is_empty() { "—" } else { &s.net_details.mac },
+                proxy_str
+            );
+            ctx.draw_text(&mac_line, Rect::new(nc.x + 62.0, nc.y + 60.0, cw - 80.0, 16.0), TextStyle::Small10Med, theme::TEXT_TERTIARY);
 
+            let ping_lbl = match s.ping_ms {
+                Some(ms) => format!("Ping: {} ms", ms),
+                None => "Test Latencia".to_string(),
+            };
+            let p_btn = Rect::new(nc.x + nc.w - 134.0, nc.y + 14.0, 120.0, 30.0);
+            ctx.fill_card(p_btn, 10.0, if s.hovered == Some("net_ping") { theme::VIOLET } else { theme::ELEVATED }, theme::VIOLET_BORDER);
+            ctx.draw_text_center(&ping_lbl, p_btn, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
+            hits.push(Hit { id: "net_ping".into(), rect: p_btn, act: SetAct::TestPing, slider: None });
+
+            let ref_net = Rect::new(nc.x + nc.w - 134.0, nc.y + 78.0, 120.0, 26.0);
+            ctx.fill_card(ref_net, 9.0, theme::CARD_BG, theme::BORDER);
+            ctx.draw_text_center(if s.wifi_scanning { "Escaneando..." } else { "Actualizar Red" }, ref_net, TextStyle::Small9Reg, theme::VIOLET_LIGHT);
+            hits.push(Hit { id: "net_rescan_top".into(), rect: ref_net, act: SetAct::ScanWifiNetworks, slider: None });
+            y += 128.0;
+
+            // 2. ZONA CON COBERTURA INALÁMBRICA MÓVIL (COMPARTIR INTERNET / MOBILE HOTSPOT!)
+            ctx.draw_text("COMPARTIR INTERNET (ZONA WI-FI MÓVIL DE WINDOWS)", Rect::new(cx, y, cw, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
+            y += 22.0;
+            let hs = &s.radios.hotspot;
+            let hs_h = if hs.supported { 138.0 } else { 66.0 };
+            let hs_card = Rect::new(cx, y, cw, hs_h);
+            ctx.fill_card(hs_card, 15.0, theme::CARD_BG, if hs.is_on { theme::EMERALD } else { theme::BORDER });
+            ctx.draw_text("Zona con cobertura inalámbrica móvil", Rect::new(hs_card.x + 14.0, hs_card.y + 10.0, cw - 150.0, 20.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
+            ctx.draw_text(
+                &hs.status_reason,
+                Rect::new(hs_card.x + 14.0, hs_card.y + 32.0, cw - 150.0, 16.0),
+                TextStyle::Small10Med,
+                if hs.is_on { theme::EMERALD } else { theme::TEXT_TERTIARY },
+            );
+
+            let hs_sw = Rect::new(hs_card.x + hs_card.w - 60.0, hs_card.y + 16.0, 44.0, 24.0);
+            ctx.fill_rrect(hs_sw, 12.0, if hs.is_on { theme::EMERALD } else { theme::ELEVATED });
+            ctx.fill_circle(if hs.is_on { hs_sw.x + 32.0 } else { hs_sw.x + 12.0 }, hs_sw.y + 12.0, 8.5, theme::CRISP_WHITE);
+            hits.push(Hit { id: "net_hs_toggle".into(), rect: Rect::new(hs_card.x, hs_card.y, cw, 56.0), act: SetAct::ToggleHotspot, slider: None });
+
+            if hs.supported {
+                ctx.draw_line(hs_card.x + 14.0, hs_card.y + 58.0, hs_card.x + hs_card.w - 14.0, hs_card.y + 58.0, theme::BORDER, 1.0);
+                ctx.draw_text("NOMBRE DE RED (SSID)", Rect::new(hs_card.x + 14.0, hs_card.y + 66.0, 240.0, 14.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
+                ctx.draw_text("CONTRASEÑA (MÍN. 8 CARACTERES)", Rect::new(hs_card.x + 266.0, hs_card.y + 66.0, 260.0, 14.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
+
+                let ssid_r = Rect::new(hs_card.x + 14.0, hs_card.y + 84.0, 240.0, 36.0);
+                ctx.fill_card(ssid_r, 10.0, theme::SURFACE, if s.hs_ssid_focused { theme::VIOLET_LIGHT } else { theme::BORDER });
+                let ssid_disp = format!("{}{}", s.hs_ssid_draft, if s.hs_ssid_focused { "|" } else { "" });
+                ctx.draw_text(
+                    if ssid_disp.is_empty() { "Nombre de red..." } else { &ssid_disp },
+                    Rect::new(ssid_r.x + 10.0, ssid_r.y, ssid_r.w - 20.0, 36.0),
+                    TextStyle::Mono11Med,
+                    theme::TEXT_PRIMARY,
+                );
+                hits.push(Hit { id: "hs_ssid_in".into(), rect: ssid_r, act: SetAct::FocusHotspotSsid, slider: None });
+
+                let pass_r = Rect::new(hs_card.x + 266.0, hs_card.y + 84.0, (cw - 422.0).max(160.0), 36.0);
+                ctx.fill_card(pass_r, 10.0, theme::SURFACE, if s.hs_pass_focused { theme::VIOLET_LIGHT } else { theme::BORDER });
+                let pass_disp = format!("{}{}", s.hs_pass_draft, if s.hs_pass_focused { "|" } else { "" });
+                ctx.draw_text(
+                    if pass_disp.is_empty() { "Contraseña Wi-Fi..." } else { &pass_disp },
+                    Rect::new(pass_r.x + 10.0, pass_r.y, pass_r.w - 20.0, 36.0),
+                    TextStyle::Mono11Med,
+                    theme::TEXT_PRIMARY,
+                );
+                hits.push(Hit { id: "hs_pass_in".into(), rect: pass_r, act: SetAct::FocusHotspotPass, slider: None });
+
+                let save_hs = Rect::new(hs_card.x + hs_card.w - 142.0, hs_card.y + 84.0, 128.0, 36.0);
+                ctx.fill_rrect(save_hs, 10.0, if s.hovered == Some("hs_save") { theme::VIOLET_LIGHT } else { theme::VIOLET });
+                ctx.draw_text_center("Guardar Hotspot", save_hs, TextStyle::Small10Bold, theme::CRISP_WHITE);
+                hits.push(Hit { id: "hs_save".into(), rect: save_hs, act: SetAct::SaveHotspotConfig, slider: None });
+            }
+            y += hs_h + 16.0;
+
+            // 3. RADIOS DE HARDWARE (WI-FI, BLUETOOTH, MODO AVIÓN)
+            ctx.draw_text("RADIOS INALÁMBRICAS Y MODO AVIÓN", Rect::new(cx, y, cw, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
+            y += 22.0;
+            draw_toggle_row(ctx, Rect::new(cx, y, cw, 50.0), "net_wifi", "Radio Wi-Fi", if s.radios.wifi_available { "Activar o apagar el adaptador Wi-Fi al instante" } else { "Sin adaptador Wi-Fi detectado (PC por Ethernet)" }, s.radios.wifi_on, s.hovered, SetAct::ToggleWifi, hits);
+            y += 56.0;
+            draw_toggle_row(ctx, Rect::new(cx, y, cw, 50.0), "net_bt", "Bluetooth", if s.radios.bt_available { "Activar o apagar radio Bluetooth de Windows" } else { "Sin adaptador Bluetooth detectado" }, s.radios.bt_on, s.hovered, SetAct::ToggleBluetooth, hits);
+            y += 56.0;
+            draw_toggle_row(ctx, Rect::new(cx, y, cw, 50.0), "net_air", "Modo Avión", "Apaga todas las radios inalámbricas (Wi-Fi y Bluetooth) al instante", s.radios.airplane_mode, s.hovered, SetAct::ToggleAirplaneMode, hits);
+            y += 66.0;
+
+            // 4. REDES WI-FI CERCANAS (ESCANEAR, CONECTAR CON CONTRASEÑA, DESCONECTAR, OLVIDAR)
+            ctx.draw_text("REDES WI-FI DISPONIBLES", Rect::new(cx, y, cw - 220.0, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
+            let scan_b = Rect::new(cx + cw - 118.0, y - 5.0, 118.0, 26.0);
+            ctx.fill_card(scan_b, 9.0, theme::ELEVATED, theme::VIOLET_BORDER);
+            ctx.draw_text_center(if s.wifi_scanning { "Buscando..." } else { "Escanear Wi-Fi" }, scan_b, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
+            hits.push(Hit { id: "wifi_scan_btn".into(), rect: scan_b, act: SetAct::ScanWifiNetworks, slider: None });
+            y += 26.0;
+
+            if let Some(target_ssid) = s.wifi_pwd_target {
+                let pr = Rect::new(cx, y, cw, 78.0);
+                ctx.fill_card(pr, 13.0, theme::SURFACE, theme::VIOLET_LIGHT);
+                ctx.draw_text(&format!("Contraseña para conectar a '{}'", target_ssid), Rect::new(pr.x + 14.0, pr.y + 8.0, cw - 28.0, 18.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
+                let in_r = Rect::new(pr.x + 14.0, pr.y + 32.0, cw - 230.0, 34.0);
+                ctx.fill_card(in_r, 9.0, theme::CARD_BG, if s.wifi_pwd_focused { theme::VIOLET_LIGHT } else { theme::BORDER });
+                let masked = format!("{}{}", "•".repeat(s.wifi_pwd_draft.chars().count()), if s.wifi_pwd_focused { "|" } else { "" });
+                ctx.draw_text(if masked.is_empty() { "Escribe la clave Wi-Fi..." } else { &masked }, Rect::new(in_r.x + 10.0, in_r.y, in_r.w - 20.0, 34.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
+                hits.push(Hit { id: "wifi_pwd_in".into(), rect: in_r, act: SetAct::FocusWifiPassInput, slider: None });
+
+                let ok_r = Rect::new(in_r.x + in_r.w + 8.0, pr.y + 32.0, 96.0, 34.0);
+                ctx.fill_rrect(ok_r, 9.0, theme::VIOLET);
+                ctx.draw_text_center("Conectar", ok_r, TextStyle::Small10Bold, theme::CRISP_WHITE);
+                hits.push(Hit { id: "wifi_pwd_ok".into(), rect: ok_r, act: SetAct::SubmitWifiPassword, slider: None });
+
+                let ca_r = Rect::new(ok_r.x + 102.0, pr.y + 32.0, 96.0, 34.0);
+                ctx.fill_card(ca_r, 9.0, theme::ELEVATED, theme::BORDER);
+                ctx.draw_text_center("Cancelar", ca_r, TextStyle::Small10Bold, theme::TEXT_SECONDARY);
+                hits.push(Hit { id: "wifi_pwd_cancel".into(), rect: ca_r, act: SetAct::CancelWifiPassword, slider: None });
+                y += 88.0;
+            }
+
+            if s.wifi_networks.is_empty() {
+                let empty_r = Rect::new(cx, y, cw, 44.0);
+                ctx.fill_card(empty_r, 12.0, theme::CARD_BG, theme::BORDER);
+                let msg = if !s.radios.wifi_available {
+                    "No se detectó adaptador Wi-Fi activo en este equipo."
+                } else if !s.radios.wifi_on {
+                    "Wi-Fi está apagado. Enciéndelo arriba para ver redes disponibles."
+                } else {
+                    "No se encontraron redes Wi-Fi cercanas todavía. Pulsa 'Escanear Wi-Fi'."
+                };
+                ctx.draw_text(msg, Rect::new(empty_r.x + 14.0, empty_r.y, cw - 28.0, 44.0), TextStyle::Body11Reg, theme::TEXT_TERTIARY);
+                y += 56.0;
+            } else {
+                for (i, net) in s.wifi_networks.iter().take(8).enumerate() {
+                    let wr = Rect::new(cx, y, cw, 44.0);
+                    ctx.fill_card(wr, 12.0, if net.connected { theme::VIOLET_TINT } else { theme::CARD_BG }, if net.connected { theme::VIOLET_LIGHT } else { theme::BORDER });
+                    ctx.draw_wifi_signal(wr.x + 20.0, wr.y + 22.0, 14.0, net.bars.max(1), if net.connected { theme::EMERALD } else { theme::VIOLET_LIGHT }, theme::rgba(255, 255, 255, 0.16));
+                    ctx.draw_text(&net.ssid, Rect::new(wr.x + 42.0, wr.y + 5.0, cw - 260.0, 18.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
+                    let meta = format!("{}% señal  ·  {}{}", net.signal_pct, net.auth, if net.saved { "  ·  Guardada" } else { "" });
+                    ctx.draw_text(&meta, Rect::new(wr.x + 42.0, wr.y + 23.0, cw - 260.0, 14.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
+
+                    if net.saved {
+                        let fg_r = Rect::new(wr.x + wr.w - 200.0, wr.y + 8.0, 78.0, 28.0);
+                        ctx.fill_card(fg_r, 8.0, theme::ELEVATED, theme::BORDER);
+                        ctx.draw_text_center("Olvidar", fg_r, TextStyle::Small9Reg, theme::CORAL);
+                        hits.push(Hit { id: format!("wf_fg_{}", i), rect: fg_r, act: SetAct::ForgetWifi(net.ssid.clone()), slider: None });
+                    }
+                    let act_r = Rect::new(wr.x + wr.w - 114.0, wr.y + 8.0, 102.0, 28.0);
+                    ctx.fill_rrect(act_r, 8.0, if net.connected { theme::CORAL_BG } else { theme::VIOLET });
+                    ctx.draw_text_center(if net.connected { "Desconectar" } else { "Conectar" }, act_r, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
+                    let act = if net.connected {
+                        SetAct::DisconnectWifi
+                    } else if net.saved || !net.secured {
+                        SetAct::ConnectWifiSaved(net.ssid.clone())
+                    } else {
+                        SetAct::PromptWifiPassword(net.ssid.clone())
+                    };
+                    hits.push(Hit { id: format!("wf_c_{}", i), rect: act_r, act, slider: None });
+                    y += 50.0;
+                }
+                y += 10.0;
+            }
+
+            // 5. PERFILES VPN DE WINDOWS
+            if !s.vpn_profiles.is_empty() {
+                ctx.draw_text("PERFILES VPN DE WINDOWS", Rect::new(cx, y, cw, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
+                y += 22.0;
+                for (i, vpn) in s.vpn_profiles.iter().take(6).enumerate() {
+                    let vr = Rect::new(cx, y, cw, 44.0);
+                    ctx.fill_card(vr, 12.0, if vpn.connected { theme::VIOLET_TINT } else { theme::CARD_BG }, if vpn.connected { theme::EMERALD } else { theme::BORDER });
+                    ctx.draw_text(&vpn.name, Rect::new(vr.x + 14.0, vr.y, cw - 150.0, 44.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
+                    let vb = Rect::new(vr.x + vr.w - 118.0, vr.y + 8.0, 104.0, 28.0);
+                    ctx.fill_rrect(vb, 8.0, if vpn.connected { theme::CORAL_BG } else { theme::VIOLET });
+                    ctx.draw_text_center(if vpn.connected { "Desconectar" } else { "Conectar" }, vb, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
+                    hits.push(Hit { id: format!("vpn_b_{}", i), rect: vb, act: SetAct::ToggleVpn(vpn.name.clone(), vpn.connected), slider: None });
+                    y += 50.0;
+                }
+                y += 10.0;
+            }
+
+            // 6. ACELERACIÓN DNS Y HERRAMIENTAS DE RED
             ctx.draw_text("ACELERACIÓN DNS Y MANTENIMIENTO DE RED", Rect::new(cx, y, cw, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
             y += 24.0;
             let dns_btns = [
-                ("dns_cf", "Cloudflare (1.1.1.1)", SetAct::SetDnsPreset("cf")),
-                ("dns_gg", "Google (8.8.8.8)", SetAct::SetDnsPreset("google")),
-                ("dns_auto", "DNS Automático (DHCP)", SetAct::SetDnsPreset("dhcp")),
-                ("dns_flush", "Limpiar caché DNS", SetAct::FlushDns),
+                ("dns_cf", "Cloudflare 1.1.1.1", SetAct::SetDnsPreset("cf")),
+                ("dns_gg", "Google 8.8.8.8", SetAct::SetDnsPreset("google")),
+                ("dns_q9", "Quad9 9.9.9.9", SetAct::SetDnsPreset("quad9")),
+                ("dns_auto", "DHCP Automático", SetAct::SetDnsPreset("dhcp")),
             ];
             let bw = (cw - 30.0) / 4.0;
             for (i, (id, lbl, act)) in dns_btns.into_iter().enumerate() {
-                let br = Rect::new(cx + i as f32 * (bw + 10.0), y, bw, 40.0);
+                let br = Rect::new(cx + i as f32 * (bw + 10.0), y, bw, 38.0);
                 let hov = s.hovered == Some(id);
-                ctx.fill_card(br, 12.0, if hov { theme::VIOLET } else { theme::CARD_BG }, theme::VIOLET_BORDER);
+                ctx.fill_card(br, 11.0, if hov { theme::VIOLET } else { theme::CARD_BG }, theme::VIOLET_BORDER);
+                ctx.draw_text_center(lbl, br, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
+                hits.push(Hit { id: id.into(), rect: br, act, slider: None });
+            }
+            y += 48.0;
+
+            let tool_btns = [
+                ("dns_flush", "Limpiar caché DNS", SetAct::FlushDns),
+                ("net_renew", "Renovar IP (DHCP)", SetAct::RenewIp),
+                ("net_win", "Ajustes avanzados de Windows", SetAct::OpenWinNetworkSettings),
+            ];
+            let bw3 = (cw - 20.0) / 3.0;
+            for (i, (id, lbl, act)) in tool_btns.into_iter().enumerate() {
+                let br = Rect::new(cx + i as f32 * (bw3 + 10.0), y, bw3, 38.0);
+                let hov = s.hovered == Some(id);
+                ctx.fill_card(br, 11.0, if hov { theme::ELEVATED_HOVER } else { theme::ELEVATED }, theme::BORDER);
                 ctx.draw_text_center(lbl, br, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
                 hits.push(Hit { id: id.into(), rect: br, act, slider: None });
             }
@@ -2118,6 +2661,11 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 }
                 true
             }
+            0x0215 | 0x001F => {
+                // WM_CAPTURECHANGED / WM_CANCELMODE
+                rt.active_slider = None;
+                true
+            }
             WM_LBUTTONDBLCLK => {
                 let py = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
                 if py < TOP_H {
@@ -2129,16 +2677,15 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             WM_MOUSEWHEEL => {
                 let delta = ((wparam.0 >> 16) as i16) as f32;
                 let step = if delta > 0.0 { -64.0 } else { 64.0 };
-                rt.scroll = (rt.scroll + step).clamp(0.0, 900.0);
+                rt.scroll = (rt.scroll + step).clamp(0.0, 1600.0);
                 rt.redraw();
                 true
             }
             WM_KEYDOWN => {
                 let vk = wparam.0 as u16;
                 if vk == VK_ESCAPE.0 {
-                    rt.pin_focused = false;
-                    rt.city_focused = false;
-                    rt.github_focused = false;
+                    rt.unfocus_all_inputs();
+                    rt.wifi_pwd_target = None;
                     rt.redraw();
                 } else if vk == VK_BACK.0 {
                     if rt.pin_focused {
@@ -2150,6 +2697,15 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     } else if rt.github_focused {
                         rt.github_draft.pop();
                         rt.redraw();
+                    } else if rt.hs_ssid_focused {
+                        rt.hs_ssid_draft.pop();
+                        rt.redraw();
+                    } else if rt.hs_pass_focused {
+                        rt.hs_pass_draft.pop();
+                        rt.redraw();
+                    } else if rt.wifi_pwd_focused {
+                        rt.wifi_pwd_draft.pop();
+                        rt.redraw();
                     }
                 } else if vk == VK_RETURN.0 {
                     if rt.pin_focused {
@@ -2158,6 +2714,10 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                         rt.execute(SetAct::SaveWeatherCity);
                     } else if rt.github_focused {
                         rt.execute(SetAct::SaveGithubUrl);
+                    } else if rt.hs_ssid_focused || rt.hs_pass_focused {
+                        rt.execute(SetAct::SaveHotspotConfig);
+                    } else if rt.wifi_pwd_focused {
+                        rt.execute(SetAct::SubmitWifiPassword);
                     }
                 }
                 true
@@ -2173,6 +2733,15 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                             rt.redraw();
                         } else if rt.github_focused && rt.github_draft.len() < 160 {
                             rt.github_draft.push(ch);
+                            rt.redraw();
+                        } else if rt.hs_ssid_focused && rt.hs_ssid_draft.len() < 32 {
+                            rt.hs_ssid_draft.push(ch);
+                            rt.redraw();
+                        } else if rt.hs_pass_focused && rt.hs_pass_draft.len() < 63 {
+                            rt.hs_pass_draft.push(ch);
+                            rt.redraw();
+                        } else if rt.wifi_pwd_focused && rt.wifi_pwd_draft.len() < 64 {
+                            rt.wifi_pwd_draft.push(ch);
                             rt.redraw();
                         }
                     }
@@ -2220,6 +2789,9 @@ fn capture_settings_png(out_png: &Path, tab: Tab) {
     let mics = audio::get_audio_devices(true);
     let apps = audio::get_app_audio_sessions();
     let radios = radios::query_radio_states();
+    let net_details = radios::query_network_details();
+    let wifi_networks = radios::scan_wifi_networks(&radios.wifi_ssid);
+    let vpn_profiles = radios::list_vpn_profiles();
     let username = std::env::var("USERNAME").unwrap_or_else(|_| "Usuario".into());
     let hostname = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "AuraPC".into());
     let snap = SettingsSnap {
@@ -2249,6 +2821,18 @@ fn capture_settings_png(out_png: &Path, tab: Tab) {
         mics: &mics,
         app_sessions: &apps,
         radios: &radios,
+        net_details: &net_details,
+        wifi_networks: &wifi_networks,
+        wifi_scanning: false,
+        vpn_profiles: &vpn_profiles,
+        ping_ms: Some(14),
+        hs_ssid_draft: &radios.hotspot.ssid,
+        hs_pass_draft: &radios.hotspot.passphrase,
+        hs_ssid_focused: false,
+        hs_pass_focused: false,
+        wifi_pwd_target: None,
+        wifi_pwd_draft: "",
+        wifi_pwd_focused: false,
         pin_draft: "",
         pin_focused: false,
         city_draft: &settings.weather_city,
@@ -2388,6 +2972,18 @@ fn main() {
         mics: Vec::new(),
         app_sessions: Vec::new(),
         radios: RadioStates::default(),
+        net_details: radios::NetworkDetails::default(),
+        wifi_networks: Vec::new(),
+        wifi_scanning: false,
+        vpn_profiles: Vec::new(),
+        ping_ms: None,
+        hs_ssid_draft: String::new(),
+        hs_pass_draft: String::new(),
+        hs_ssid_focused: false,
+        hs_pass_focused: false,
+        wifi_pwd_target: None,
+        wifi_pwd_draft: String::new(),
+        wifi_pwd_focused: false,
         pin_draft: String::new(),
         pin_focused: false,
         city_draft,

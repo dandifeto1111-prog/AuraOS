@@ -1,10 +1,11 @@
 ﻿param(
-    [string]$Version = "5.2.2",
-    [string]$Changelog = "v5.2.2: Estructura limpia (solo AuraShell-Setup.exe fuera de carpetas + app/), instalacion rapida (sin APB) tambien para nuevos usuarios, descarga automatica desde GitHub si se ejecuta Setup suelto, AuraLock limpio, widget de musica 60 FPS y AuraFiles multiseleccion + OLE drag-and-drop."
+    [string]$Version = "5.3.0",
+    [string]$Changelog = "v5.3.0: Correccion total de bloqueos del OS y manifiesto SxS en AuraSettings/AuraPhotos/AuraLock, fix crash 0x87a en PDF/Files, soporte multi-monitor, clic derecho en Dock con Finalizar tarea, AuraTasks con elevacion automatica y modo Admin, AuraFiles paridad total con Explorador de Windows, y suite completa de Red + Compartir Internet (Hotspot movil WinRT)."
 )
 
 $ErrorActionPreference = "Stop"
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+if (-not $env:CARGO_BUILD_JOBS) { $env:CARGO_BUILD_JOBS = "4" }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Split-Path -Parent $scriptDir

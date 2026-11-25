@@ -404,12 +404,12 @@ fn resolve_github_username(cfg: &DevHubConfig, repos: &[GitRepoSummary]) -> Stri
 }
 
 fn parse_iso_day_key(iso: &str) -> Option<i64> {
-    if iso.len() < 10 {
+    if iso.len() < 10 || !iso.is_ascii() {
         return None;
     }
-    let y: i64 = iso[0..4].parse().ok()?;
-    let m: i64 = iso[5..7].parse().ok()?;
-    let d: i64 = iso[8..10].parse().ok()?;
+    let y: i64 = iso.get(0..4)?.parse().ok()?;
+    let m: i64 = iso.get(5..7)?.parse().ok()?;
+    let d: i64 = iso.get(8..10)?.parse().ok()?;
     // Julian-like day number for exact day deltas
     let a = (14 - m) / 12;
     let y2 = y + 4800 - a;

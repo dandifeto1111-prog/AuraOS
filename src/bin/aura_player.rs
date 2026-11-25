@@ -1563,6 +1563,11 @@ unsafe extern "system" fn player_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 }
                 true
             }
+            0x0215 | 0x001F => {
+                // WM_CAPTURECHANGED / WM_CANCELMODE: release any stuck volume/seek drag capture!
+                rt.dragging_vol = None;
+                true
+            }
             WM_RBUTTONDOWN => {
                 let px = (lparam.0 & 0xFFFF) as i16 as f32;
                 let py = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;

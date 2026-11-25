@@ -19,12 +19,17 @@ pub const NOTCH_THICK: i32 = 14;
 
 struct DockEntry {
     id: String,
+    title: String,
+    process_name: String,
     tooltip: String,
     icon_path: String,
+    target: String,
     fallback: VectorIcon,
     is_running: bool,
     is_active: bool,
+    is_minimized: bool,
     hwnd: isize,
+    pid: u32,
     action: Action,
 }
 
@@ -69,12 +74,17 @@ fn build_middle_entries(state: &AppState) -> Vec<DockEntry> {
         };
         middle.push(DockEntry {
             id: format!("dock_win_{}", w.hwnd),
+            title: w.title.clone(),
+            process_name: w.process_name.clone(),
             tooltip: format!("{} ({})", w.title, w.process_name),
-            icon_path,
+            icon_path: icon_path.clone(),
+            target: icon_path,
             fallback: aura_fallback_icon(&w.process_name),
             is_running: true,
             is_active: w.is_active,
+            is_minimized: w.is_minimized,
             hwnd: w.hwnd,
+            pid: w.pid,
             action: Action::FocusWindow(w.hwnd),
         });
     }
@@ -98,12 +108,17 @@ fn build_middle_entries(state: &AppState) -> Vec<DockEntry> {
         }
         middle.push(DockEntry {
             id: format!("dock_pin_{}", added_pinned),
+            title: app.name.clone(),
+            process_name: app.name.clone(),
             tooltip: app.name.clone(),
             icon_path: app.icon_path.clone(),
+            target: app.target.clone(),
             fallback: VectorIcon::Sparkle,
             is_running: false,
             is_active: false,
+            is_minimized: false,
             hwnd: 0,
+            pid: 0,
             action: Action::LaunchTarget(app.target.clone()),
         });
         added_pinned += 1;
@@ -293,24 +308,48 @@ pub fn render_dock(
     } else {
         Action::LaunchAuraFiles(None)
     };
+    let files_exe = resolve_aura_exe("AuraFiles.exe");
     draw_dock_tile(
         ctx,
         state,
         "dock_files",
         f_rect,
-        &resolve_aura_exe("AuraFiles.exe"),
+        &files_exe,
         VectorIcon::Folder,
         files_win.is_some(),
         files_win.map(|w| w.is_active).unwrap_or(false),
         is_left,
         f_scale,
     );
+    let files_right = if let Some(fw) = files_win {
+        Action::OpenDockContextMenu {
+            title: fw.title.clone(),
+            process_name: "AuraFiles".into(),
+            hwnd: fw.hwnd,
+            pid: fw.pid,
+            exe_path: if fw.exe_path.is_empty() { files_exe.clone() } else { fw.exe_path.clone() },
+            target: files_exe.clone(),
+            is_running: true,
+            is_minimized: fw.is_minimized,
+        }
+    } else {
+        Action::OpenDockContextMenu {
+            title: "AuraFiles".into(),
+            process_name: "AuraFiles".into(),
+            hwnd: 0,
+            pid: 0,
+            exe_path: files_exe.clone(),
+            target: files_exe.clone(),
+            is_running: false,
+            is_minimized: false,
+        }
+    };
     hits.push(HitRegion {
         id: "dock_files".into(),
         rect: f_rect.inset(-4.0, -4.0),
         action: f_action,
-        right_action: None,
-        tooltip: Some("AuraFiles · Gestor instantáneo (Win+E / Alt+E)".into()),
+        right_action: Some(files_right),
+        tooltip: Some("AuraFiles · Clic abrir · Clic derecho menú".into()),
         slider: None,
     });
 
@@ -384,7 +423,16 @@ pub fn render_dock(
             id: item.id.clone(),
             rect: r.inset(-3.0, -3.0),
             action: item.action.clone(),
-            right_action: None,
+            right_action: Some(Action::OpenDockContextMenu {
+                title: item.title.clone(),
+                process_name: item.process_name.clone(),
+                hwnd: item.hwnd,
+                pid: item.pid,
+                exe_path: item.icon_path.clone(),
+                target: item.target.clone(),
+                is_running: item.is_running,
+                is_minimized: item.is_minimized,
+            }),
             tooltip: Some(item.tooltip.clone()),
             slider: None,
         });
@@ -528,5 +576,134 @@ fn draw_dock_tile(
             let dw = if is_active { 14.0 } else { 6.0 };
             ctx.fill_rrect(Rect::new(r.x + r.w * 0.5 - dw * 0.5, r.y + r.h + 3.0, dw, 3.5), 1.8, dot_col);
         }
+    }
+}
+
+pub const DOCK_MENU_W: f32 = 252.0;
+
+pub fn dock_menu_height(state: &AppState) -> f32 {
+    let Some(m) = &state.dock_menu else { return 160.0 };
+    if m.is_running {
+        266.0
+    } else {
+        154.0
+    }
+}
+
+/// Renders the native AuraOS Dock/Taskbar Right-Click Context Menu including
+/// "Finalizar tarea (Forzar cierre)" (like Task Manager) directly from the Taskbar!
+pub fn render_dock_context_menu(
+    ctx: &mut DrawCtx<'_>,
+    state: &AppState,
+    w: f32,
+    h: f32,
+    hits: &mut Vec<HitRegion>,
+) {
+    hits.clear();
+    let Some(menu) = &state.dock_menu else { return };
+    let p = theme::pal();
+    let card = Rect::new(4.0, 4.0, (w - 8.0).max(120.0), (h - 8.0).max(80.0));
+    ctx.fill_card(card, 16.0, theme::with_alpha(p.surface, 0.98), p.border_strong);
+
+    // Header: App name + PID badge
+    let mut y = 12.0;
+    let hdr_title = if menu.process_name.is_empty() {
+        menu.title.as_str()
+    } else {
+        menu.process_name.as_str()
+    };
+    ctx.draw_text(
+        hdr_title,
+        Rect::new(16.0, y, w - 92.0, 18.0),
+        crate::renderer::TextStyle::Body12Semi,
+        p.text_primary,
+    );
+    if menu.is_running && menu.pid > 0 {
+        let pid_r = Rect::new(w - 76.0, y, 60.0, 18.0);
+        ctx.fill_rrect(pid_r, 6.0, p.elevated);
+        ctx.draw_text_center(
+            &format!("PID {}", menu.pid),
+            pid_r,
+            crate::renderer::TextStyle::Small9Reg,
+            p.accent_light,
+        );
+    }
+    y += 24.0;
+    ctx.draw_line(14.0, y, w - 14.0, y, p.border, 1.0);
+    y += 6.0;
+
+    let mut items: Vec<(&'static str, String, VectorIcon, Action, bool)> = Vec::new();
+    let parent_dir = std::path::Path::new(&menu.exe_path)
+        .parent()
+        .map(|d| d.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty());
+
+    if menu.is_running {
+        let focus_lbl = if menu.is_minimized {
+            "Restaurar ventana".to_string()
+        } else {
+            "Enfocar ventana".to_string()
+        };
+        items.push(("dm_focus", focus_lbl, VectorIcon::Maximize, Action::FocusWindow(menu.hwnd), false));
+        items.push(("dm_min", "Minimizar".into(), VectorIcon::Close, Action::MinimizeWindow(menu.hwnd), false));
+        if !menu.target.is_empty() {
+            items.push(("dm_new", "Nueva instancia".into(), VectorIcon::Plus, Action::LaunchTarget(menu.target.clone()), false));
+        }
+        if let Some(dir) = parent_dir {
+            items.push(("dm_loc", "Abrir ubicación en AuraFiles".into(), VectorIcon::Folder, Action::LaunchAuraFiles(Some(dir)), false));
+        }
+        items.push(("dm_tasks", "Abrir en AuraTasks".into(), VectorIcon::Settings, Action::LaunchAuraTasks, false));
+        items.push(("dm_close", "Cerrar ventana".into(), VectorIcon::Close, Action::CloseWindowGraceful(menu.hwnd), false));
+        items.push((
+            "dm_kill",
+            "Finalizar tarea (Forzar cierre)".into(),
+            VectorIcon::Power,
+            Action::ForceKillWindowPid(menu.pid, hdr_title.to_string()),
+            true,
+        ));
+    } else {
+        items.push(("dm_open", "Abrir aplicación".into(), VectorIcon::Play, Action::LaunchTarget(menu.target.clone()), false));
+        items.push(("dm_admin", "Ejecutar como Administrador".into(), VectorIcon::Lock, Action::RunTargetAsAdmin(menu.target.clone()), false));
+        if let Some(dir) = parent_dir {
+            items.push(("dm_loc", "Abrir ubicación en AuraFiles".into(), VectorIcon::Folder, Action::LaunchAuraFiles(Some(dir)), false));
+        }
+    }
+
+    for (id, lbl, icon, act, is_danger) in items {
+        if id == "dm_close" {
+            ctx.draw_line(14.0, y + 2.0, w - 14.0, y + 2.0, p.border, 1.0);
+            y += 7.0;
+        }
+        let rr = Rect::new(10.0, y, w - 20.0, 29.0);
+        let hov = state.hovered_id.as_deref() == Some(id);
+        let bg = if is_danger {
+            if hov { theme::CORAL } else { theme::CORAL_BG }
+        } else if hov {
+            p.elevated_hover
+        } else {
+            theme::rgba(0, 0, 0, 0.0)
+        };
+        ctx.fill_rrect(rr, 9.0, bg);
+        let fg = if is_danger {
+            if hov { theme::CRISP_WHITE } else { theme::CORAL }
+        } else {
+            p.text_primary
+        };
+        ctx.draw_vector_icon(icon, rr.x + 15.0, rr.y + 14.5, 11.5, if is_danger { fg } else if hov { p.accent_light } else { p.text_secondary });
+        ctx.draw_text(
+            &lbl,
+            Rect::new(rr.x + 30.0, rr.y, rr.w - 36.0, 29.0),
+            if is_danger { crate::renderer::TextStyle::Body11Med } else { crate::renderer::TextStyle::Body11Reg },
+            fg,
+        );
+        hits.push(HitRegion {
+            id: id.into(),
+            rect: rr,
+            action: act,
+            right_action: None,
+            tooltip: None,
+            slider: None,
+        });
+        y += 31.0;
     }
 }

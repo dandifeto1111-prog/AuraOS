@@ -153,22 +153,33 @@ pub fn send_to_desktop_bottom(hwnd: HWND) {
 pub fn bring_to_front(hwnd: HWND) {
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
-    use windows::Win32::UI::WindowsAndMessaging::BringWindowToTop;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        AllowSetForegroundWindow, BringWindowToTop, IsHungAppWindow, ASFW_ANY,
+    };
     unsafe {
-        let fg = GetForegroundWindow();
-        let fg_tid = if !fg.is_invalid() {
-            GetWindowThreadProcessId(fg, None)
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
         } else {
-            0
-        };
-        let cur_tid = GetCurrentThreadId();
-        let attached = fg_tid != 0 && fg_tid != cur_tid && AttachThreadInput(cur_tid, fg_tid, true).as_bool();
-        let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = ShowWindow(hwnd, SW_SHOW);
+        }
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
         let _ = BringWindowToTop(hwnd);
-        let _ = SetForegroundWindow(hwnd);
-        let _ = SetFocus(hwnd);
-        if attached {
-            let _ = AttachThreadInput(cur_tid, fg_tid, false);
+        if SetForegroundWindow(hwnd).as_bool() {
+            let _ = SetFocus(hwnd);
+            return;
+        }
+        // Fallback ONLY if foreground window is NOT hung (prevents cross-monitor / hung-app input queue deadlock!)
+        let fg = GetForegroundWindow();
+        if !fg.is_invalid() && !IsHungAppWindow(fg).as_bool() {
+            let fg_tid = GetWindowThreadProcessId(fg, None);
+            let cur_tid = GetCurrentThreadId();
+            let attached = fg_tid != 0 && fg_tid != cur_tid && AttachThreadInput(cur_tid, fg_tid, true).as_bool();
+            let _ = BringWindowToTop(hwnd);
+            let _ = SetForegroundWindow(hwnd);
+            let _ = SetFocus(hwnd);
+            if attached {
+                let _ = AttachThreadInput(cur_tid, fg_tid, false);
+            }
         }
     }
 }
@@ -606,6 +617,11 @@ pub fn is_fullscreen_app_active() -> bool {
         if !GetMonitorInfoW(mon, &mut mi).as_bool() {
             return false;
         }
+        // Multi-monitor fix: ONLY hide Primary Monitor AuraTopBar/AuraDock when the fullscreen app
+        // is actually on the PRIMARY monitor (MONITORINFOF_PRIMARY = 1)!
+        if (mi.dwFlags & 1) == 0 {
+            return false;
+        }
         let m = mi.rcMonitor;
         r.left <= m.left + 1 && r.top <= m.top + 1 && r.right >= m.right - 1 && r.bottom >= m.bottom - 1
     }
@@ -780,7 +796,14 @@ pub fn is_any_maximized_window_visible() -> bool {
     unsafe {
         let fg = GetForegroundWindow();
         if !is_desktop_or_shell_window(fg) && IsZoomed(fg).as_bool() {
-            return true;
+            let mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+            let mut mi = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if GetMonitorInfoW(mon, &mut mi).as_bool() && (mi.dwFlags & 1) != 0 {
+                return true;
+            }
         }
     }
     is_fullscreen_app_active()
@@ -933,43 +956,86 @@ pub fn get_network_status() -> String {
     "Red".to_string()
 }
 
+/// 100% Non-Blocking Target Launcher:
+/// NEVER blocks the calling UI thread or `WH_KEYBOARD_LL` hook!
+/// Uses direct `Command::new` for plain `.exe` files without args, and detached `ShellExecuteExW`
+/// with `SEE_MASK_FLAG_NO_UI | SEE_MASK_ASYNCOK` for `.lnk`, URLs, `ms-settings:`, and documents so
+/// a broken manifest / UAC / DDE hang can NEVER freeze AuraShell!
 pub fn launch_target(target: &str, args: &str) {
-    if target.trim().is_empty() {
+    let target_s = target.trim().to_string();
+    if target_s.is_empty() {
         return;
     }
-    unsafe {
-        let op = to_wide("open");
-        let file = to_wide(target);
-        let params = to_wide(args);
-        let dir_str = Path::new(target)
-            .parent()
-            .and_then(|p| p.to_str())
-            .filter(|_| Path::new(target).is_file())
-            .unwrap_or("");
-        let dir = to_wide(dir_str);
-        ShellExecuteW(
-            HWND::default(),
-            PCWSTR(op.as_ptr()),
-            PCWSTR(file.as_ptr()),
-            if args.is_empty() { PCWSTR::null() } else { PCWSTR(params.as_ptr()) },
-            if dir_str.is_empty() { PCWSTR::null() } else { PCWSTR(dir.as_ptr()) },
-            SW_SHOWNORMAL,
-        );
+    let args_s = args.to_string();
+
+    // Fast path for plain local .exe with no arguments (instant spawn, 0 ShellExecute modal risk!)
+    if args_s.is_empty() && target_s.to_lowercase().ends_with(".exe") && Path::new(&target_s).is_file() {
+        let mut cmd = std::process::Command::new(&target_s);
+        if let Some(parent) = Path::new(&target_s).parent() {
+            cmd.current_dir(parent);
+        }
+        if cmd.spawn().is_ok() {
+            return;
+        }
     }
+
+    std::thread::spawn(move || {
+        use windows::Win32::UI::Shell::{
+            ShellExecuteExW, SEE_MASK_ASYNCOK, SEE_MASK_FLAG_NO_UI, SHELLEXECUTEINFOW,
+        };
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let op = to_wide("open");
+            let file = to_wide(&target_s);
+            let params = to_wide(&args_s);
+            let dir_str = Path::new(&target_s)
+                .parent()
+                .and_then(|p| p.to_str())
+                .filter(|_| Path::new(&target_s).is_file())
+                .unwrap_or("")
+                .to_string();
+            let dir = to_wide(&dir_str);
+
+            let mut sei = SHELLEXECUTEINFOW {
+                cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+                fMask: SEE_MASK_FLAG_NO_UI | SEE_MASK_ASYNCOK,
+                hwnd: HWND::default(),
+                lpVerb: PCWSTR(op.as_ptr()),
+                lpFile: PCWSTR(file.as_ptr()),
+                lpParameters: if args_s.is_empty() { PCWSTR::null() } else { PCWSTR(params.as_ptr()) },
+                lpDirectory: if dir_str.is_empty() { PCWSTR::null() } else { PCWSTR(dir.as_ptr()) },
+                nShow: SW_SHOWNORMAL.0,
+                ..Default::default()
+            };
+            if ShellExecuteExW(&mut sei).is_err() {
+                // Retry without SEE_MASK_FLAG_NO_UI ONLY for UAC elevation prompts if error was elevation required (740)
+                let err = windows::Win32::Foundation::GetLastError().0;
+                if err == 740 {
+                    let runas = to_wide("runas");
+                    let _ = ShellExecuteW(
+                        HWND::default(),
+                        PCWSTR(runas.as_ptr()),
+                        PCWSTR(file.as_ptr()),
+                        if args_s.is_empty() { PCWSTR::null() } else { PCWSTR(params.as_ptr()) },
+                        if dir_str.is_empty() { PCWSTR::null() } else { PCWSTR(dir.as_ptr()) },
+                        SW_SHOWNORMAL,
+                    );
+                }
+            }
+            windows::Win32::System::Com::CoUninitialize();
+        }
+    });
 }
 
 pub fn launch_aurafiles(folder: Option<&str>) {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-    let candidates = [
-        exe_dir.as_ref().map(|d| d.join("AuraFiles.exe")),
-        Some(crate::models::app_data_dir().join("AuraFiles.exe")),
-    ];
-    for c in candidates.iter().flatten() {
-        if c.exists() {
-            let arg = folder.map(|f| format!("\"{}\"", f)).unwrap_or_default();
-            launch_target(&c.to_string_lossy(), &arg);
+    if let Some(exe) = resolve_aura_app_path("AuraFiles.exe") {
+        let mut cmd = std::process::Command::new(&exe);
+        if let Some(f) = folder {
+            if !f.trim().is_empty() {
+                cmd.arg(f);
+            }
+        }
+        if cmd.spawn().is_ok() {
             return;
         }
     }
@@ -978,17 +1044,26 @@ pub fn launch_aurafiles(folder: Option<&str>) {
 }
 
 pub fn launch_aura_settings(tab: Option<&str>) {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-    let candidates = [
-        exe_dir.as_ref().map(|d| d.join("AuraSettings.exe")),
-        Some(crate::models::app_data_dir().join("AuraSettings.exe")),
-    ];
-    for c in candidates.iter().flatten() {
-        if c.exists() {
-            let arg = tab.map(|t| format!("--tab {}", t)).unwrap_or_default();
-            launch_target(&c.to_string_lossy(), &arg);
+    // If AuraSettings is already open & no specific tab override requested, restore & bring to front!
+    if tab.is_none() {
+        unsafe {
+            let cls = to_wide("AuraSettings_GPU_v43_Wnd");
+            if let Ok(existing) = FindWindowW(PCWSTR(cls.as_ptr()), None) {
+                if !existing.is_invalid() && IsWindowVisible(existing).as_bool() {
+                    bring_to_front(existing);
+                    return;
+                }
+            }
+        }
+    }
+    if let Some(exe) = resolve_aura_app_path("AuraSettings.exe") {
+        let mut cmd = std::process::Command::new(&exe);
+        if let Some(t) = tab {
+            if !t.trim().is_empty() {
+                cmd.args(["--tab", t]);
+            }
+        }
+        if cmd.spawn().is_ok() {
             return;
         }
     }
@@ -1061,16 +1136,17 @@ pub fn launch_aura_lock() {
 }
 
 pub fn launch_aura_tasks() {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-    let candidates = [
-        exe_dir.as_ref().map(|d| d.join("AuraTasks.exe")),
-        Some(crate::models::app_data_dir().join("AuraTasks.exe")),
-    ];
-    for c in candidates.iter().flatten() {
-        if c.exists() {
-            launch_target(&c.to_string_lossy(), "");
+    unsafe {
+        let cls = to_wide("AuraTasks_Rust_v45");
+        if let Ok(existing) = FindWindowW(PCWSTR(cls.as_ptr()), None) {
+            if !existing.is_invalid() && IsWindowVisible(existing).as_bool() {
+                bring_to_front(existing);
+                return;
+            }
+        }
+    }
+    if let Some(exe) = resolve_aura_app_path("AuraTasks.exe") {
+        if std::process::Command::new(&exe).spawn().is_ok() {
             return;
         }
     }
@@ -1646,4 +1722,370 @@ pub fn move_to_recycle_bin(path: &str) -> bool {
         lpszProgressTitle: PCWSTR::null(),
     };
     unsafe { SHFileOperationW(&mut op) == 0 && !op.fAnyOperationsAborted.as_bool() }
+}
+
+// ==================== v5.3 EXPLORER SHELL DIALOGS & ELEVATED PROCESS TERMINATION ====================
+
+/// Opens the REAL native Windows Properties dialog for any file or folder (non-blocking!).
+pub fn show_file_properties(path: &str) {
+    let p_owned = path.to_string();
+    std::thread::spawn(move || {
+        use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW};
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let verb = to_wide("properties");
+            let file = to_wide(&p_owned);
+            let mut sei = SHELLEXECUTEINFOW {
+                cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+                fMask: SEE_MASK_INVOKEIDLIST,
+                hwnd: HWND::default(),
+                lpVerb: PCWSTR(verb.as_ptr()),
+                lpFile: PCWSTR(file.as_ptr()),
+                nShow: SW_SHOW.0,
+                ..Default::default()
+            };
+            let _ = ShellExecuteExW(&mut sei);
+            // Keep thread alive briefly so the shell properties modal has time to display
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            windows::Win32::System::Com::CoUninitialize();
+        }
+    });
+}
+
+/// Opens Windows' native "Abrir con..." (Open With) application chooser dialog!
+pub fn open_with_dialog(path: &str) {
+    let _ = std::process::Command::new("rundll32.exe")
+        .args(["shell32.dll,OpenAs_RunDLL", path])
+        .spawn();
+}
+
+/// Opens Windows File Explorer and highlights the specified file or folder!
+pub fn reveal_in_windows_explorer(path: &str) {
+    let arg = format!("/select,\"{}\"", path);
+    let _ = std::process::Command::new("explorer.exe").arg(arg).spawn();
+}
+
+/// Opens Windows Terminal (`wt.exe`) if installed, or PowerShell cleanly at `dir`!
+pub fn open_terminal_at(dir: &str) {
+    let clean_dir = if Path::new(dir).is_dir() {
+        dir.to_string()
+    } else {
+        Path::new(dir)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "C:\\".to_string())
+    };
+    if std::process::Command::new("wt.exe")
+        .args(["-d", &clean_dir])
+        .spawn()
+        .is_ok()
+    {
+        return;
+    }
+    let ps_cmd = format!("Set-Location -LiteralPath '{}'", clean_dir.replace('\'', "''"));
+    let _ = std::process::Command::new("powershell.exe")
+        .args(["-NoExit", "-Command", &ps_cmd])
+        .spawn();
+}
+
+/// Runs an executable elevated via UAC (`ShellExecuteW("runas")`) in a detached thread!
+pub fn run_as_admin(exe: &str, args: &str) {
+    let exe_s = exe.to_string();
+    let args_s = args.to_string();
+    std::thread::spawn(move || unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let verb = to_wide("runas");
+        let file = to_wide(&exe_s);
+        let params = to_wide(&args_s);
+        let _ = ShellExecuteW(
+            HWND::default(),
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(file.as_ptr()),
+            if args_s.is_empty() { PCWSTR::null() } else { PCWSTR(params.as_ptr()) },
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+        windows::Win32::System::Com::CoUninitialize();
+    });
+}
+
+/// Returns `true` if the current process is running with Administrator (elevated UAC) privileges!
+pub fn is_process_elevated() -> bool {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+        let mut elev = TOKEN_ELEVATION::default();
+        let mut ret_len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elev as *mut TOKEN_ELEVATION as *mut _),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut ret_len,
+        )
+        .is_ok();
+        let _ = CloseHandle(token);
+        ok && elev.TokenIsElevated != 0
+    }
+}
+
+/// Enables `SeDebugPrivilege` on the current process token (succeeds when elevated),
+/// granting maximum Windows permission to inspect, suspend, and terminate stubborn processes!
+pub fn enable_debug_privilege() -> bool {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, LUID};
+    use windows::Win32::Security::{
+        AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
+        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &mut token,
+        )
+        .is_err()
+        {
+            return false;
+        }
+        let mut luid = LUID::default();
+        let priv_name = to_wide("SeDebugPrivilege");
+        let ok = if LookupPrivilegeValueW(PCWSTR::null(), PCWSTR(priv_name.as_ptr()), &mut luid).is_ok() {
+            let tp = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: luid,
+                    Attributes: SE_PRIVILEGE_ENABLED,
+                }],
+            };
+            AdjustTokenPrivileges(token, false, Some(&tp), 0, None, None).is_ok()
+                && windows::Win32::Foundation::GetLastError().0 == 0
+        } else {
+            false
+        };
+        let _ = CloseHandle(token);
+        ok
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KillOutcome {
+    Killed,
+    KilledElevated,
+    CancelledByUser,
+    ProtectedOrDenied,
+    NotFound,
+}
+
+fn collect_descendant_pids(root_pid: u32) -> Vec<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    let mut edges: Vec<(u32, u32)> = Vec::new();
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return Vec::new() };
+        let mut pe = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snap, &mut pe).is_ok() {
+            loop {
+                edges.push((pe.th32ParentProcessID, pe.th32ProcessID));
+                if Process32NextW(snap, &mut pe).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = windows::Win32::Foundation::CloseHandle(snap);
+    }
+    let mut visited = std::collections::HashSet::new();
+    let mut stack = vec![root_pid];
+    let mut out = Vec::new();
+    visited.insert(root_pid);
+    while let Some(cur) = stack.pop() {
+        for &(ppid, pid) in &edges {
+            if ppid == cur && pid != 0 && visited.insert(pid) {
+                out.push(pid);
+                stack.push(pid);
+            }
+        }
+    }
+    out
+}
+
+fn is_pid_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::STILL_ACTIVE;
+    use windows::Win32::System::Threading::GetExitCodeProcess;
+    unsafe {
+        if let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            let mut code = 0u32;
+            let alive = GetExitCodeProcess(h, &mut code).is_ok() && code == STILL_ACTIVE.0 as u32;
+            let _ = windows::Win32::Foundation::CloseHandle(h);
+            alive
+        } else {
+            false
+        }
+    }
+}
+
+/// Terminates a process (and optionally its entire child tree) using:
+/// 1. Native `OpenProcess(PROCESS_TERMINATE)` + `TerminateProcess` (instant, 0ms)
+/// 2. If `ERROR_ACCESS_DENIED` and not elevated: automatic UAC-elevated `taskkill /F [/T] /PID <pid>`
+///    with `SW_HIDE`, waiting cleanly for the result!
+/// 3. Distinguishes user-cancelled UAC vs kernel PPL / anti-cheat protected processes!
+pub fn force_kill_pid(pid: u32, kill_tree: bool) -> KillOutcome {
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, TerminateProcess, WaitForSingleObject, PROCESS_TERMINATE,
+    };
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+
+    if pid == 0 || pid == 4 {
+        return KillOutcome::ProtectedOrDenied;
+    }
+
+    // 1. Direct native termination first (kills children first if kill_tree)
+    let mut targets = if kill_tree {
+        let mut c = collect_descendant_pids(pid);
+        c.reverse();
+        c.push(pid);
+        c
+    } else {
+        vec![pid]
+    };
+    targets.dedup();
+
+    let mut direct_root_ok = false;
+    let mut saw_access_denied = false;
+    unsafe {
+        for &tpid in &targets {
+            match OpenProcess(PROCESS_TERMINATE, false, tpid) {
+                Ok(h) => {
+                    let ok = TerminateProcess(h, 1).is_ok();
+                    let _ = windows::Win32::Foundation::CloseHandle(h);
+                    if tpid == pid && ok {
+                        direct_root_ok = true;
+                    }
+                }
+                Err(_) => {
+                    let err = windows::Win32::Foundation::GetLastError().0;
+                    if err == 5 {
+                        saw_access_denied = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if direct_root_ok && !saw_access_denied {
+        return KillOutcome::Killed;
+    }
+    if !is_pid_alive(pid) {
+        return if direct_root_ok { KillOutcome::Killed } else { KillOutcome::NotFound };
+    }
+
+    // 2. If already elevated, try `taskkill /F /T /PID` directly (in case SeDebugPrivilege or session helps)
+    if is_process_elevated() {
+        use std::os::windows::process::CommandExt;
+        let args: Vec<String> = if kill_tree {
+            vec!["/F".into(), "/T".into(), "/PID".into(), pid.to_string()]
+        } else {
+            vec!["/F".into(), "/PID".into(), pid.to_string()]
+        };
+        let ok = std::process::Command::new("taskkill.exe")
+            .args(&args)
+            .creation_flags(0x0800_0000)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        return if ok || !is_pid_alive(pid) {
+            KillOutcome::Killed
+        } else {
+            KillOutcome::ProtectedOrDenied
+        };
+    }
+
+    // 3. Automatic UAC-elevated `taskkill` fallback when standard permissions are denied!
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let verb = to_wide("runas");
+        let file = to_wide("taskkill.exe");
+        let params_s = if kill_tree {
+            format!("/F /T /PID {}", pid)
+        } else {
+            format!("/F /PID {}", pid)
+        };
+        let params = to_wide(&params_s);
+        let mut sei = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOCLOSEPROCESS,
+            hwnd: HWND::default(),
+            lpVerb: PCWSTR(verb.as_ptr()),
+            lpFile: PCWSTR(file.as_ptr()),
+            lpParameters: PCWSTR(params.as_ptr()),
+            nShow: SW_HIDE.0,
+            ..Default::default()
+        };
+        if ShellExecuteExW(&mut sei).is_err() {
+            let err = windows::Win32::Foundation::GetLastError().0;
+            windows::Win32::System::Com::CoUninitialize();
+            return if err == 1223 {
+                KillOutcome::CancelledByUser
+            } else {
+                KillOutcome::ProtectedOrDenied
+            };
+        }
+        let mut exit_code = 1u32;
+        if !sei.hProcess.is_invalid() {
+            let _ = WaitForSingleObject(sei.hProcess, 8000);
+            let _ = GetExitCodeProcess(sei.hProcess, &mut exit_code);
+            let _ = windows::Win32::Foundation::CloseHandle(sei.hProcess);
+        }
+        windows::Win32::System::Com::CoUninitialize();
+        if exit_code == 0 || !is_pid_alive(pid) {
+            KillOutcome::KilledElevated
+        } else {
+            KillOutcome::ProtectedOrDenied
+        }
+    }
+}
+
+/// Elevated helper to start/stop a Windows Service via UAC `sc.exe` when SCM denies standard access!
+pub fn control_service_elevated(svc_name: &str, stop: bool) -> bool {
+    use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let verb = to_wide("runas");
+        let file = to_wide("sc.exe");
+        let params_s = format!("{} \"{}\"", if stop { "stop" } else { "start" }, svc_name);
+        let params = to_wide(&params_s);
+        let mut sei = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOCLOSEPROCESS,
+            hwnd: HWND::default(),
+            lpVerb: PCWSTR(verb.as_ptr()),
+            lpFile: PCWSTR(file.as_ptr()),
+            lpParameters: PCWSTR(params.as_ptr()),
+            nShow: SW_HIDE.0,
+            ..Default::default()
+        };
+        if ShellExecuteExW(&mut sei).is_err() {
+            windows::Win32::System::Com::CoUninitialize();
+            return false;
+        }
+        let mut code = 1u32;
+        if !sei.hProcess.is_invalid() {
+            let _ = WaitForSingleObject(sei.hProcess, 8000);
+            let _ = GetExitCodeProcess(sei.hProcess, &mut code);
+            let _ = windows::Win32::Foundation::CloseHandle(sei.hProcess);
+        }
+        windows::Win32::System::Com::CoUninitialize();
+        code == 0
+    }
 }

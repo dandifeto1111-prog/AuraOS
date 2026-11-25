@@ -16,8 +16,14 @@ fn push_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
 
-fn pad4(buf: &mut Vec<u8>) {
-    while buf.len() % 4 != 0 {
+fn pad8(buf: &mut Vec<u8>) {
+    while buf.len() % 8 != 0 {
+        buf.push(0);
+    }
+}
+
+fn pad16(buf: &mut Vec<u8>) {
+    while buf.len() % 16 != 0 {
         buf.push(0);
     }
 }
@@ -135,9 +141,10 @@ fn build_ico_coff(ico_path: &Path, obj_path: &Path) -> Result<(), String> {
         push_u32(&mut rsrc, 0);        // Reserved
     }
 
-    // Raw resource data blobs (4-byte aligned)
+    // Raw resource data blobs (8-byte aligned so GNU ld's PE `.rsrc` merger NEVER overflows
+    // or truncates the trailing bytes of MinGW's default RT_MANIFEST XML!)
     for (idx, patch_pos) in data_rva_patch_positions.into_iter().enumerate() {
-        pad4(&mut rsrc);
+        pad8(&mut rsrc);
         let blob_off = rsrc.len() as u32;
         patch_u32(&mut rsrc, patch_pos, blob_off);
         if idx < count {
@@ -146,7 +153,10 @@ fn build_ico_coff(ico_path: &Path, obj_path: &Path) -> Result<(), String> {
             rsrc.extend_from_slice(&grp_blob);
         }
     }
-    pad4(&mut rsrc);
+    pad16(&mut rsrc);
+    // Reserve 64 bytes of zero padding at the tail of `.rsrc` so GNU ld's merged `.rsrc`
+    // output buffer ALWAYS has ample headroom for re-aligned resource directory tables + RT_MANIFEST!
+    rsrc.extend_from_slice(&[0u8; 64]);
 
     // Assemble standard x86_64 PE/COFF object file (.o)
     let raw_data_ptr: u32 = 20 + 40; // COFF header (20) + 1 section header (40)
@@ -167,7 +177,7 @@ fn build_ico_coff(ico_path: &Path, obj_path: &Path) -> Result<(), String> {
 
     // 2. Section Header `.rsrc` (40 bytes)
     obj.extend_from_slice(b".rsrc\0\0\0");
-    push_u32(&mut obj, 0);                  // VirtualSize
+    push_u32(&mut obj, 0);                  // VirtualSize (0 in COFF .o)
     push_u32(&mut obj, 0);                  // VirtualAddress
     push_u32(&mut obj, rsrc.len() as u32);  // SizeOfRawData
     push_u32(&mut obj, raw_data_ptr);       // PointerToRawData
@@ -175,7 +185,7 @@ fn build_ico_coff(ico_path: &Path, obj_path: &Path) -> Result<(), String> {
     push_u32(&mut obj, 0);                  // PointerToLinenumbers
     push_u16(&mut obj, num_relocs);         // NumberOfRelocations
     push_u16(&mut obj, 0);                  // NumberOfLinenumbers
-    push_u32(&mut obj, 0x4000_0040);        // CNT_INITIALIZED_DATA | MEM_READ
+    push_u32(&mut obj, 0x4040_0040);        // CNT_INITIALIZED_DATA | ALIGN_8BYTES | MEM_READ
 
     // 3. `.rsrc` Raw Section Data
     obj.extend_from_slice(&rsrc);

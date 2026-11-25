@@ -742,7 +742,7 @@ namespace AuraShellInstaller
                 string json;
                 using (var wc = new WebClient())
                 {
-                    wc.Headers.Add("User-Agent", "AuraOS-Installer/5.2.2");
+                    wc.Headers.Add("User-Agent", "AuraOS-Installer/5.3.0");
                     json = wc.DownloadString(LatestReleaseApiUrl);
                 }
 
@@ -782,7 +782,7 @@ namespace AuraShellInstaller
                 if (onProgress != null) onProgress(10, "Descargando " + zipName + "...");
                 using (var wc = new WebClient())
                 {
-                    wc.Headers.Add("User-Agent", "AuraOS-Installer/5.2.2");
+                    wc.Headers.Add("User-Agent", "AuraOS-Installer/5.3.0");
                     wc.DownloadFile(zipUrl, zipPath);
                 }
 
@@ -1142,7 +1142,7 @@ namespace AuraShellInstaller
                 }
 
                 var verMeta = ReadManifest(InstallDir) ?? ReadManifest(sourceDir);
-                string verLabel = verMeta != null && !string.IsNullOrEmpty(verMeta.Version) ? verMeta.Version : "5.2.2";
+                string verLabel = verMeta != null && !string.IsNullOrEmpty(verMeta.Version) ? verMeta.Version : "5.3.0";
 
                 using (RegistryKey key = Registry.CurrentUser.CreateSubKey(UninstallRegKey))
                 {
@@ -1561,7 +1561,7 @@ namespace AuraShellInstaller
                 Margin = new Thickness(10, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center
             };
-            _versionBadgeTxt = new TextBlock { Text = "v5.2.2", Foreground = Brushes.White, FontSize = 10.6, FontWeight = FontWeights.SemiBold };
+            _versionBadgeTxt = new TextBlock { Text = "v5.3.0", Foreground = Brushes.White, FontSize = 10.6, FontWeight = FontWeights.SemiBold };
             _versionBadge.Child = _versionBadgeTxt;
             titleRow.Children.Add(_versionBadge);
             titleStack.Children.Add(titleRow);
@@ -1629,7 +1629,7 @@ namespace AuraShellInstaller
         {
             VersionManifest inst, avail;
             bool hasNewer = InstallerProgram.HasNewerVersionAvailable(out inst, out avail);
-            string verStr = avail != null && !string.IsNullOrEmpty(avail.Version) ? avail.Version : "5.2.2";
+            string verStr = avail != null && !string.IsNullOrEmpty(avail.Version) ? avail.Version : "5.3.0";
             if (!_isInstalled)
             {
                 _versionBadge.Background = new SolidColorBrush(Violet);
@@ -1718,7 +1718,7 @@ namespace AuraShellInstaller
             vcGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.2, GridUnitType.Star) });
 
             vcGrid.Children.Add(MakeStatCell("INSTALADA ACTUALMENTE", inst != null ? ("v" + inst.Version) : (_isInstalled ? "Instalada" : "Sin instalar"), Brushes.White));
-            var c2 = MakeStatCell("PAQUETE DISPONIBLE", avail != null ? ("v" + avail.Version) : "v5.2.2", new SolidColorBrush(VioletHover));
+            var c2 = MakeStatCell("PAQUETE DISPONIBLE", avail != null ? ("v" + avail.Version) : "v5.3.0", new SolidColorBrush(VioletHover));
             Grid.SetColumn(c2, 1); vcGrid.Children.Add(c2);
             var c3 = MakeStatCell("SISTEMA DETECTADO", _hw.WindowsLabel, TextPrimary);
             Grid.SetColumn(c3, 2); vcGrid.Children.Add(c3);
@@ -2119,7 +2119,7 @@ namespace AuraShellInstaller
             var hdr = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
             _progressHeadlineTxt = new TextBlock
             {
-                Text = _finishedOk ? "Instalación completada con éxito" : "Instalando AuraOS v5.2...",
+                Text = _finishedOk ? "Instalación completada con éxito" : "Instalando AuraOS v5.3...",
                 Foreground = Brushes.White,
                 FontSize = 14,
                 FontWeight = FontWeights.SemiBold

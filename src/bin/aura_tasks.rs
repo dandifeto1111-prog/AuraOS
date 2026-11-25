@@ -16,9 +16,8 @@ use aura_os::win32_shell::{self, from_wide, to_wide};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, FILETIME, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -47,9 +46,8 @@ use windows::Win32::System::Services::{
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::{
     GetPriorityClass, GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, SetPriorityClass,
-    TerminateProcess, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
-    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
-    PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_ESCAPE, VK_LEFT,
@@ -67,7 +65,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const TIMER_REFRESH: usize = 71;
 const SIDEBAR_W: f32 = 204.0;
 const TOP_BAR_H: f32 = 44.0;
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const PROCESS_SUSPEND_RESUME: u32 = 0x0800;
 
 #[link(name = "ntdll")]
@@ -168,6 +165,21 @@ enum TaskAct {
     ToggleService(String, bool),
     ToggleSvcOnlyRunning,
     RefreshNow,
+    RelaunchAsAdmin,
+    CopyProcPathPid(u32),
+}
+
+enum TaskBgEvent {
+    KillFinished { pid: u32, outcome: win32_shell::KillOutcome, tree: bool },
+    ServiceFinished { ok: bool, stopped: bool },
+}
+
+#[derive(Clone)]
+struct ProcCtxMenu {
+    pid: u32,
+    name: String,
+    x: f32,
+    y: f32,
 }
 
 #[derive(Clone)]
@@ -638,6 +650,10 @@ struct TasksRuntime {
     hits: Vec<Hit>,
     hovered_id: Option<String>,
     toast: Option<(String, bool, Instant)>,
+    is_elevated: bool,
+    ctx_menu: Option<ProcCtxMenu>,
+    bg_tx: Sender<TaskBgEvent>,
+    bg_rx: Receiver<TaskBgEvent>,
 
     // Telemetry
     cpu_tracker: system::CpuTracker,
@@ -672,6 +688,64 @@ thread_local! {
 }
 
 impl TasksRuntime {
+    fn poll_bg(&mut self) {
+        let mut dirty = false;
+        while let Ok(ev) = self.bg_rx.try_recv() {
+            match ev {
+                TaskBgEvent::KillFinished { pid, outcome, tree } => {
+                    match outcome {
+                        win32_shell::KillOutcome::Killed => {
+                            self.suspended_pids.remove(&pid);
+                            if self.selected_pid == Some(pid) { self.selected_pid = None; }
+                            self.refresh_all();
+                            let msg = if tree {
+                                format!("Árbol de procesos PID {} finalizado", pid)
+                            } else {
+                                format!("Proceso PID {} finalizado", pid)
+                            };
+                            self.toast = Some((msg, true, Instant::now()));
+                        }
+                        win32_shell::KillOutcome::KilledElevated => {
+                            self.suspended_pids.remove(&pid);
+                            if self.selected_pid == Some(pid) { self.selected_pid = None; }
+                            self.refresh_all();
+                            self.toast = Some((format!("PID {} finalizado con permisos de Administrador", pid), true, Instant::now()));
+                        }
+                        win32_shell::KillOutcome::NotFound => {
+                            self.suspended_pids.remove(&pid);
+                            if self.selected_pid == Some(pid) { self.selected_pid = None; }
+                            self.refresh_all();
+                            self.toast = Some((format!("El proceso PID {} ya había terminado", pid), true, Instant::now()));
+                        }
+                        win32_shell::KillOutcome::CancelledByUser => {
+                            self.toast = Some(("Elevación UAC cancelada por el usuario".into(), false, Instant::now()));
+                        }
+                        win32_shell::KillOutcome::ProtectedOrDenied => {
+                            self.toast = Some(("Protegido por el kernel de Windows (PPL / Anti-Cheat)".into(), false, Instant::now()));
+                        }
+                    }
+                    dirty = true;
+                }
+                TaskBgEvent::ServiceFinished { ok, stopped } => {
+                    self.services = collect_services();
+                    self.toast = Some((
+                        if ok {
+                            if stopped { "Servicio detenido como Administrador".into() } else { "Servicio iniciado como Administrador".into() }
+                        } else {
+                            "No se pudo controlar el servicio (protegido o cancelado)".into()
+                        },
+                        ok,
+                        Instant::now(),
+                    ));
+                    dirty = true;
+                }
+            }
+        }
+        if dirty {
+            self.redraw();
+        }
+    }
+
     fn show_toast(&mut self, msg: &str, ok: bool) {
         self.toast = Some((msg.to_string(), ok, Instant::now()));
         self.redraw();
@@ -813,43 +887,44 @@ impl TasksRuntime {
                 self.search_focused = false;
             }
             TaskAct::KillPid(pid) => {
-                let ok = unsafe {
-                    if let Ok(h) = OpenProcess(PROCESS_TERMINATE, false, pid) {
-                        let r = TerminateProcess(h, 1).is_ok();
-                        let _ = CloseHandle(h);
-                        r
-                    } else {
-                        false
-                    }
-                };
-                if ok {
-                    self.suspended_pids.remove(&pid);
-                    self.selected_pid = None;
-                    self.refresh_all();
-                    self.show_toast(&format!("Proceso PID {} finalizado", pid), true);
-                    return;
-                } else {
-                    self.show_toast("Sin permisos para finalizar este proceso del sistema", false);
-                    return;
-                }
+                self.ctx_menu = None;
+                let tx = self.bg_tx.clone();
+                self.show_toast(&format!("Finalizando PID {}...", pid), true);
+                std::thread::spawn(move || {
+                    let outcome = win32_shell::force_kill_pid(pid, false);
+                    let _ = tx.send(TaskBgEvent::KillFinished { pid, outcome, tree: false });
+                });
+                return;
             }
             TaskAct::KillTreePid(pid) => {
-                let ok = Command::new("taskkill")
-                    .args(["/PID", &pid.to_string(), "/T", "/F"])
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false);
-                if ok {
-                    self.suspended_pids.remove(&pid);
-                    self.selected_pid = None;
-                    self.refresh_all();
-                    self.show_toast(&format!("Árbol de procesos PID {} finalizado", pid), true);
-                    return;
-                } else {
-                    self.show_toast("No se pudo finalizar el árbol del proceso", false);
-                    return;
+                self.ctx_menu = None;
+                let tx = self.bg_tx.clone();
+                self.show_toast(&format!("Finalizando árbol PID {}...", pid), true);
+                std::thread::spawn(move || {
+                    let outcome = win32_shell::force_kill_pid(pid, true);
+                    let _ = tx.send(TaskBgEvent::KillFinished { pid, outcome, tree: true });
+                });
+                return;
+            }
+            TaskAct::RelaunchAsAdmin => {
+                if let Ok(exe) = std::env::current_exe() {
+                    win32_shell::run_as_admin(&exe.to_string_lossy(), "");
+                    self.show_toast("Abriendo AuraTasks con permisos de Administrador...", true);
                 }
+                return;
+            }
+            TaskAct::CopyProcPathPid(pid) => {
+                self.ctx_menu = None;
+                if let Some(p) = self.procs.iter().find(|x| x.pid == pid) {
+                    let txt = if !p.exe_path.is_empty() {
+                        p.exe_path.clone()
+                    } else {
+                        format!("{} (PID {})", p.name, p.pid)
+                    };
+                    win32_shell::copy_text_to_clipboard(&txt);
+                    self.show_toast("Ruta / información copiada al portapapeles", true);
+                }
+                return;
             }
             TaskAct::EcoModePid(pid) => {
                 let ok = unsafe {
@@ -1008,15 +1083,21 @@ impl TasksRuntime {
             }
             TaskAct::ToggleService(name, running) => {
                 let ok = control_service_action(&name, running);
-                self.services = collect_services();
-                self.show_toast(
-                    if ok {
-                        if running { "Servicio detenido" } else { "Servicio iniciado" }
-                    } else {
-                        "Controlar servicios protegidos requiere Administrador"
-                    },
-                    ok,
-                );
+                if ok {
+                    self.services = collect_services();
+                    self.show_toast(
+                        if running { "Servicio detenido" } else { "Servicio iniciado" },
+                        true,
+                    );
+                } else {
+                    let tx = self.bg_tx.clone();
+                    let svc = name.clone();
+                    self.show_toast("Solicitando permisos de Administrador para el servicio...", true);
+                    std::thread::spawn(move || {
+                        let elev_ok = win32_shell::control_service_elevated(&svc, running);
+                        let _ = tx.send(TaskBgEvent::ServiceFinished { ok: elev_ok, stopped: running });
+                    });
+                }
                 return;
             }
             TaskAct::ToggleSvcOnlyRunning => {
@@ -1052,6 +1133,8 @@ impl TasksRuntime {
             toast: self.toast.as_ref().and_then(|(m, ok, t)| {
                 if t.elapsed().as_secs_f32() < 3.5 { Some((m.clone(), *ok)) } else { None }
             }),
+            is_elevated: self.is_elevated,
+            ctx_menu: self.ctx_menu.clone(),
             cpu_pct: self.cpu_pct,
             cpu_hist: self.cpu_hist.clone(),
             ram_used: self.ram_used,
@@ -1102,6 +1185,8 @@ struct RenderSnap {
     maximized: bool,
     hovered_id: Option<String>,
     toast: Option<(String, bool)>,
+    is_elevated: bool,
+    ctx_menu: Option<ProcCtxMenu>,
     cpu_pct: f32,
     cpu_hist: Vec<f32>,
     ram_used: f64,
@@ -1211,10 +1296,21 @@ fn render_tasks_ui(ctx: &mut DrawCtx<'_>, w: f32, h: f32, s: &RenderSnap, hits: 
         format_rate(s.net_down_kbps),
         s.total_procs
     );
-    let pill_r = Rect::new((w - 430.0).max(360.0), 9.0, 344.0, 26.0);
-    if w > 760.0 {
+    let pill_r = Rect::new((w - 538.0).max(360.0), 9.0, 344.0, 26.0);
+    if w > 880.0 {
         ctx.fill_card(pill_r, 13.0, theme::ELEVATED, theme::BORDER);
         ctx.draw_text_center(&summary_txt, pill_r, TextStyle::Small10Bold, theme::TEXT_SECONDARY);
+    }
+
+    let adm_r = Rect::new(w - 186.0, 9.0, 102.0, 26.0);
+    let adm_hov = s.hovered_id.as_deref() == Some("btn_admin");
+    if s.is_elevated {
+        ctx.fill_card(adm_r, 10.0, theme::rgba(16, 185, 129, 0.20), theme::EMERALD);
+        ctx.draw_text_center("Admin Activo", adm_r, TextStyle::Small10Bold, theme::EMERALD);
+    } else {
+        ctx.fill_card(adm_r, 10.0, if adm_hov { theme::VIOLET } else { theme::VIOLET_TINT }, theme::VIOLET_LIGHT);
+        ctx.draw_text_center("Modo Admin", adm_r, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
+        hits.push(Hit { id: "btn_admin".into(), rect: adm_r, act: TaskAct::RelaunchAsAdmin });
     }
 
     let ref_r = Rect::new(w - 78.0, 9.0, 66.0, 26.0);
@@ -1282,6 +1378,55 @@ fn render_tasks_ui(ctx: &mut DrawCtx<'_>, w: f32, h: f32, s: &RenderSnap, hits: 
         TaskTab::Network => render_network_tab(ctx, cx, cy, cw, ch, s, hits),
         TaskTab::Startup => render_startup_tab(ctx, cx, cy, cw, ch, s, hits),
         TaskTab::Services => render_services_tab(ctx, cx, cy, cw, ch, s, hits),
+    }
+
+    // Right-click Process Context Menu Overlay
+    if let Some(cm) = &s.ctx_menu {
+        let mw = 236.0f32;
+        let is_susp = s.procs.iter().find(|p| p.pid == cm.pid).map(|p| p.suspended).unwrap_or(false);
+        let items: [(&str, &str, TaskAct, bool); 8] = [
+            ("cm_kill", "Finalizar tarea (Forzar)", TaskAct::KillPid(cm.pid), true),
+            ("cm_tree", "Finalizar árbol de procesos", TaskAct::KillTreePid(cm.pid), true),
+            ("cm_eco", "Modo Eco (Baja prioridad)", TaskAct::EcoModePid(cm.pid), false),
+            ("cm_susp", if is_susp { "Reanudar proceso" } else { "Suspender (0% CPU)" }, TaskAct::ToggleSuspendPid(cm.pid), false),
+            ("cm_prio", "Cambiar prioridad", TaskAct::CyclePriorityPid(cm.pid), false),
+            ("cm_trim", "Liberar RAM inactiva", TaskAct::TrimRamPid(cm.pid), false),
+            ("cm_open", "Abrir ubicación en AuraFiles", TaskAct::OpenPathPid(cm.pid), false),
+            ("cm_copy", "Copiar ruta / PID", TaskAct::CopyProcPathPid(cm.pid), false),
+        ];
+        let mh = 34.0 + items.len() as f32 * 30.0 + 10.0;
+        let mx = cm.x.clamp(8.0, (w - mw - 8.0).max(8.0));
+        let my = cm.y.clamp(TOP_BAR_H + 6.0, (h - mh - 8.0).max(TOP_BAR_H + 6.0));
+        let mr = Rect::new(mx, my, mw, mh);
+        ctx.fill_card(mr, 14.0, theme::rgba(16, 16, 26, 0.98), theme::VIOLET_BORDER);
+        ctx.draw_text(
+            &format!("{} · PID {}", cm.name, cm.pid),
+            Rect::new(mx + 12.0, my + 8.0, mw - 24.0, 18.0),
+            TextStyle::Small10Bold,
+            theme::VIOLET_LIGHT,
+        );
+        ctx.draw_line(mx + 10.0, my + 30.0, mx + mw - 10.0, my + 30.0, theme::BORDER, 1.0);
+        let mut cy_m = my + 34.0;
+        for (id, lbl, act, danger) in items {
+            let rr = Rect::new(mx + 6.0, cy_m, mw - 12.0, 28.0);
+            let hov = s.hovered_id.as_deref() == Some(id);
+            let bg = if danger {
+                if hov { theme::CORAL } else { theme::CORAL_BG }
+            } else if hov {
+                theme::ELEVATED_HOVER
+            } else {
+                theme::rgba(0, 0, 0, 0.0)
+            };
+            ctx.fill_rrect(rr, 8.0, bg);
+            ctx.draw_text(
+                lbl,
+                Rect::new(rr.x + 10.0, rr.y, rr.w - 16.0, 28.0),
+                if danger { TextStyle::Body11Med } else { TextStyle::Body11Reg },
+                if danger && !hov { theme::CORAL } else { theme::TEXT_PRIMARY },
+            );
+            hits.push(Hit { id: id.into(), rect: rr, act });
+            cy_m += 30.0;
+        }
     }
 
     // Toast notification
@@ -1773,8 +1918,13 @@ unsafe extern "system" fn tasks_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
         let Some(rt) = opt.as_mut() else { return false };
         match msg {
             WM_TIMER if wparam.0 == TIMER_REFRESH => {
+                rt.poll_bg();
                 rt.refresh_all();
                 rt.redraw();
+                true
+            }
+            WM_TIMER if wparam.0 == 72 => {
+                rt.poll_bg();
                 true
             }
             WM_SIZE => {
@@ -1804,6 +1954,12 @@ unsafe extern "system" fn tasks_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                 let px = (lparam.0 & 0xFFFF) as i16 as f32;
                 let py = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
                 if let Some(hit) = rt.hits.iter().rev().find(|h| h.rect.contains(px, py)).cloned() {
+                    if !hit.id.starts_with("cm_") && rt.ctx_menu.is_some() {
+                        rt.ctx_menu = None;
+                        rt.redraw();
+                        return true;
+                    }
+                    rt.ctx_menu = None;
                     match hit.act {
                         TaskAct::WinMax => {
                             rt.maximized = !rt.maximized;
@@ -1812,6 +1968,10 @@ unsafe extern "system" fn tasks_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                         TaskAct::WinMin => deferred_min = true,
                         other => rt.execute(other),
                     }
+                    return true;
+                }
+                if rt.ctx_menu.take().is_some() {
+                    rt.redraw();
                     return true;
                 }
                 rt.search_focused = false;
@@ -1825,10 +1985,25 @@ unsafe extern "system" fn tasks_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
             WM_RBUTTONDOWN => {
                 let px = (lparam.0 & 0xFFFF) as i16 as f32;
                 let py = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
-                if let Some(hit) = rt.hits.iter().rev().find(|h| h.rect.contains(px, py)) {
-                    if matches!(hit.act, TaskAct::WinMax) {
-                        deferred_snap = true;
+                if let Some(hit) = rt.hits.iter().rev().find(|h| h.rect.contains(px, py)).cloned() {
+                    match hit.act {
+                        TaskAct::WinMax => {
+                            deferred_snap = true;
+                        }
+                        TaskAct::SelectPid(pid) => {
+                            rt.selected_pid = Some(pid);
+                            let name = rt.procs.iter().find(|p| p.pid == pid).map(|p| p.name.clone()).unwrap_or_else(|| "Proceso".into());
+                            rt.ctx_menu = Some(ProcCtxMenu { pid, name, x: px, y: py });
+                            rt.redraw();
+                        }
+                        _ => {
+                            if rt.ctx_menu.take().is_some() {
+                                rt.redraw();
+                            }
+                        }
                     }
+                } else if rt.ctx_menu.take().is_some() {
+                    rt.redraw();
                 }
                 true
             }
@@ -1853,7 +2028,9 @@ unsafe extern "system" fn tasks_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                     rt.search_focused = true;
                     rt.redraw();
                 } else if vk == VK_ESCAPE.0 {
-                    if !rt.search.is_empty() {
+                    if rt.ctx_menu.take().is_some() {
+                        rt.redraw();
+                    } else if !rt.search.is_empty() {
                         rt.search.clear();
                         rt.redraw();
                     } else {
@@ -1931,6 +2108,8 @@ fn run_capture(out_path: &Path, perf_tab: bool) {
         maximized: false,
         hovered_id: None,
         toast: None,
+        is_elevated: win32_shell::is_process_elevated(),
+        ctx_menu: None,
         cpu_pct: c_pct,
         cpu_hist: vec![14.0, 18.0, 22.0, 16.0, 25.0, 19.0, 21.0, 15.0, 28.0, c_pct.max(12.0)],
         ram_used: ru,
@@ -2014,6 +2193,9 @@ fn main() {
     let Ok(surf) = WindowSurface::new(&gpu, hwnd, win_w as u32, win_h as u32) else { return };
 
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+    let _ = win32_shell::enable_debug_privilege();
+    let is_elevated = win32_shell::is_process_elevated();
+    let (bg_tx, bg_rx) = mpsc::channel();
     let (gpu_name, gpu_vram_gb) = read_gpu_info();
     let mut rt = TasksRuntime {
         hwnd,
@@ -2035,6 +2217,10 @@ fn main() {
         hits: Vec::new(),
         hovered_id: None,
         toast: None,
+        is_elevated,
+        ctx_menu: None,
+        bg_tx,
+        bg_rx,
         cpu_tracker: system::CpuTracker::new(),
         cpu_pct: 0.0,
         cpu_hist: vec![0.0; 24],
@@ -2067,6 +2253,7 @@ fn main() {
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);
         SetTimer(hwnd, TIMER_REFRESH, 1500, None);
+        SetTimer(hwnd, 72, 120, None);
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             let _ = TranslateMessage(&msg);

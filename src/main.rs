@@ -84,6 +84,7 @@ enum WinKind {
     TopBar,
     Dock,
     DockNotch,
+    DockMenu,
     ControlCenter,
     PowerMenu,
     Calendar,
@@ -92,6 +93,19 @@ enum WinKind {
     Launchpad,
     Overview,
     Widget(WidgetKind),
+}
+
+enum NetBgResult {
+    WifiAndVpn {
+        wifis: Vec<radios::WifiNetwork>,
+        vpns: Vec<radios::VpnProfile>,
+        details: radios::NetworkDetails,
+    },
+    RadioAndToast {
+        radios: RadioStates,
+        toast: Option<(String, bool)>,
+    },
+    ToastOnly(String, bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,12 +142,15 @@ struct ShellRuntime {
     startup_rx: Option<Receiver<StartupCatalog>>,
     weather_rx: Option<Receiver<WeatherInfo>>,
     radio_rx: Option<Receiver<RadioStates>>,
+    net_bg_tx: mpsc::Sender<NetBgResult>,
+    net_bg_rx: Receiver<NetBgResult>,
     dev_hub_rx: Option<Receiver<dev_hub::DevHubSnapshot>>,
     file_pick_rx: Option<Receiver<(FilePickKind, Option<String>)>>,
 
     hwnd_topbar: HWND,
     hwnd_dock: HWND,
     hwnd_notch: HWND,
+    hwnd_dock_menu: HWND,
     hwnd_cc: HWND,
     hwnd_power: HWND,
     hwnd_calendar: HWND,
@@ -145,6 +162,7 @@ struct ShellRuntime {
     surf_topbar: WindowSurface,
     surf_dock: WindowSurface,
     surf_notch: WindowSurface,
+    surf_dock_menu: WindowSurface,
     surf_cc: WindowSurface,
     surf_power: WindowSurface,
     surf_calendar: WindowSurface,
@@ -159,6 +177,7 @@ struct ShellRuntime {
 
     hits_topbar: Vec<HitRegion>,
     hits_dock: Vec<HitRegion>,
+    hits_dock_menu: Vec<HitRegion>,
     hits_cc: Vec<HitRegion>,
     hits_power: Vec<HitRegion>,
     hits_calendar: Vec<HitRegion>,
@@ -339,6 +358,7 @@ fn run_shell() -> windows::core::Result<()> {
     let hwnd_dock = create_layered_window(&cls_name, "AuraDock", dx, dy, dw, dh, true, true)?;
     let (nx, ny, nw, nh) = ui_dock::notch_geometry(sw, sh, is_left);
     let hwnd_notch = create_layered_window(&cls_name, "AuraDockNotch", nx, ny, nw, nh, true, true)?;
+    let hwnd_dock_menu = create_layered_window(&cls_name, "AuraDockMenu", 100, 100, ui_dock::DOCK_MENU_W as i32, 266, true, false)?;
     let cc_h = (sh - top_h - 18).min(CC_MAX_H as i32);
     let hwnd_cc = create_layered_window(&cls_name, "AuraControlCenter", sw - CC_WIDTH as i32 - 10, top_h + 6, CC_WIDTH as i32, cc_h, true, false)?;
     let hwnd_power = create_layered_window(&cls_name, "AuraPowerMenu", sw - POWER_MENU_W as i32 - 10, top_h + 6, POWER_MENU_W as i32, POWER_MENU_H as i32, true, false)?;
@@ -409,6 +429,7 @@ fn run_shell() -> windows::core::Result<()> {
     let surf_topbar = WindowSurface::new(&gpu, hwnd_topbar, sw as u32, top_h as u32)?;
     let surf_dock = WindowSurface::new(&gpu, hwnd_dock, dw as u32, dh as u32)?;
     let surf_notch = WindowSurface::new(&gpu, hwnd_notch, nw as u32, nh as u32)?;
+    let surf_dock_menu = WindowSurface::new(&gpu, hwnd_dock_menu, 2, 2)?;
     let surf_cc = WindowSurface::new(&gpu, hwnd_cc, 2, 2)?;
     let surf_power = WindowSurface::new(&gpu, hwnd_power, 2, 2)?;
     let surf_calendar = WindowSurface::new(&gpu, hwnd_calendar, 2, 2)?;
@@ -445,6 +466,7 @@ fn run_shell() -> windows::core::Result<()> {
     let genie = genie::GenieAnimator::new(&gpu, sw, sh);
 
     let upd_settings = state.settings.clone();
+    let (net_bg_tx, net_bg_rx) = mpsc::channel();
     let mut rt = ShellRuntime {
         gpu,
         state,
@@ -456,11 +478,14 @@ fn run_shell() -> windows::core::Result<()> {
         startup_rx: Some(cat_rx),
         weather_rx: Some(w_rx),
         radio_rx: Some(r_rx),
+        net_bg_tx,
+        net_bg_rx,
         dev_hub_rx: Some(dh_rx),
         file_pick_rx: None,
         hwnd_topbar,
         hwnd_dock,
         hwnd_notch,
+        hwnd_dock_menu,
         hwnd_cc,
         hwnd_power,
         hwnd_calendar,
@@ -471,6 +496,7 @@ fn run_shell() -> windows::core::Result<()> {
         surf_topbar,
         surf_dock,
         surf_notch,
+        surf_dock_menu,
         surf_cc,
         surf_power,
         surf_calendar,
@@ -483,6 +509,7 @@ fn run_shell() -> windows::core::Result<()> {
         snapped_widget: None,
         hits_topbar: Vec::new(),
         hits_dock: Vec::new(),
+        hits_dock_menu: Vec::new(),
         hits_cc: Vec::new(),
         hits_power: Vec::new(),
         hits_calendar: Vec::new(),
@@ -631,6 +658,7 @@ impl ShellRuntime {
         if hwnd == self.hwnd_topbar { return Some(WinKind::TopBar); }
         if hwnd == self.hwnd_dock { return Some(WinKind::Dock); }
         if hwnd == self.hwnd_notch { return Some(WinKind::DockNotch); }
+        if hwnd == self.hwnd_dock_menu { return Some(WinKind::DockMenu); }
         if hwnd == self.hwnd_cc { return Some(WinKind::ControlCenter); }
         if hwnd == self.hwnd_power { return Some(WinKind::PowerMenu); }
         if hwnd == self.hwnd_calendar { return Some(WinKind::Calendar); }
@@ -650,6 +678,7 @@ impl ShellRuntime {
         match kind {
             WinKind::TopBar => &self.hits_topbar,
             WinKind::Dock => &self.hits_dock,
+            WinKind::DockMenu => &self.hits_dock_menu,
             WinKind::DockNotch | WinKind::VolumeOsd => &[],
             WinKind::ControlCenter => &self.hits_cc,
             WinKind::PowerMenu => &self.hits_power,
@@ -671,6 +700,7 @@ impl ShellRuntime {
             WinKind::TopBar => self.redraw_topbar(),
             WinKind::Dock => self.redraw_dock(),
             WinKind::DockNotch => self.redraw_notch(),
+            WinKind::DockMenu => self.redraw_dock_menu(),
             WinKind::ControlCenter => self.redraw_cc(),
             WinKind::PowerMenu => self.redraw_power(),
             WinKind::Calendar => self.redraw_calendar(),
@@ -680,6 +710,16 @@ impl ShellRuntime {
             WinKind::Overview => self.redraw_overview(),
             WinKind::Widget(wk) => self.redraw_widget(wk),
         }
+    }
+
+    fn redraw_dock_menu(&mut self) {
+        let w = self.surf_dock_menu.width as f32;
+        let h = self.surf_dock_menu.height as f32;
+        let state = &self.state;
+        let hits = &mut self.hits_dock_menu;
+        self.surf_dock_menu.draw(&mut self.gpu, |ctx| {
+            ui_dock::render_dock_context_menu(ctx, state, w, h, hits);
+        });
     }
 
     fn redraw_topbar(&mut self) {
@@ -1152,13 +1192,96 @@ impl ShellRuntime {
 
     // ==================== TRUE TOGGLE OVERLAY ORCHESTRATION ====================
 
+    fn close_dock_menu(&mut self) {
+        if self.state.dock_menu.take().is_some() {
+            unsafe {
+                let _ = ShowWindow(self.hwnd_dock_menu, SW_HIDE);
+            }
+            self.surf_dock_menu.trim_hidden(&self.gpu);
+            self.hits_dock_menu.clear();
+        }
+    }
+
+    fn open_dock_menu(&mut self, menu: ui_state::DockContextMenu) {
+        self.dock_preview.hide();
+        self.close_all_overlays();
+        self.state.dock_menu = Some(menu);
+        let mw = ui_dock::DOCK_MENU_W as i32;
+        let mh = ui_dock::dock_menu_height(&self.state) as i32;
+        let (cx, cy) = win32_shell::cursor_pos();
+        let is_left = !self.state.settings.dock_position.eq_ignore_ascii_case("Bottom");
+        let (dx, dy, _dw, _dh) = self.dock_geo;
+        let mut mx = if is_left { dx + 78 } else { cx - mw / 2 };
+        let mut my = if is_left { cy - mh / 2 } else { dy - mh - 8 };
+        mx = mx.clamp(8, (self.screen_w - mw - 8).max(8));
+        my = my.clamp(TOPBAR_HEIGHT as i32 + 6, (self.screen_h - mh - 8).max(40));
+        self.surf_dock_menu.ensure_size(&self.gpu, mw as u32, mh as u32);
+        unsafe {
+            let _ = SetWindowPos(self.hwnd_dock_menu, HWND_TOPMOST, mx, my, mw, mh, SWP_NOACTIVATE);
+        }
+        self.redraw_dock_menu();
+        win32_shell::bring_to_front(self.hwnd_dock_menu);
+    }
+
+    /// Immediately hides ALL fullscreen/topmost overlay windows (`SW_HIDE`) BEFORE launching any
+    /// external app or UAC prompt — guaranteeing Launchpad/Overview can NEVER block clicks or obscure dialogs!
+    fn hide_all_overlays_immediately(&mut self) {
+        self.close_dock_menu();
+        self.dock_preview.hide();
+        let any_was_open = self.state.overview_open
+            || self.state.cc_open
+            || self.state.power_open
+            || self.state.calendar_open
+            || self.state.clipboard_open
+            || self.state.launchpad_open;
+        self.state.overview_open = false;
+        self.state.overview_settings_view = false;
+        self.state.add_modal.open = false;
+        self.state.overview_anim.snap(0.0);
+        self.state.cc_open = false;
+        self.state.cc_keyboard_menu_open = false;
+        self.state.cc_network_drawer_open = false;
+        self.state.todo_input_active = false;
+        let _ = self.telemetry.tx.send(TelemetryCmd::SetControlCenterOpen(false));
+        self.state.cc_anim.snap(0.0);
+        self.state.power_open = false;
+        self.state.power_confirm = None;
+        self.state.power_anim.snap(0.0);
+        self.state.calendar_open = false;
+        self.state.calendar_anim.snap(0.0);
+        self.state.clipboard_open = false;
+        self.state.clipboard_anim.snap(0.0);
+        self.state.launchpad_open = false;
+        self.state.launchpad_anim.snap(0.0);
+        unsafe {
+            let _ = ShowWindow(self.hwnd_overview, SW_HIDE);
+            let _ = ShowWindow(self.hwnd_cc, SW_HIDE);
+            let _ = ShowWindow(self.hwnd_power, SW_HIDE);
+            let _ = ShowWindow(self.hwnd_calendar, SW_HIDE);
+            let _ = ShowWindow(self.hwnd_clipboard, SW_HIDE);
+            let _ = ShowWindow(self.hwnd_launchpad, SW_HIDE);
+        }
+        self.surf_overview.trim_hidden(&self.gpu);
+        self.surf_cc.trim_hidden(&self.gpu);
+        self.surf_power.trim_hidden(&self.gpu);
+        self.surf_calendar.trim_hidden(&self.gpu);
+        self.surf_clipboard.trim_hidden(&self.gpu);
+        self.surf_launchpad.trim_hidden(&self.gpu);
+        if any_was_open {
+            self.redraw_topbar();
+            self.redraw_dock();
+        }
+    }
+
     fn close_all_overlays(&mut self) {
+        self.close_dock_menu();
         self.close_overview();
         self.close_cc();
         self.close_power();
         self.close_calendar();
         self.close_clipboard();
         self.close_launchpad();
+        self.wake_anim_timer();
     }
 
     fn open_overview(&mut self, settings_view: bool) {
@@ -1195,6 +1318,7 @@ impl ShellRuntime {
             }
             self.state.tab_content_anim.snap(1.0);
         }
+        self.wake_anim_timer();
         self.redraw_overview();
         self.redraw_topbar();
         win32_shell::bring_to_front(self.hwnd_overview);
@@ -1202,6 +1326,7 @@ impl ShellRuntime {
     }
 
     fn open_calendar(&mut self) {
+        self.close_dock_menu();
         self.close_overview();
         self.close_cc();
         self.close_power();
@@ -1216,6 +1341,7 @@ impl ShellRuntime {
         self.state.calendar_open = true;
         self.state.calendar_anim.snap(0.15);
         self.state.calendar_anim.animate_to(1.0, 155.0, CubicBezier::EASE_OUT);
+        self.wake_anim_timer();
         self.redraw_calendar();
         self.redraw_topbar();
         win32_shell::bring_to_front(self.hwnd_calendar);
@@ -1228,10 +1354,12 @@ impl ShellRuntime {
         self.state.calendar_open = false;
         self.state.calendar_last_closed = Some(Instant::now());
         self.state.calendar_anim.animate_to(0.0, 115.0, CubicBezier::EASE_OUT);
+        self.wake_anim_timer();
         self.redraw_topbar();
     }
 
     fn open_clipboard(&mut self) {
+        self.close_dock_menu();
         self.state.clip_target_hwnd = win32_shell::get_active_user_hwnd();
         self.poll_clipboard_history();
         self.close_overview();
@@ -1242,6 +1370,7 @@ impl ShellRuntime {
         self.surf_clipboard.ensure_size(&self.gpu, CLIP_WIDTH as u32, CLIP_HEIGHT as u32);
         self.state.clipboard_open = true;
         self.state.clipboard_anim.snap(1.0); // Keyboard Win+V opens instantaneously!
+        self.wake_anim_timer();
         self.redraw_clipboard();
         win32_shell::bring_to_front(self.hwnd_clipboard);
     }
@@ -1253,6 +1382,7 @@ impl ShellRuntime {
         self.state.clipboard_open = false;
         self.state.clipboard_last_closed = Some(Instant::now());
         self.state.clipboard_anim.animate_to(0.0, 110.0, CubicBezier::EASE_OUT);
+        self.wake_anim_timer();
     }
 
     fn poll_clipboard_history(&mut self) {
@@ -1297,10 +1427,12 @@ impl ShellRuntime {
         self.state.add_modal.open = false;
         self.state.overview_last_closed = Some(Instant::now());
         self.state.overview_anim.animate_to(0.0, 135.0, CubicBezier::EASE_OUT);
+        self.wake_anim_timer();
         self.redraw_topbar();
     }
 
     fn open_cc(&mut self) {
+        self.close_dock_menu();
         self.close_overview();
         self.close_power();
         self.close_calendar();
@@ -1323,6 +1455,7 @@ impl ShellRuntime {
 
         self.state.cc_anim.snap(0.01);
         self.state.cc_anim.animate_to(1.0, 175.0, CubicBezier::EASE_OUT);
+        self.wake_anim_timer();
         self.redraw_cc();
         self.redraw_topbar();
         win32_shell::bring_to_front(self.hwnd_cc);
@@ -1334,14 +1467,17 @@ impl ShellRuntime {
         }
         self.state.cc_open = false;
         self.state.cc_keyboard_menu_open = false;
+        self.state.cc_network_drawer_open = false;
         self.state.todo_input_active = false;
         let _ = self.telemetry.tx.send(TelemetryCmd::SetControlCenterOpen(false));
         self.state.cc_last_closed = Some(Instant::now());
         self.state.cc_anim.animate_to(0.0, 135.0, CubicBezier::EASE_OUT);
+        self.wake_anim_timer();
         self.redraw_topbar();
     }
 
     fn open_power(&mut self) {
+        self.close_dock_menu();
         self.close_overview();
         self.close_cc();
         self.close_calendar();
@@ -1366,10 +1502,12 @@ impl ShellRuntime {
         self.state.power_confirm = None;
         self.state.power_last_closed = Some(Instant::now());
         self.state.power_anim.animate_to(0.0, 120.0, CubicBezier::EASE_OUT);
+        self.wake_anim_timer();
         self.redraw_topbar();
     }
 
     fn open_launchpad(&mut self) {
+        self.close_dock_menu();
         self.close_overview();
         self.close_cc();
         self.close_power();
@@ -1384,6 +1522,7 @@ impl ShellRuntime {
         // Snappy 165ms zero-layer GPU reveal (butter-smooth even during 100% GPU games!)
         self.state.launchpad_anim.snap(0.01);
         self.state.launchpad_anim.animate_to(1.0, 165.0, CubicBezier::EASE_OUT);
+        self.wake_anim_timer();
         self.redraw_launchpad();
         self.redraw_dock();
         win32_shell::bring_to_front(self.hwnd_launchpad);
@@ -1396,6 +1535,7 @@ impl ShellRuntime {
         self.state.launchpad_open = false;
         self.state.launchpad_last_closed = Some(Instant::now());
         self.state.launchpad_anim.animate_to(0.0, 175.0, CubicBezier::EASE_OUT);
+        self.wake_anim_timer();
         self.redraw_dock();
     }
 
@@ -1471,34 +1611,31 @@ impl ShellRuntime {
                 }
             }
             Action::OpenSettings => {
-                self.close_all_overlays();
+                self.hide_all_overlays_immediately();
                 win32_shell::launch_aura_settings(None);
             }
             Action::LaunchAuraSettings(tab) => {
-                self.close_all_overlays();
+                self.hide_all_overlays_immediately();
                 win32_shell::launch_aura_settings(tab.as_deref());
             }
             Action::LaunchAuraLock => {
-                self.close_all_overlays();
-                self.state.power_anim.snap(0.0);
-                unsafe { let _ = ShowWindow(self.hwnd_power, SW_HIDE); }
-                self.surf_power.trim_hidden(&self.gpu);
+                self.hide_all_overlays_immediately();
                 win32_shell::launch_aura_lock();
             }
             Action::LaunchAuraTasks => {
-                self.close_all_overlays();
+                self.hide_all_overlays_immediately();
                 win32_shell::launch_aura_tasks();
             }
             Action::LaunchAuraShot => {
-                self.close_all_overlays();
+                self.hide_all_overlays_immediately();
                 win32_shell::launch_aura_shot();
             }
             Action::LaunchAuraPdf => {
-                self.close_all_overlays();
+                self.hide_all_overlays_immediately();
                 win32_shell::launch_aura_pdf(None);
             }
             Action::LaunchAuraBeats => {
-                self.close_all_overlays();
+                self.hide_all_overlays_immediately();
                 if !win32_shell::launch_aurabeats(None) {
                     // Refresh status in case it was installed after shell startup
                     self.state.aurabeats_installed = win32_shell::resolve_aurabeats_path().is_some();
@@ -1506,7 +1643,7 @@ impl ShellRuntime {
                 }
             }
             Action::LaunchAuraApp(exe) => {
-                self.close_all_overlays();
+                self.hide_all_overlays_immediately();
                 let _ = win32_shell::launch_aura_app(exe, None);
             }
             Action::ToggleCalendar => {
@@ -1605,7 +1742,7 @@ impl ShellRuntime {
                 self.close_all_overlays();
             }
             Action::RunShellCommand(cmd) => {
-                self.close_all_overlays();
+                self.hide_all_overlays_immediately();
                 let _ = std::process::Command::new("cmd.exe")
                     .args(["/C", "start", "", &cmd])
                     .spawn();
@@ -1652,7 +1789,7 @@ impl ShellRuntime {
                 window_styler::toggle_maximize_active_window(self.state.active_user_hwnd);
             }
             Action::LaunchAuraFiles(folder) => {
-                self.close_all_overlays();
+                self.hide_all_overlays_immediately();
                 win32_shell::launch_aurafiles(folder.as_deref());
             }
             Action::MediaPrev => {
@@ -1763,6 +1900,122 @@ impl ShellRuntime {
                 std::thread::spawn(move || {
                     let _ = radios::toggle_bluetooth();
                     let _ = tx.send(radios::query_radio_states());
+                });
+            }
+            Action::ToggleHotspot => {
+                let tx = self.net_bg_tx.clone();
+                self.state.cc_status_toast = Some(("Cambiando Zona Wi-Fi (Hotspot)...".into(), true, Instant::now()));
+                if self.state.cc_open { self.redraw_cc(); }
+                self.wake_anim_timer();
+                std::thread::spawn(move || {
+                    unsafe {
+                        let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+                    }
+                    let toast = match radios::toggle_hotspot() {
+                        Ok(true) => Some(("Compartir Internet (Hotspot) ACTIVADO".into(), true)),
+                        Ok(false) => Some(("Compartir Internet (Hotspot) apagado".into(), true)),
+                        Err(e) => Some((e, false)),
+                    };
+                    let r = radios::query_radio_states();
+                    let _ = tx.send(NetBgResult::RadioAndToast { radios: r, toast });
+                });
+            }
+            Action::ToggleAirplaneMode => {
+                let next_air = !self.state.radios.airplane_mode;
+                self.state.radios.airplane_mode = next_air;
+                let tx = self.net_bg_tx.clone();
+                self.state.cc_status_toast = Some((
+                    if next_air { "Activando Modo Avión...".into() } else { "Desactivando Modo Avión...".into() },
+                    true,
+                    Instant::now(),
+                ));
+                if self.state.cc_open { self.redraw_cc(); }
+                self.wake_anim_timer();
+                std::thread::spawn(move || {
+                    unsafe {
+                        let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+                    }
+                    let ok = radios::set_airplane_mode(next_air);
+                    let r = radios::query_radio_states();
+                    let msg = if !ok {
+                        "Sin radios inalámbricas detectadas en este equipo".to_string()
+                    } else if next_air {
+                        "Modo Avión activado".to_string()
+                    } else {
+                        "Modo Avión desactivado".to_string()
+                    };
+                    let _ = tx.send(NetBgResult::RadioAndToast { radios: r, toast: Some((msg, ok)) });
+                });
+            }
+            Action::ToggleNetworkDrawer => {
+                self.state.cc_network_drawer_open = !self.state.cc_network_drawer_open;
+                if self.state.cc_network_drawer_open {
+                    self.state.cc_keyboard_menu_open = false;
+                    self.execute(Action::ScanWifiNetworks);
+                } else if self.state.cc_open {
+                    self.redraw_cc();
+                }
+            }
+            Action::ScanWifiNetworks => {
+                self.state.cc_wifi_scanning = true;
+                if self.state.cc_open { self.redraw_cc(); }
+                self.wake_anim_timer();
+                let cur_ssid = self.state.radios.wifi_ssid.clone();
+                let tx = self.net_bg_tx.clone();
+                std::thread::spawn(move || {
+                    let wifis = radios::scan_wifi_networks(&cur_ssid);
+                    let vpns = radios::list_vpn_profiles();
+                    let details = radios::query_network_details();
+                    let _ = tx.send(NetBgResult::WifiAndVpn { wifis, vpns, details });
+                });
+            }
+            Action::ConnectWifi(ssid) => {
+                let tx = self.net_bg_tx.clone();
+                self.state.cc_status_toast = Some((format!("Conectando a {}...", ssid), true, Instant::now()));
+                if self.state.cc_open { self.redraw_cc(); }
+                self.wake_anim_timer();
+                std::thread::spawn(move || {
+                    let res = radios::connect_wifi(&ssid, None);
+                    std::thread::sleep(std::time::Duration::from_millis(900));
+                    let r = radios::query_radio_states();
+                    let toast = match res {
+                        Ok(m) => Some((m, true)),
+                        Err(e) => Some((e, false)),
+                    };
+                    let _ = tx.send(NetBgResult::RadioAndToast { radios: r, toast });
+                });
+            }
+            Action::DisconnectWifi => {
+                let tx = self.net_bg_tx.clone();
+                self.wake_anim_timer();
+                std::thread::spawn(move || {
+                    let ok = radios::disconnect_wifi();
+                    let r = radios::query_radio_states();
+                    let _ = tx.send(NetBgResult::RadioAndToast {
+                        radios: r,
+                        toast: Some((if ok { "Wi-Fi desconectado".into() } else { "No se pudo desconectar".into() }, ok)),
+                    });
+                });
+            }
+            Action::ToggleVpnProfile(name, is_conn) => {
+                let tx = self.net_bg_tx.clone();
+                self.state.cc_status_toast = Some((
+                    format!("{} VPN {}...", if is_conn { "Desconectando" } else { "Conectando" }, name),
+                    true,
+                    Instant::now(),
+                ));
+                if self.state.cc_open { self.redraw_cc(); }
+                self.wake_anim_timer();
+                std::thread::spawn(move || {
+                    let toast = match radios::toggle_vpn(&name, is_conn) {
+                        Ok(m) => (m, true),
+                        Err(e) => (e, false),
+                    };
+                    let _ = tx.send(NetBgResult::ToastOnly(toast.0, toast.1));
+                    let vpns = radios::list_vpn_profiles();
+                    let details = radios::query_network_details();
+                    let wifis = radios::scan_wifi_networks("");
+                    let _ = tx.send(NetBgResult::WifiAndVpn { wifis, vpns, details });
                 });
             }
             Action::SetBrightness(pct) => {
@@ -1896,10 +2149,52 @@ impl ShellRuntime {
                 if self.state.cc_open { self.redraw_cc(); }
             }
             Action::LaunchTarget(t) => {
-                self.close_all_overlays();
+                self.hide_all_overlays_immediately();
                 win32_shell::launch_target(&t, "");
             }
+            Action::RunTargetAsAdmin(t) => {
+                self.hide_all_overlays_immediately();
+                win32_shell::run_as_admin(&t, "");
+            }
+            Action::OpenDockContextMenu {
+                title,
+                process_name,
+                hwnd,
+                pid,
+                exe_path,
+                target,
+                is_running,
+                is_minimized,
+            } => {
+                self.open_dock_menu(ui_state::DockContextMenu {
+                    title,
+                    process_name,
+                    hwnd,
+                    pid,
+                    exe_path,
+                    target,
+                    is_running,
+                    is_minimized,
+                });
+            }
+            Action::MinimizeWindow(hwnd) => {
+                self.close_dock_menu();
+                window_styler::minimize_active_window(hwnd);
+            }
+            Action::CloseWindowGraceful(hwnd) => {
+                self.close_dock_menu();
+                window_styler::close_active_window(hwnd);
+            }
+            Action::ForceKillWindowPid(pid, _name) => {
+                self.close_dock_menu();
+                if pid > 4 {
+                    std::thread::spawn(move || {
+                        let _ = win32_shell::force_kill_pid(pid, true);
+                    });
+                }
+            }
             Action::FocusWindow(hwnd) => {
+                self.close_dock_menu();
                 self.dock_preview.hide();
                 self.close_all_overlays();
                 let is_left = !self.state.settings.dock_position.eq_ignore_ascii_case("Bottom");
@@ -1993,7 +2288,7 @@ impl ShellRuntime {
                 if self.state.overview_open { self.redraw_overview(); }
             }
             Action::LaunchUpdater => {
-                self.close_all_overlays();
+                self.hide_all_overlays_immediately();
                 let setup = app_data_dir().join("AuraShell-Setup.exe");
                 if setup.exists() {
                     let arg = if self.state.update_available_ver.is_some() { "--silent-update" } else { "" };
@@ -2002,7 +2297,7 @@ impl ShellRuntime {
             }
             Action::ApplyPendingUpdate => {
                 if let Some(upd) = self.state.pending_update.clone() {
-                    self.close_all_overlays();
+                    self.hide_all_overlays_immediately();
                     updater::trigger_apply_update(&upd);
                 }
             }
@@ -2318,6 +2613,32 @@ impl ShellRuntime {
             self.state.radios = r;
             tb_dirty = true;
             cc_dirty = true;
+        }
+
+        // Drain async Hotspot / Airplane Mode / Wi-Fi Scan / VPN results (0ms UI block!)
+        while let Ok(res) = self.net_bg_rx.try_recv() {
+            match res {
+                NetBgResult::WifiAndVpn { wifis, vpns, details } => {
+                    self.state.cc_wifi_networks = wifis;
+                    self.state.cc_vpn_profiles = vpns;
+                    self.state.cc_net_details = details;
+                    self.state.cc_wifi_scanning = false;
+                    cc_dirty = true;
+                }
+                NetBgResult::RadioAndToast { radios, toast } => {
+                    self.state.net_status = radios.net_label.clone();
+                    self.state.radios = radios;
+                    if let Some((msg, ok)) = toast {
+                        self.state.cc_status_toast = Some((msg, ok, Instant::now()));
+                    }
+                    tb_dirty = true;
+                    cc_dirty = true;
+                }
+                NetBgResult::ToastOnly(msg, ok) => {
+                    self.state.cc_status_toast = Some((msg, ok, Instant::now()));
+                    cc_dirty = true;
+                }
+            }
         }
 
         // Check background auto-updater (Local Dev hot-update OR GitHub Releases community update!)
@@ -2654,7 +2975,42 @@ impl ShellRuntime {
             || self.state.power_open
             || self.state.calendar_open
             || self.state.clipboard_open
-            || self.state.launchpad_open;
+            || self.state.launchpad_open
+            || self.state.dock_menu.is_some();
+
+        // ZERO-FREEZE OVERLAY VISIBILITY WATCHDOG:
+        // Guarantees that NO closed topmost overlay window can EVER stay visible & swallow clicks!
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+            if !self.state.launchpad_open && !self.state.launchpad_anim.is_moving() && IsWindowVisible(self.hwnd_launchpad).as_bool() {
+                let _ = ShowWindow(self.hwnd_launchpad, SW_HIDE);
+                self.surf_launchpad.trim_hidden(&self.gpu);
+            }
+            if !self.state.overview_open && !self.state.overview_anim.is_moving() && IsWindowVisible(self.hwnd_overview).as_bool() {
+                let _ = ShowWindow(self.hwnd_overview, SW_HIDE);
+                self.surf_overview.trim_hidden(&self.gpu);
+            }
+            if !self.state.cc_open && !self.state.cc_anim.is_moving() && IsWindowVisible(self.hwnd_cc).as_bool() {
+                let _ = ShowWindow(self.hwnd_cc, SW_HIDE);
+                self.surf_cc.trim_hidden(&self.gpu);
+            }
+            if !self.state.power_open && !self.state.power_anim.is_moving() && IsWindowVisible(self.hwnd_power).as_bool() {
+                let _ = ShowWindow(self.hwnd_power, SW_HIDE);
+                self.surf_power.trim_hidden(&self.gpu);
+            }
+            if !self.state.calendar_open && !self.state.calendar_anim.is_moving() && IsWindowVisible(self.hwnd_calendar).as_bool() {
+                let _ = ShowWindow(self.hwnd_calendar, SW_HIDE);
+                self.surf_calendar.trim_hidden(&self.gpu);
+            }
+            if !self.state.clipboard_open && !self.state.clipboard_anim.is_moving() && IsWindowVisible(self.hwnd_clipboard).as_bool() {
+                let _ = ShowWindow(self.hwnd_clipboard, SW_HIDE);
+                self.surf_clipboard.trim_hidden(&self.gpu);
+            }
+            if self.state.dock_menu.is_none() && IsWindowVisible(self.hwnd_dock_menu).as_bool() {
+                let _ = ShowWindow(self.hwnd_dock_menu, SW_HIDE);
+                self.surf_dock_menu.trim_hidden(&self.gpu);
+            }
+        }
 
         // Throttle heavy Win32 EnumWindows scans to every 360ms (-67% CPU overhead on modest PCs!)
         if self.fast_tick_count % 3 == 1 {
@@ -3063,6 +3419,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 let active_state = (wparam.0 & 0xFFFF) as u32;
                 if active_state == WA_INACTIVE {
                     match kind {
+                        WinKind::DockMenu => rt.close_dock_menu(),
                         WinKind::ControlCenter => rt.close_cc(),
                         WinKind::PowerMenu => rt.close_power(),
                         WinKind::Calendar => rt.close_calendar(),
@@ -3076,6 +3433,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         _ => {}
                     }
                 }
+                true
+            }
+            0x0215 | 0x001F => {
+                // WM_CAPTURECHANGED / WM_CANCELMODE: release any stuck widget drag or slider capture!
+                rt.dragging_widget = None;
+                rt.snapped_widget = None;
+                rt.state.active_slider = None;
+                rt.state.pressed_id = None;
                 true
             }
             WM_MOUSEMOVE => {

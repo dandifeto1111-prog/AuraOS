@@ -16,7 +16,8 @@ use windows::Win32::System::Com::{
     DVASPECT_CONTENT, FORMATETC, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
 };
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+    RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT,
@@ -285,5 +286,87 @@ pub fn copy_files_to_clipboard(paths: &[String], is_cut: bool) -> bool {
         }
         let _ = CloseClipboard();
         true
+    }
+}
+
+/// Fast non-blocking check whether the native Windows Clipboard currently holds `CF_HDROP` files.
+pub fn has_files_in_clipboard() -> bool {
+    unsafe { IsClipboardFormatAvailable(CF_HDROP as u32).is_ok() }
+}
+
+/// Reads file paths copied/cut in Windows Explorer, Desktop, or AuraFiles (`CF_HDROP` + `Preferred DropEffect`).
+pub fn read_files_from_clipboard() -> Option<(Vec<std::path::PathBuf>, bool)> {
+    unsafe {
+        if IsClipboardFormatAvailable(CF_HDROP as u32).is_err() {
+            return None;
+        }
+        if OpenClipboard(HWND::default()).is_err() {
+            return None;
+        }
+        let mut paths: Vec<std::path::PathBuf> = Vec::new();
+        let mut is_cut = false;
+
+        if let Ok(hdata) = GetClipboardData(CF_HDROP as u32) {
+            let hmem = HGLOBAL(hdata.0);
+            let raw = GlobalLock(hmem) as *const u8;
+            if !raw.is_null() {
+                let df = &*(raw as *const DROPFILES);
+                let off = df.pFiles as usize;
+                if df.fWide.as_bool() {
+                    let mut p = raw.add(off) as *const u16;
+                    for _ in 0..4096 {
+                        if *p == 0 {
+                            break;
+                        }
+                        let mut len = 0usize;
+                        while len < 32768 && *p.add(len) != 0 {
+                            len += 1;
+                        }
+                        let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, len));
+                        if !s.is_empty() {
+                            paths.push(std::path::PathBuf::from(s));
+                        }
+                        p = p.add(len + 1);
+                    }
+                } else {
+                    let mut p = raw.add(off);
+                    for _ in 0..4096 {
+                        if *p == 0 {
+                            break;
+                        }
+                        let mut len = 0usize;
+                        while len < 32768 && *p.add(len) != 0 {
+                            len += 1;
+                        }
+                        let s = String::from_utf8_lossy(std::slice::from_raw_parts(p, len)).to_string();
+                        if !s.is_empty() {
+                            paths.push(std::path::PathBuf::from(s));
+                        }
+                        p = p.add(len + 1);
+                    }
+                }
+                let _ = GlobalUnlock(hmem);
+            }
+        }
+
+        let pref_name = to_wide("Preferred DropEffect");
+        let cf_pref = RegisterClipboardFormatW(PCWSTR(pref_name.as_ptr()));
+        if cf_pref != 0 {
+            if let Ok(heff) = GetClipboardData(cf_pref) {
+                let hmem = HGLOBAL(heff.0);
+                let p = GlobalLock(hmem) as *const u32;
+                if !p.is_null() {
+                    is_cut = (*p & DROPEFFECT_MOVE.0) != 0;
+                    let _ = GlobalUnlock(hmem);
+                }
+            }
+        }
+
+        let _ = CloseClipboard();
+        if paths.is_empty() {
+            None
+        } else {
+            Some((paths, is_cut))
+        }
     }
 }
