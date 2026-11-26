@@ -36,6 +36,7 @@ pub const WM_AURA_WP_FRAME: u32 = WM_APP + 1;
 pub const WM_AURA_WP_PAUSE: u32 = WM_APP + 10;
 pub const WM_AURA_WP_RESUME: u32 = WM_APP + 11;
 pub const WM_AURA_WP_QUIT: u32 = WM_APP + 12;
+pub const WM_AURA_WP_RELOAD_WAVES: u32 = WM_APP + 13;
 
 /// Locates the active isolated `AuraWallpaper.exe` IPC control window (`HWND_MESSAGE` — immune to WorkerW parenting!)
 pub fn find_video_worker_ipc_hwnd() -> Option<HWND> {
@@ -402,6 +403,7 @@ pub struct WallpaperEngine {
     video_child: Option<Child>,
     video_paused_synced: bool,
     video_html_fallback_active: bool,
+    waves_worker_active: bool,
     web_child: Option<Child>,
     web_hwnd: Option<HWND>,
     web_owner_pid: Option<u32>,
@@ -429,6 +431,7 @@ impl WallpaperEngine {
             video_child: None,
             video_paused_synced: false,
             video_html_fallback_active: false,
+            waves_worker_active: false,
             web_child: None,
             web_hwnd: None,
             web_owner_pid: None,
@@ -448,9 +451,16 @@ impl WallpaperEngine {
         self.performance_mode = low;
     }
 
-    /// Forces a repaint on the next tick (e.g. after live Gradient Waves tuning/color changes)
+    /// Forces a repaint on the next tick (and notifies isolated GPU waves worker if active!)
     pub fn mark_dirty(&mut self) {
         self.dirty_static = true;
+        if self.waves_worker_active {
+            if let Some(hw) = Self::find_video_worker_hwnd() {
+                unsafe {
+                    let _ = PostMessageW(hw, WM_AURA_WP_RELOAD_WAVES, WPARAM(0), LPARAM(0));
+                }
+            }
+        }
     }
 
     pub fn needs_fast_tick(&self) -> bool {
@@ -458,9 +468,9 @@ impl WallpaperEngine {
             return false;
         }
         match self.active_kind {
-            // Video runs at 60 FPS completely isolated inside AuraWallpaper.exe (0 AuraShell ticks!)
+            // Video & GPU GradientWaves run 100% isolated inside AuraWallpaper.exe (0 AuraShell ticks -> 0 lag!)
             WallpaperKind::Video => self.video_html_fallback_active && (self.web_hwnd.is_none() || self.web_recheck_frames > 0),
-            WallpaperKind::Preset => !self.performance_mode && self.active_path != "matte_grid" && !self.is_frozen_waves(),
+            WallpaperKind::Preset => !self.waves_worker_active && !self.performance_mode && self.active_path != "matte_grid" && !self.is_frozen_waves(),
             WallpaperKind::Web => self.web_hwnd.is_none() || self.web_recheck_frames > 0,
             _ => false,
         }
@@ -529,6 +539,24 @@ impl WallpaperEngine {
     }
 
     pub fn set_wallpaper(&mut self, gpu: &mut GpuEngine, id: &str) {
+        // Fast path: smoothly crossfade between GradientWaves presets inside existing isolated GPU worker!
+        if let Some(preset) = id.strip_prefix("preset:") {
+            if crate::gradient_waves::is_waves_key(preset) && self.waves_worker_active {
+                let alive = self
+                    .video_child
+                    .as_mut()
+                    .map(|c| matches!(c.try_wait(), Ok(None)))
+                    .unwrap_or(false);
+                if alive {
+                    self.active_id = id.to_string();
+                    self.active_kind = WallpaperKind::Preset;
+                    self.active_path = preset.to_string();
+                    self.mark_dirty();
+                    return;
+                }
+            }
+        }
+
         self.stop_video();
         self.stop_web();
         self.active_id = id.to_string();
@@ -544,6 +572,11 @@ impl WallpaperEngine {
         if let Some(preset) = id.strip_prefix("preset:") {
             self.active_kind = WallpaperKind::Preset;
             self.active_path = preset.to_string();
+            // Run GradientWaves 100% isolated on hardware D3D11 GPU in AuraWallpaper.exe (ZERO AuraShell lag!)
+            if crate::gradient_waves::is_waves_key(preset) && self.spawn_waves_worker(preset) {
+                self.hide_and_trim_host(gpu);
+                return;
+            }
             if let Some(surf) = &mut self.surf_host {
                 surf.ensure_size(gpu, self.screen_w as u32, self.screen_h as u32);
             }
@@ -584,6 +617,38 @@ impl WallpaperEngine {
 
     fn find_video_worker_hwnd() -> Option<HWND> {
         find_video_worker_ipc_hwnd()
+    }
+
+    fn spawn_waves_worker(&mut self, preset_key: &str) -> bool {
+        self.waves_worker_active = false;
+        self.video_html_fallback_active = false;
+        self.video_paused_synced = false;
+        let Some(worker_exe) = resolve_wallpaper_worker_exe() else {
+            return false;
+        };
+        let parent_pid = std::process::id();
+        match Command::new(worker_exe)
+            .args([
+                "--waves",
+                preset_key,
+                "--perf",
+                if self.performance_mode { "1" } else { "0" },
+                "--paused",
+                if self.paused { "1" } else { "0" },
+                "--parent-pid",
+                &parent_pid.to_string(),
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+        {
+            Ok(child) => {
+                self.video_child = Some(child);
+                self.waves_worker_active = true;
+                self.video_paused_synced = self.paused;
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     fn spawn_video_worker(&mut self, path: &str) {
@@ -679,6 +744,7 @@ impl WallpaperEngine {
         }
         self.video_html_fallback_active = false;
         self.video_paused_synced = false;
+        self.waves_worker_active = false;
     }
 
     fn start_web(&mut self, html_path: &str) {
@@ -863,7 +929,7 @@ impl WallpaperEngine {
             return;
         }
         self.paused = paused;
-        if self.active_kind == WallpaperKind::Video && !self.video_html_fallback_active {
+        if (self.active_kind == WallpaperKind::Video && !self.video_html_fallback_active) || self.waves_worker_active {
             if let Some(hw) = Self::find_video_worker_hwnd() {
                 let msg = if paused { WM_AURA_WP_PAUSE } else { WM_AURA_WP_RESUME };
                 unsafe {
@@ -880,7 +946,7 @@ impl WallpaperEngine {
             self.enforce_web_embedded();
             return;
         }
-        if self.active_kind == WallpaperKind::Video {
+        if self.active_kind == WallpaperKind::Video || self.waves_worker_active {
             // Deliver deferred pause/resume if AuraWallpaperWorker finished initializing just after set_paused
             if self.video_paused_synced != self.paused {
                 if let Some(hw) = Self::find_video_worker_hwnd() {
@@ -891,11 +957,18 @@ impl WallpaperEngine {
                     self.video_paused_synced = self.paused;
                 }
             }
-            // If isolated worker exited with failure (unsupported exotic codec), trigger HTML5 fallback cleanly
             if let Some(child) = &mut self.video_child {
                 if let Ok(Some(_)) = child.try_wait() {
                     self.video_child = None;
-                    if !self.active_path.is_empty() && !self.video_html_fallback_active {
+                    if self.waves_worker_active {
+                        // Graceful fallback to CPU host if isolated GPU worker ever exited unexpectedly
+                        self.waves_worker_active = false;
+                        if let Some(surf) = &mut self.surf_host {
+                            surf.ensure_size(gpu, self.screen_w as u32, self.screen_h as u32);
+                        }
+                        self.show_host_window();
+                        self.dirty_static = true;
+                    } else if !self.active_path.is_empty() && !self.video_html_fallback_active {
                         let p = self.active_path.clone();
                         self.start_video_html_fallback(&p);
                     }

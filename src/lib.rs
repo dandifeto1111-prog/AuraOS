@@ -22,5 +22,6 @@ pub mod theme;
 pub mod updater;
 pub mod video_decoder;
 pub mod wallpaper;
+pub mod waves_gpu;
 pub mod win32_shell;
 pub mod window_styler;

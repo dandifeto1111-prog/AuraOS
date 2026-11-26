@@ -1,6 +1,6 @@
 ﻿param(
-    [string]$Version = "5.4.0",
-    [string]$Changelog = "v5.4.0: Nuevo fondo animado por defecto Gradient Waves estilo React Bits (Ocean, Dune, Dusk, Silk, Aurora) con cambio de color en 1 clic, sliders de velocidad/relieve y adaptacion de color Material You 3 en tiempo real para todo AuraOS (Shell, Settings, Files, Tasks y Lock)."
+    [string]$Version = "5.5.0",
+    [string]$Changelog = "v5.5.0: Motor GPU D3D11 HLSL 3D aislado en AuraWallpaper.exe para Gradient Waves estilo React Bits 1:1 (cero lag en AuraShell/sistema, picos 3D interactivos al clic del mouse y crossfade en vivo)."
 )
 
 $ErrorActionPreference = "Stop"

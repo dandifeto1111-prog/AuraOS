@@ -1,5 +1,12 @@
 # Historial de Versiones — AuraOS
 
+## v5.5.0 (2026-11-26)
+- **Motor Hardware D3D11 HLSL 3D para `Gradient Waves` aislado en `AuraWallpaper.exe` — Cero Lag + Interactividad Mouse/Picos React Bits (`src/waves_gpu.rs`, `src/bin/aura_wallpaper.rs`, `src/wallpaper.rs`):**
+  - **100 % GPU nativo (Direct3D 11 + DirectComposition + Z-Buffer) en proceso aislado:** `AuraShell.exe` ya **no** dibuja ni ejecuta timers para el fondo animado (`0.00 %` de carga en el hilo de UI), eliminando por completo las caídas de FPS en Dock, barra superior, Overview y animaciones de Windows.
+  - **Fidelidad 1:1 a React Bits (`GradientWaves`):** malla 3D desplazada `240×156` con ruido **3D Simplex FBM** orgánico, normales por píxel a resolución nativa, sombras proyectadas suaves, oclusión ambiental en pliegues, brillo aterciopelado Fresnel y horizonte oscuro obsidiana.
+  - **Interactividad real con el mouse en el escritorio:** al mover el cursor se eleva suavemente la tela líquida y al hacer **clic izquierdo en el escritorio emergen picos 3D esculpidos y ondas concéntricas** (hasta 8 picos simultáneos), sin hooks de teclado/mouse (100 % seguro con anti-cheats).
+  - **Transición suave en vivo + Auto-Pausa 0 % GPU:** cambiar entre *Ocean, Dune, Dusk, Silk, Aurora* o cualquiera de los 8 colores adaptativos hace un *crossfade* fluido en GPU sin reiniciar el proceso, y se pausa automáticamente al abrir apps maximizadas o juegos.
+
 ## v5.4.0 (2026-11-26)
 - **Nuevo Fondo Animado Principal por Defecto: `Gradient Waves` estilo React Bits (`src/gradient_waves.rs`, `src/wallpaper.rs`):**
   - Motor procedural 100 % nativo en Rust + reescalado bilineal Direct2D (~1 ms por frame, sin WebView ni Chromium, 100 % sin conexión y con auto-pausa a 0 % GPU).
