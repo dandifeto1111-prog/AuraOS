@@ -1,5 +1,13 @@
 # Historial de Versiones — AuraOS
 
+## v5.6.0 (2026-11-26)
+- **Colección Completa de Fondos GPU Nativos de React Bits en Rust + D3D11 HLSL (`src/holo_mosaic.rs`, `src/holo_mosaic_gpu.rs`, `src/reactbits_shaders.rs`, `src/reactbits_gpu.rs`):**
+  - **Port 1:1 exacto de `<HoloMosaic />` (React Bits) en Direct3D 11 HLSL 5.0:** azulejos metálicos biselados con difracción espectral holográfica, física de resortes idéntica para foco errante y seguimiento del cursor, inclinación interactiva de losetas bajo el puntero, intro radial de volteo 3D (`2.4 s`), **hasta 6 ondas simultáneas de volteo 3D al hacer clic en el escritorio**, micro-glitter arcoíris, brillo especular metálico, grano de cine y **filtros en tiempo real (`Normal`, `Dither Bayer`, `ASCII Matrix`)** con 5 presets (*Obsidian*, *Prism*, *Warm*, *Cool*, *Pearl*).
+  - **Suite Nativa de 16 Fondos Gratuitos Adicionales de React Bits portados a Rust + HLSL 5.0 (26 fondos GPU en total):**
+    - *Aurora*, *Silk*, *Iridescence*, *Liquid Chrome*, *Balatro*, *Dark Veil* (CPPN neuronal 8 capas), *Plasma* (raymarching 3D), *Galaxy* (repulsión gravitacional + warp al clic), *Light Rays* (sombra interactiva del cursor), *Prismatic Burst*, *Molten Metal*, *Color Bends*, *Grainient* (OKLab + grano vivo), *Ripple Grid* (rejilla 3D con ondas), *Orb* (anillo 3D con inclinación al cursor) y *Dither* (fBM + Bayer 8×8).
+  - **100 % GPU aislado en `AuraWallpaper.exe` (`0.00 %` carga en `AuraShell.exe`):** compila bajo demanda solo el shader activo (~12 ms) con intercambio en caliente (*hot-swap*) entre shaders sin reiniciar procesos, cero lag en Dock/animaciones, 100 % seguro con anti-cheats (polling sin hooks globales), auto-pausa a `0 % GPU` al abrir juegos o ventanas maximizadas y sincronización automática con la paleta global Material You 3 de AuraOS.
+  - **Nueva tarjeta interactiva `Holo Mosaic` en `AuraSettings → Fondos y AuraLock`** con vista previa, chips de espectro, selector de filtro (`Normal` / `Dither Bayer` / `ASCII Matrix`) y sliders en vivo de *Velocidad* y *Saturación*.
+
 ## v5.5.0 (2026-11-26)
 - **Motor Hardware D3D11 HLSL 3D para `Gradient Waves` aislado en `AuraWallpaper.exe` — Cero Lag + Interactividad Mouse/Picos React Bits (`src/waves_gpu.rs`, `src/bin/aura_wallpaper.rs`, `src/wallpaper.rs`):**
   - **100 % GPU nativo (Direct3D 11 + DirectComposition + Z-Buffer) en proceso aislado:** `AuraShell.exe` ya **no** dibuja ni ejecuta timers para el fondo animado (`0.00 %` de carga en el hilo de UI), eliminando por completo las caídas de FPS en Dock, barra superior, Overview y animaciones de Windows.

@@ -55,6 +55,10 @@ pub struct ShellSettings {
     pub waves_speed: f32,
     pub waves_relief: f32,
     pub waves_custom_color: String, // "" = active preset color, or "#RRGGBB" override
+    // v5.6: React Bits HoloMosaic live tuning (speed, optional saturation override <0 = preset default, filter)
+    pub holo_speed: f32,
+    pub holo_saturation: f32,
+    pub holo_filter: String, // "none" | "dither" | "ascii"
 }
 
 impl Default for ShellSettings {
@@ -97,6 +101,9 @@ impl Default for ShellSettings {
             waves_speed: 1.0,
             waves_relief: 1.0,
             waves_custom_color: String::new(),
+            holo_speed: 0.5,
+            holo_saturation: -1.0,
+            holo_filter: "none".to_string(),
         }
     }
 }

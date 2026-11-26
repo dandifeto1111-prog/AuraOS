@@ -11,7 +11,11 @@
 //! - True pause (`WM_AURA_WP_PAUSE` / `WM_AURA_WP_RESUME`): 0.00% CPU & 0.00% GPU when covered/gaming!
 
 use aura_os::gradient_waves;
+use aura_os::holo_mosaic;
+use aura_os::holo_mosaic_gpu::GpuHoloRenderer;
 use aura_os::models::load_settings;
+use aura_os::reactbits_gpu::GpuReactBitsRenderer;
+use aura_os::reactbits_shaders;
 use aura_os::renderer::{GpuEngine, Rect, WindowSurface};
 use aura_os::theme;
 use aura_os::video_decoder::{self, NativeVideoStream};
@@ -55,6 +59,20 @@ enum WorkerBackend {
     },
     Waves {
         renderer: GpuWavesRenderer,
+        last_tick: Instant,
+        prev_lbtn_down: bool,
+        frame_ms: u32,
+        wm_settings_changed: u32,
+    },
+    Holo {
+        renderer: GpuHoloRenderer,
+        last_tick: Instant,
+        prev_lbtn_down: bool,
+        frame_ms: u32,
+        wm_settings_changed: u32,
+    },
+    ReactBits {
+        renderer: GpuReactBitsRenderer,
         last_tick: Instant,
         prev_lbtn_down: bool,
         frame_ms: u32,
@@ -124,6 +142,36 @@ fn sync_waves_from_settings(renderer: &mut GpuWavesRenderer) {
     }
 }
 
+fn sync_holo_from_settings(renderer: &mut GpuHoloRenderer) {
+    let settings = load_settings();
+    let key = settings
+        .wallpaper_id
+        .strip_prefix("preset:")
+        .filter(|k| holo_mosaic::is_holo_key(k))
+        .unwrap_or("holo_full");
+    if let Some(p) = holo_mosaic::preset_by_key(key) {
+        let sat = if settings.holo_saturation >= 0.0 {
+            Some(settings.holo_saturation)
+        } else {
+            None
+        };
+        renderer.set_target_preset(p, Some(settings.holo_speed), sat, &settings.holo_filter);
+    }
+}
+
+fn sync_rb_from_settings(renderer: &mut GpuReactBitsRenderer) {
+    let settings = load_settings();
+    if let Some(key) = settings
+        .wallpaper_id
+        .strip_prefix("preset:")
+        .filter(|k| reactbits_shaders::is_rb_key(k))
+    {
+        if let Some(p) = reactbits_shaders::preset_by_key(key) {
+            let _ = renderer.switch_preset(p);
+        }
+    }
+}
+
 unsafe extern "system" fn wp_worker_proc(
     hwnd: HWND,
     msg: u32,
@@ -134,16 +182,41 @@ unsafe extern "system" fn wp_worker_proc(
     let handled_settings = WP_RT.with(|cell| {
         if let Ok(mut guard) = cell.try_borrow_mut() {
             if let Some(rt) = guard.as_mut() {
-                if let WorkerBackend::Waves { renderer, wm_settings_changed, .. } = &mut rt.backend {
-                    if msg == wallpaper::WM_AURA_WP_RELOAD_WAVES
-                        || (*wm_settings_changed != 0 && msg == *wm_settings_changed)
-                    {
-                        sync_waves_from_settings(renderer);
-                        if !rt.paused {
-                            renderer.render_frame(0.016, 0);
+                match &mut rt.backend {
+                    WorkerBackend::Waves { renderer, wm_settings_changed, .. } => {
+                        if msg == wallpaper::WM_AURA_WP_RELOAD_WAVES
+                            || (*wm_settings_changed != 0 && msg == *wm_settings_changed)
+                        {
+                            sync_waves_from_settings(renderer);
+                            if !rt.paused {
+                                renderer.render_frame(0.016, 0);
+                            }
+                            return true;
                         }
-                        return true;
                     }
+                    WorkerBackend::Holo { renderer, wm_settings_changed, .. } => {
+                        if msg == wallpaper::WM_AURA_WP_RELOAD_WAVES
+                            || (*wm_settings_changed != 0 && msg == *wm_settings_changed)
+                        {
+                            sync_holo_from_settings(renderer);
+                            if !rt.paused {
+                                renderer.render_frame(0.016, 0);
+                            }
+                            return true;
+                        }
+                    }
+                    WorkerBackend::ReactBits { renderer, wm_settings_changed, .. } => {
+                        if msg == wallpaper::WM_AURA_WP_RELOAD_WAVES
+                            || (*wm_settings_changed != 0 && msg == *wm_settings_changed)
+                        {
+                            sync_rb_from_settings(renderer);
+                            if !rt.paused {
+                                renderer.render_frame(0.016, 0);
+                            }
+                            return true;
+                        }
+                    }
+                    WorkerBackend::Video { .. } => {}
                 }
             }
         }
@@ -189,33 +262,87 @@ unsafe extern "system" fn wp_worker_proc(
                         if rt.paused {
                             return;
                         }
-                        if let WorkerBackend::Waves {
-                            renderer,
-                            last_tick,
-                            prev_lbtn_down,
-                            ..
-                        } = &mut rt.backend
-                        {
-                            let now = Instant::now();
-                            let dt = now.duration_since(*last_tick).as_secs_f32().clamp(0.004, 0.05);
-                            *last_tick = now;
+                        match &mut rt.backend {
+                            WorkerBackend::Waves {
+                                renderer,
+                                last_tick,
+                                prev_lbtn_down,
+                                ..
+                            } => {
+                                let now = Instant::now();
+                                let dt = now.duration_since(*last_tick).as_secs_f32().clamp(0.004, 0.05);
+                                *last_tick = now;
 
-                            // Poll cursor for interactive silk hover swell + desktop click spikes (Vanguard-safe!)
-                            let mut pt = POINT::default();
-                            if GetCursorPos(&mut pt).is_ok() {
-                                let u = (pt.x as f32 / renderer.width.max(1) as f32).clamp(0.0, 1.0);
-                                let v = (pt.y as f32 / renderer.height.max(1) as f32).clamp(0.0, 1.0);
-                                let on_desk = is_point_on_desktop(pt);
-                                renderer.update_mouse(u, v, on_desk, dt);
+                                // Poll cursor for interactive silk hover swell + desktop click spikes (Vanguard-safe!)
+                                let mut pt = POINT::default();
+                                if GetCursorPos(&mut pt).is_ok() {
+                                    let u = (pt.x as f32 / renderer.width.max(1) as f32).clamp(0.0, 1.0);
+                                    let v = (pt.y as f32 / renderer.height.max(1) as f32).clamp(0.0, 1.0);
+                                    let on_desk = is_point_on_desktop(pt);
+                                    renderer.update_mouse(u, v, on_desk, dt);
 
-                                let ldown = (GetAsyncKeyState(0x01) as u16 & 0x8000) != 0;
-                                if ldown && !*prev_lbtn_down && on_desk {
-                                    renderer.spawn_click_spike(u, v, 1.25);
+                                    let ldown = (GetAsyncKeyState(0x01) as u16 & 0x8000) != 0;
+                                    if ldown && !*prev_lbtn_down && on_desk {
+                                        renderer.spawn_click_spike(u, v, 1.25);
+                                    }
+                                    *prev_lbtn_down = ldown;
                                 }
-                                *prev_lbtn_down = ldown;
-                            }
 
-                            renderer.render_frame(dt, 1);
+                                renderer.render_frame(dt, 1);
+                            }
+                            WorkerBackend::Holo {
+                                renderer,
+                                last_tick,
+                                prev_lbtn_down,
+                                ..
+                            } => {
+                                let now = Instant::now();
+                                let dt = now.duration_since(*last_tick).as_secs_f32().clamp(0.004, 0.05);
+                                *last_tick = now;
+
+                                let mut pt = POINT::default();
+                                if GetCursorPos(&mut pt).is_ok() {
+                                    let u = (pt.x as f32 / renderer.width.max(1) as f32).clamp(0.0, 1.0);
+                                    let v = (pt.y as f32 / renderer.height.max(1) as f32).clamp(0.0, 1.0);
+                                    let on_desk = is_point_on_desktop(pt);
+                                    renderer.update_mouse(u, v, on_desk, dt);
+
+                                    let ldown = (GetAsyncKeyState(0x01) as u16 & 0x8000) != 0;
+                                    if ldown && !*prev_lbtn_down && on_desk {
+                                        renderer.spawn_click_wave(u, v);
+                                    }
+                                    *prev_lbtn_down = ldown;
+                                }
+
+                                renderer.render_frame(dt, 1);
+                            }
+                            WorkerBackend::ReactBits {
+                                renderer,
+                                last_tick,
+                                prev_lbtn_down,
+                                ..
+                            } => {
+                                let now = Instant::now();
+                                let dt = now.duration_since(*last_tick).as_secs_f32().clamp(0.004, 0.05);
+                                *last_tick = now;
+
+                                let mut pt = POINT::default();
+                                if GetCursorPos(&mut pt).is_ok() {
+                                    let u = (pt.x as f32 / renderer.width.max(1) as f32).clamp(0.0, 1.0);
+                                    let v = (pt.y as f32 / renderer.height.max(1) as f32).clamp(0.0, 1.0);
+                                    let on_desk = is_point_on_desktop(pt);
+                                    renderer.update_mouse(u, v, on_desk, dt);
+
+                                    let ldown = (GetAsyncKeyState(0x01) as u16 & 0x8000) != 0;
+                                    if ldown && !*prev_lbtn_down && on_desk {
+                                        renderer.spawn_click(u, v);
+                                    }
+                                    *prev_lbtn_down = ldown;
+                                }
+
+                                renderer.render_frame(dt, 1);
+                            }
+                            WorkerBackend::Video { .. } => {}
                         }
                     }
                 }
@@ -239,6 +366,14 @@ unsafe extern "system" fn wp_worker_proc(
                                     let _ = KillTimer(rt.hwnd, TIMER_WAVES_FRAME);
                                     renderer.trim_gpu();
                                 }
+                                WorkerBackend::Holo { renderer, .. } => {
+                                    let _ = KillTimer(rt.hwnd, TIMER_WAVES_FRAME);
+                                    renderer.trim_gpu();
+                                }
+                                WorkerBackend::ReactBits { renderer, .. } => {
+                                    let _ = KillTimer(rt.hwnd, TIMER_WAVES_FRAME);
+                                    renderer.trim_gpu();
+                                }
                             }
                             win32_shell::trim_own_working_set();
                         }
@@ -259,7 +394,9 @@ unsafe extern "system" fn wp_worker_proc(
                                         vs.set_paused(false);
                                     }
                                 }
-                                WorkerBackend::Waves { last_tick, frame_ms, .. } => {
+                                WorkerBackend::Waves { last_tick, frame_ms, .. }
+                                | WorkerBackend::Holo { last_tick, frame_ms, .. }
+                                | WorkerBackend::ReactBits { last_tick, frame_ms, .. } => {
                                     *last_tick = Instant::now();
                                     SetTimer(rt.hwnd, TIMER_WAVES_FRAME, *frame_ms, None);
                                 }
@@ -415,7 +552,44 @@ fn main() {
         return;
     }
 
-    // Mode 4: Offscreen Hardware GPU GradientWaves PNG capture for visual QA
+    // Mode 4a: Compile-verify ALL HLSL shaders (GradientWaves + HoloMosaic + all 16 React Bits shaders!)
+    if args.iter().any(|a| a == "--verify-all-shaders") {
+        let mut errs = Vec::new();
+        if let Err(e) = GpuWavesRenderer::new_offscreen(128, 128, &gradient_waves::PRESETS[0], gradient_waves::PRESETS[0].wave_color) {
+            errs.push(format!("GradientWaves: {e}"));
+        }
+        if let Err(e) = GpuHoloRenderer::new_offscreen(128, 128, &holo_mosaic::PRESETS[0], None, None, "none") {
+            errs.push(format!("HoloMosaic: {e}"));
+        }
+        let rb_count = match aura_os::reactbits_gpu::verify_all_shaders() {
+            Ok(n) => n,
+            Err(e) => {
+                errs.push(e);
+                0
+            }
+        };
+        if !errs.is_empty() {
+            let msg = errs.join("\n");
+            let _ = std::fs::write(
+                args.iter()
+                    .position(|a| a == "--log")
+                    .and_then(|p| args.get(p + 1))
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("shader_verify.log")),
+                &msg,
+            );
+            eprintln!("SHADER VERIFY FAILED:\n{msg}");
+            std::process::exit(1);
+        }
+        let ok_msg = format!("VERIFIED_ALL_SHADERS: {}/{} OK (Waves + HoloMosaic + {} ReactBits)\n", rb_count + 2, rb_count + 2, rb_count);
+        if let Some(p) = args.iter().position(|a| a == "--log").and_then(|i| args.get(i + 1)) {
+            let _ = std::fs::write(p, &ok_msg);
+        }
+        println!("{ok_msg}");
+        return;
+    }
+
+    // Mode 4b: Offscreen Hardware GPU GradientWaves PNG capture for visual QA
     if let Some(pos) = args.iter().position(|a| a == "--capture-waves") {
         let out = args.get(pos + 1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("waves_gpu.png"));
         let key = args.get(pos + 2).map(|s| s.as_str()).unwrap_or("waves_aurora");
@@ -443,8 +617,77 @@ fn main() {
         return;
     }
 
+    // Mode 4c: Offscreen Hardware GPU HoloMosaic PNG capture for visual QA
+    if let Some(pos) = args.iter().position(|a| a == "--capture-holo") {
+        let out = args.get(pos + 1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("holo_gpu.png"));
+        let key = args.get(pos + 2).map(|s| s.as_str()).unwrap_or("holo_full");
+        let with_wave = args.iter().any(|a| a == "--wave");
+        let filter = args
+            .iter()
+            .position(|a| a == "--filter")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| s.as_str())
+            .unwrap_or("none");
+        let preset = holo_mosaic::preset_by_key(key).unwrap_or(&holo_mosaic::PRESETS[0]);
+        match GpuHoloRenderer::new_offscreen(1600, 900, preset, None, None, filter) {
+            Ok(mut r) => {
+                r.set_target_preset(preset, None, None, filter);
+                r.update_mouse(0.54, 0.48, true, 0.016);
+                if with_wave {
+                    r.spawn_click_wave(0.52, 0.50);
+                    for _ in 0..18 {
+                        r.render_frame(0.025, 0);
+                    }
+                } else {
+                    r.render_frame(0.016, 0);
+                }
+                if let Err(e) = r.save_offscreen_png(&out) {
+                    eprintln!("capture-holo save error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                eprintln!("capture-holo GPU init error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // Mode 4d: Offscreen Hardware GPU React Bits Shader PNG capture for visual QA
+    if let Some(pos) = args.iter().position(|a| a == "--capture-rb") {
+        let out = args.get(pos + 1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("rb_gpu.png"));
+        let key = args.get(pos + 2).map(|s| s.as_str()).unwrap_or("rb_aurora");
+        let with_click = args.iter().any(|a| a == "--click");
+        let preset = reactbits_shaders::preset_by_key(key).unwrap_or(&reactbits_shaders::PRESETS[0]);
+        match GpuReactBitsRenderer::new_offscreen(1280, 720, preset) {
+            Ok(mut r) => {
+                r.update_mouse(0.56, 0.46, true, 0.016);
+                if with_click {
+                    r.spawn_click(0.52, 0.48);
+                    for _ in 0..12 {
+                        r.render_frame(0.025, 0);
+                    }
+                } else {
+                    r.render_frame(0.016, 0);
+                }
+                if let Err(e) = r.save_offscreen_png(&out) {
+                    eprintln!("capture-rb save error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                eprintln!("capture-rb GPU init error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     let mut video_path = String::new();
     let mut waves_key = String::new();
+    let mut holo_key = String::new();
+    let mut rb_key = String::new();
     let mut max_w_arg: u32 = 0;
     let mut max_h_arg: u32 = 0;
     let mut max_fps: u32 = 60;
@@ -461,6 +704,14 @@ fn main() {
             }
             "--waves" if i + 1 < args.len() => {
                 waves_key = args[i + 1].clone();
+                i += 2;
+            }
+            "--holo" if i + 1 < args.len() => {
+                holo_key = args[i + 1].clone();
+                i += 2;
+            }
+            "--rb" if i + 1 < args.len() => {
+                rb_key = args[i + 1].clone();
                 i += 2;
             }
             "--max-w" if i + 1 < args.len() => {
@@ -488,7 +739,7 @@ fn main() {
                 i += 2;
             }
             _ => {
-                if video_path.is_empty() && waves_key.is_empty() && !args[i].starts_with("--") {
+                if video_path.is_empty() && waves_key.is_empty() && holo_key.is_empty() && rb_key.is_empty() && !args[i].starts_with("--") {
                     video_path = args[i].clone();
                 }
                 i += 1;
@@ -535,6 +786,130 @@ fn main() {
                     hwnd,
                     ipc_hwnd,
                     backend: WorkerBackend::Waves {
+                        renderer,
+                        last_tick: Instant::now(),
+                        prev_lbtn_down: false,
+                        frame_ms,
+                        wm_settings_changed,
+                    },
+                    parent_pid,
+                    paused: start_paused,
+                    trim_countdown: 3,
+                });
+            });
+
+            SetTimer(hwnd, TIMER_WATCHDOG, 1500, None);
+            if !start_paused {
+                SetTimer(hwnd, TIMER_WAVES_FRAME, frame_ms, None);
+            }
+
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            let _ = KillTimer(hwnd, TIMER_WAVES_FRAME);
+            let _ = KillTimer(hwnd, TIMER_WATCHDOG);
+            return;
+        }
+
+        // Mode 3b: Isolated Hardware GPU HoloMosaic Shader (React Bits 1:1, 0% AuraShell CPU!)
+        if !holo_key.is_empty() {
+            let Some((hwnd, ipc_hwnd)) = create_worker_windows(sw, sh) else {
+                return;
+            };
+            let settings = load_settings();
+            let preset = holo_mosaic::preset_by_key(&holo_key).unwrap_or(&holo_mosaic::PRESETS[0]);
+            let rw = if perf_mode { (sw as u32).min(1280) } else { (sw as u32).min(1920) };
+            let rh = if perf_mode { (sh as u32).min(720) } else { (sh as u32).min(1080) };
+
+            let sat = if settings.holo_saturation >= 0.0 {
+                Some(settings.holo_saturation)
+            } else {
+                None
+            };
+            let Ok(mut renderer) = GpuHoloRenderer::new_for_hwnd(
+                hwnd,
+                rw,
+                rh,
+                preset,
+                Some(settings.holo_speed),
+                sat,
+                &settings.holo_filter,
+            ) else {
+                let _ = DestroyWindow(hwnd);
+                if !ipc_hwnd.is_invalid() {
+                    let _ = DestroyWindow(ipc_hwnd);
+                }
+                return;
+            };
+            renderer.render_frame(0.016, 0);
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+
+            let frame_ms = if perf_mode { 33u32 } else { 16u32 };
+            let m_set = to_wide("WM_AURAOS_SETTINGS_CHANGED");
+            let wm_settings_changed = RegisterWindowMessageW(PCWSTR(m_set.as_ptr()));
+
+            WP_RT.with(|cell| {
+                *cell.borrow_mut() = Some(WpRuntime {
+                    hwnd,
+                    ipc_hwnd,
+                    backend: WorkerBackend::Holo {
+                        renderer,
+                        last_tick: Instant::now(),
+                        prev_lbtn_down: false,
+                        frame_ms,
+                        wm_settings_changed,
+                    },
+                    parent_pid,
+                    paused: start_paused,
+                    trim_countdown: 3,
+                });
+            });
+
+            SetTimer(hwnd, TIMER_WATCHDOG, 1500, None);
+            if !start_paused {
+                SetTimer(hwnd, TIMER_WAVES_FRAME, frame_ms, None);
+            }
+
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            let _ = KillTimer(hwnd, TIMER_WAVES_FRAME);
+            let _ = KillTimer(hwnd, TIMER_WATCHDOG);
+            return;
+        }
+
+        // Mode 3c: Isolated Hardware GPU React Bits Free Shaders (16 shaders, hot-swappable, 0% AuraShell CPU!)
+        if !rb_key.is_empty() {
+            let Some((hwnd, ipc_hwnd)) = create_worker_windows(sw, sh) else {
+                return;
+            };
+            let preset = reactbits_shaders::preset_by_key(&rb_key).unwrap_or(&reactbits_shaders::PRESETS[0]);
+            let rw = if perf_mode { (sw as u32).min(1280) } else { (sw as u32).min(1920) };
+            let rh = if perf_mode { (sh as u32).min(720) } else { (sh as u32).min(1080) };
+
+            let Ok(mut renderer) = GpuReactBitsRenderer::new_for_hwnd(hwnd, rw, rh, preset) else {
+                let _ = DestroyWindow(hwnd);
+                if !ipc_hwnd.is_invalid() {
+                    let _ = DestroyWindow(ipc_hwnd);
+                }
+                return;
+            };
+            renderer.render_frame(0.016, 0);
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+
+            let frame_ms = if perf_mode { 33u32 } else { 16u32 };
+            let m_set = to_wide("WM_AURAOS_SETTINGS_CHANGED");
+            let wm_settings_changed = RegisterWindowMessageW(PCWSTR(m_set.as_ptr()));
+
+            WP_RT.with(|cell| {
+                *cell.borrow_mut() = Some(WpRuntime {
+                    hwnd,
+                    ipc_hwnd,
+                    backend: WorkerBackend::ReactBits {
                         renderer,
                         last_tick: Instant::now(),
                         prev_lbtn_down: false,

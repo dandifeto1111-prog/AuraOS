@@ -16,6 +16,7 @@
 
 use aura_os::audio;
 use aura_os::gradient_waves;
+use aura_os::holo_mosaic;
 use aura_os::aura_window::{self, SnapZone};
 use aura_os::models::{
     app_data_dir, hash_lock_pin, load_custom_items, load_settings, load_widgets, save_custom_items,
@@ -192,6 +193,7 @@ enum SetAct {
     SetDesktopWallpaper(String),
     SetLockWallpaper(String),
     SetWavesCustomColor(String),
+    SetHoloFilter(String),
     PickLocalLockWallpaper,
     PickLocalDesktopWallpaper,
     PickLockAvatar,
@@ -220,6 +222,8 @@ enum SliderKind {
     GlassOpacity { x: f32, w: f32 },
     WavesSpeed { x: f32, w: f32 },
     WavesRelief { x: f32, w: f32 },
+    HoloSpeed { x: f32, w: f32 },
+    HoloSaturation { x: f32, w: f32 },
 }
 
 #[derive(Clone)]
@@ -815,6 +819,18 @@ impl SettingsRuntime {
                 gradient_waves::set_tuning(self.settings.waves_speed, self.settings.waves_relief);
                 self.redraw();
             }
+            SliderKind::HoloSpeed { x, w } => {
+                let frac = ((px - x) / w.max(1.0)).clamp(0.0, 1.0);
+                let v = holo_mosaic::SPEED_MIN + frac * (holo_mosaic::SPEED_MAX - holo_mosaic::SPEED_MIN);
+                self.settings.holo_speed = (v * 20.0).round() / 20.0;
+                self.redraw();
+            }
+            SliderKind::HoloSaturation { x, w } => {
+                let frac = ((px - x) / w.max(1.0)).clamp(0.0, 1.0);
+                let v = holo_mosaic::SAT_MIN + frac * (holo_mosaic::SAT_MAX - holo_mosaic::SAT_MIN);
+                self.settings.holo_saturation = (v * 20.0).round() / 20.0;
+                self.redraw();
+            }
         }
     }
 
@@ -1309,11 +1325,30 @@ impl SettingsRuntime {
                     if let Some(rgb) = id.strip_prefix("preset:").and_then(gradient_waves::effective_color) {
                         theme::apply_theme_scheme(&self.settings.theme_scheme, rgb);
                     }
+                } else if id.starts_with("preset:holo_") {
+                    self.settings.holo_saturation = -1.0;
+                    if let Some(rgb) = id.strip_prefix("preset:").and_then(holo_mosaic::effective_accent_rgb) {
+                        theme::apply_theme_scheme(&self.settings.theme_scheme, rgb);
+                    }
                 } else if let Some(wp) = self.wallpapers.iter().find(|w| w.id == id) {
                     theme::apply_theme_scheme(&self.settings.theme_scheme, wp.accent_rgb);
                 }
                 self.save_and_broadcast();
                 self.show_toast("Fondo del escritorio y colores adaptados en vivo", true);
+            }
+            SetAct::SetHoloFilter(filter) => {
+                let on_holo = self
+                    .settings
+                    .wallpaper_id
+                    .strip_prefix("preset:")
+                    .map(holo_mosaic::is_holo_key)
+                    .unwrap_or(false);
+                if !on_holo {
+                    self.settings.wallpaper_id = holo_mosaic::DEFAULT_PRESET_ID.to_string();
+                }
+                self.settings.holo_filter = filter;
+                self.save_and_broadcast();
+                self.show_toast("Filtro de Holo Mosaic aplicado en vivo", true);
             }
             SetAct::SetWavesCustomColor(hex) => {
                 let on_waves = self
@@ -2403,6 +2438,91 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             }
             y += gc.h + 16.0;
 
+            // ===== Holo Mosaic (React Bits 1:1 GPU Port) =====
+            let active_holo = s
+                .settings
+                .wallpaper_id
+                .strip_prefix("preset:")
+                .and_then(holo_mosaic::preset_by_key);
+            let shown_holo = active_holo.unwrap_or(&holo_mosaic::PRESETS[0]);
+            let hc = Rect::new(cx, y, cw, 248.0);
+            ctx.fill_card(hc, 16.0, theme::pal().surface, if active_holo.is_some() { theme::accent_light() } else { theme::accent_border() });
+
+            let hprev = Rect::new(hc.x + 14.0, hc.y + 14.0, 290.0, hc.h - 28.0);
+            let _hpl = ctx.push_rrect_mask_layer(hprev, hprev, 12.0, 1.0);
+            holo_mosaic::draw_holo_preview(ctx, shown_holo.key, hprev, 2.4);
+            if _hpl.is_some() {
+                ctx.pop_layer();
+            }
+            ctx.stroke_rrect(hprev, 12.0, theme::rgba(255, 255, 255, 0.14), 1.0);
+
+            let htx = hprev.x + hprev.w + 18.0;
+            let htw = hc.x + hc.w - htx - 14.0;
+            ctx.draw_text("Holo Mosaic · Mosaico Holográfico (React Bits)", Rect::new(htx, hc.y + 12.0, htw, 20.0), TextStyle::Title14Semi, theme::TEXT_PRIMARY);
+            let hstatus = if active_holo.is_some() {
+                format!("Activo: {} · Glitter 3D + inclinación al cursor + volteo al clic (GPU aislada)", shown_holo.title)
+            } else {
+                "Elige un espectro holográfico · +16 fondos React Bits extra disponibles abajo".to_string()
+            };
+            ctx.draw_text(&hstatus, Rect::new(htx, hc.y + 34.0, htw, 16.0), TextStyle::Small10Med, theme::accent_light());
+
+            let hn = holo_mosaic::PRESETS.len() as f32;
+            let hchip_w = (htw - 6.0 * (hn - 1.0)) / hn;
+            for (i, p) in holo_mosaic::PRESETS.iter().enumerate() {
+                let r = Rect::new(htx + i as f32 * (hchip_w + 6.0), hc.y + 58.0, hchip_w, 32.0);
+                let id = format!("hm_p_{}", i);
+                let is_on = active_holo.map(|a| a.key == p.key).unwrap_or(false);
+                let hov = s.hovered == Some(id.as_str());
+                ctx.fill_card(
+                    r,
+                    10.0,
+                    if is_on { theme::accent_tint() } else if hov { theme::ELEVATED_HOVER } else { theme::ELEVATED },
+                    if is_on { theme::accent_light() } else { theme::BORDER },
+                );
+                let (ar, ag, ab) = p.accent_rgb;
+                ctx.fill_circle(r.x + 14.0, r.y + 16.0, 5.2, theme::rgb(ar, ag, ab));
+                ctx.draw_text(p.title, Rect::new(r.x + 24.0, r.y + 8.0, r.w - 28.0, 16.0), TextStyle::Small10Bold, theme::TEXT_PRIMARY);
+                hits.push(Hit { id, rect: r, act: SetAct::SetDesktopWallpaper(format!("preset:{}", p.key)), slider: None });
+            }
+
+            // 3 Filter chips (Normal · Dither · ASCII)
+            ctx.draw_text("FILTRO EN TIEMPO REAL", Rect::new(htx, hc.y + 98.0, htw, 14.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
+            let hfilters = [("none", "Normal"), ("dither", "Dither Bayer"), ("ascii", "ASCII Matrix")];
+            let f_w = (htw - 12.0) / 3.0;
+            let cur_flt = s.settings.holo_filter.trim().to_ascii_lowercase();
+            for (i, (fkey, flbl)) in hfilters.iter().enumerate() {
+                let fr = Rect::new(htx + i as f32 * (f_w + 6.0), hc.y + 116.0, f_w, 26.0);
+                let id = format!("hm_f_{}", i);
+                let is_sel = cur_flt == *fkey || (*fkey == "none" && cur_flt.is_empty());
+                let hov = s.hovered == Some(id.as_str());
+                ctx.fill_card(
+                    fr,
+                    8.0,
+                    if is_sel { theme::accent_tint() } else if hov { theme::ELEVATED_HOVER } else { theme::ELEVATED },
+                    if is_sel { theme::accent_light() } else { theme::BORDER },
+                );
+                ctx.draw_text_center(flbl, fr, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
+                hits.push(Hit { id, rect: fr, act: SetAct::SetHoloFilter((*fkey).to_string()), slider: None });
+            }
+
+            let eff_sat = if s.settings.holo_saturation >= 0.0 { s.settings.holo_saturation } else { shown_holo.saturation };
+            let hsliders = [
+                ("sl_hm_speed", "Velocidad", s.settings.holo_speed, holo_mosaic::SPEED_MIN, holo_mosaic::SPEED_MAX, hc.y + 152.0),
+                ("sl_hm_sat", "Saturación", eff_sat, holo_mosaic::SAT_MIN, holo_mosaic::SAT_MAX, hc.y + 196.0),
+            ];
+            for (id, lbl, val, mn, mx, sy) in hsliders {
+                let label = format!("{} ({:.2})", lbl, val);
+                ctx.draw_text(&label, Rect::new(htx, sy, htw - 40.0, 16.0), TextStyle::Small10Bold, theme::TEXT_SECONDARY);
+                let tr = Rect::new(htx, sy + 20.0, htw, 10.0);
+                ctx.fill_hatched_track(tr, 5.0);
+                let frac = ((val - mn) / (mx - mn)).clamp(0.0, 1.0);
+                ctx.fill_rrect(Rect::new(tr.x, tr.y, (frac * tr.w).max(10.0), 10.0), 5.0, theme::accent());
+                ctx.fill_circle(tr.x + (frac * tr.w).clamp(5.0, tr.w - 5.0), tr.y + 5.0, 7.0, theme::TEXT_PRIMARY);
+                let slider = if id == "sl_hm_speed" { SliderKind::HoloSpeed { x: tr.x, w: tr.w } } else { SliderKind::HoloSaturation { x: tr.x, w: tr.w } };
+                hits.push(Hit { id: id.into(), rect: Rect::new(tr.x - 6.0, tr.y - 9.0, tr.w + 12.0, 28.0), act: SetAct::SetGlassOpacity(s.settings.glass_opacity), slider: Some(slider) });
+            }
+            y += hc.h + 16.0;
+
             // AuraLock Profile Photo + Security Password Card
             let lc = Rect::new(cx, y, cw, 184.0);
             ctx.fill_card(lc, 16.0, theme::SURFACE, theme::accent_border());
@@ -2818,7 +2938,13 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             WM_LBUTTONUP => {
                 if let Some(sl) = rt.active_slider.take() {
                     let _ = ReleaseCapture();
-                    if matches!(sl, SliderKind::WavesSpeed { .. } | SliderKind::WavesRelief { .. }) {
+                    if matches!(
+                        sl,
+                        SliderKind::WavesSpeed { .. }
+                            | SliderKind::WavesRelief { .. }
+                            | SliderKind::HoloSpeed { .. }
+                            | SliderKind::HoloSaturation { .. }
+                    ) {
                         rt.save_and_broadcast();
                     }
                 }

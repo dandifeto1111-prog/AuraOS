@@ -8,11 +8,13 @@ mod dev_hub;
 mod dock_preview;
 mod genie;
 mod gradient_waves;
+mod holo_mosaic;
 mod hotkey_hook;
 mod math_eval;
 mod models;
 mod motion;
 mod radios;
+mod reactbits_shaders;
 mod renderer;
 mod system;
 mod telemetry_worker;
@@ -876,6 +878,16 @@ impl ShellRuntime {
             .and_then(gradient_waves::effective_color)
         {
             seed = wave_rgb;
+        } else if let Some(holo_rgb) = wp_id
+            .strip_prefix("preset:")
+            .and_then(holo_mosaic::effective_accent_rgb)
+        {
+            seed = holo_rgb;
+        } else if let Some(rb_rgb) = wp_id
+            .strip_prefix("preset:")
+            .and_then(reactbits_shaders::effective_accent_rgb)
+        {
+            seed = rb_rgb;
         } else if let Some(item) = self.state.wallpapers.iter().find(|w| w.id == wp_id) {
             seed = item.accent_rgb;
             if let Some(prev) = &item.preview_path {
@@ -3353,6 +3365,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let prev_wp = rt.state.settings.wallpaper_id.clone();
             let prev_hide = rt.state.settings.hide_windows_taskbar;
             let prev_city = rt.state.settings.weather_city.clone();
+            let prev_holo = (
+                rt.state.settings.holo_speed,
+                rt.state.settings.holo_saturation,
+                rt.state.settings.holo_filter.clone(),
+            );
             rt.state.settings = load_settings();
             rt.state.custom_items = load_custom_items();
             rt.state.wallpapers = wallpaper::scan_wallpapers(&rt.state.custom_items);
@@ -3362,7 +3379,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let prev_color = gradient_waves::custom_color_rgb();
             gradient_waves::set_tuning(rt.state.settings.waves_speed, rt.state.settings.waves_relief);
             gradient_waves::set_custom_color(&rt.state.settings.waves_custom_color);
-            if gradient_waves::tuning() != prev_tuning || gradient_waves::custom_color_rgb() != prev_color {
+            let holo_changed = (rt.state.settings.holo_speed - prev_holo.0).abs() > 1e-4
+                || (rt.state.settings.holo_saturation - prev_holo.1).abs() > 1e-4
+                || rt.state.settings.holo_filter != prev_holo.2;
+            if gradient_waves::tuning() != prev_tuning || gradient_waves::custom_color_rgb() != prev_color || holo_changed {
                 rt.wallpaper.mark_dirty();
             }
             hotkey_hook::set_enabled(rt.state.settings.intercept_win_hotkeys);

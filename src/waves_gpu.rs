@@ -907,7 +907,10 @@ impl GpuWavesRenderer {
     }
 }
 
-fn save_bgra_png(w: u32, h: u32, bgra: &[u8], out_path: &Path) -> Result<(), String> {
+pub fn save_bgra_png(w: u32, h: u32, bgra: &[u8], out_path: &Path) -> Result<(), String> {
+    if let Some(parent) = out_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     use windows::Win32::Graphics::Imaging::{
         CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA,
         IWICImagingFactory, WICBitmapEncoderNoCache,

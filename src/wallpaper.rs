@@ -175,20 +175,39 @@ pub fn scan_wallpapers(custom: &CustomItemsStore) -> Vec<WallpaperItem> {
         },
     ];
 
-    // React Bits-style Gradient Waves presets (Ocean is the AuraOS default) — right after "external"
-    let waves: Vec<WallpaperItem> = crate::gradient_waves::PRESETS
+    // React Bits-style native GPU wallpaper collections right after "external":
+    // 1) Gradient Waves (5 presets) + 2) Holo Mosaic (5 presets) + 3) React Bits Free Shaders (16 presets)
+    let mut rb_pack: Vec<WallpaperItem> = crate::gradient_waves::PRESETS
         .iter()
         .map(|p| WallpaperItem {
             id: format!("preset:{}", p.key),
             title: format!("Gradient Waves · {}", p.title),
-            subtitle: format!("Predefinido AuraOS · Ondas GPU (amplitud {:.1} · swell {:.0})", p.amplitude, p.swell),
+            subtitle: format!("React Bits GPU · Ondas 3D (amplitud {:.1} · swell {:.0})", p.amplitude, p.swell),
             kind: WallpaperKind::Preset,
             file_path: p.key.to_string(),
             preview_path: None,
             accent_rgb: p.wave_color,
         })
         .collect();
-    items.splice(1..1, waves);
+    rb_pack.extend(crate::holo_mosaic::PRESETS.iter().map(|p| WallpaperItem {
+        id: format!("preset:{}", p.key),
+        title: format!("Holo Mosaic · {}", p.title),
+        subtitle: format!("React Bits GPU · {}", p.subtitle),
+        kind: WallpaperKind::Preset,
+        file_path: p.key.to_string(),
+        preview_path: None,
+        accent_rgb: p.accent_rgb,
+    }));
+    rb_pack.extend(crate::reactbits_shaders::PRESETS.iter().map(|p| WallpaperItem {
+        id: format!("preset:{}", p.key),
+        title: format!("React Bits · {}", p.title),
+        subtitle: p.subtitle.to_string(),
+        kind: WallpaperKind::Preset,
+        file_path: p.key.to_string(),
+        preview_path: None,
+        accent_rgb: p.accent_rgb,
+    }));
+    items.splice(1..1, rb_pack);
 
     for cw in &custom.custom_wallpapers {
         let low = cw.target.to_lowercase();
@@ -387,6 +406,26 @@ fn terminate_pid(pid: u32) {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GpuWorkerKind {
+    None,
+    Waves,
+    Holo,
+    ReactBits,
+}
+
+fn gpu_worker_kind_for_preset(preset: &str) -> GpuWorkerKind {
+    if crate::gradient_waves::is_waves_key(preset) {
+        GpuWorkerKind::Waves
+    } else if crate::holo_mosaic::is_holo_key(preset) {
+        GpuWorkerKind::Holo
+    } else if crate::reactbits_shaders::is_rb_key(preset) {
+        GpuWorkerKind::ReactBits
+    } else {
+        GpuWorkerKind::None
+    }
+}
+
 pub struct WallpaperEngine {
     pub active_id: String,
     pub active_kind: WallpaperKind,
@@ -403,7 +442,7 @@ pub struct WallpaperEngine {
     video_child: Option<Child>,
     video_paused_synced: bool,
     video_html_fallback_active: bool,
-    waves_worker_active: bool,
+    gpu_worker_kind: GpuWorkerKind,
     web_child: Option<Child>,
     web_hwnd: Option<HWND>,
     web_owner_pid: Option<u32>,
@@ -431,7 +470,7 @@ impl WallpaperEngine {
             video_child: None,
             video_paused_synced: false,
             video_html_fallback_active: false,
-            waves_worker_active: false,
+            gpu_worker_kind: GpuWorkerKind::None,
             web_child: None,
             web_hwnd: None,
             web_owner_pid: None,
@@ -451,10 +490,10 @@ impl WallpaperEngine {
         self.performance_mode = low;
     }
 
-    /// Forces a repaint on the next tick (and notifies isolated GPU waves worker if active!)
+    /// Forces a repaint on the next tick (and notifies isolated GPU shader worker if active!)
     pub fn mark_dirty(&mut self) {
         self.dirty_static = true;
-        if self.waves_worker_active {
+        if self.gpu_worker_kind != GpuWorkerKind::None {
             if let Some(hw) = Self::find_video_worker_hwnd() {
                 unsafe {
                     let _ = PostMessageW(hw, WM_AURA_WP_RELOAD_WAVES, WPARAM(0), LPARAM(0));
@@ -468,9 +507,9 @@ impl WallpaperEngine {
             return false;
         }
         match self.active_kind {
-            // Video & GPU GradientWaves run 100% isolated inside AuraWallpaper.exe (0 AuraShell ticks -> 0 lag!)
+            // Video & all React Bits GPU shaders run 100% isolated inside AuraWallpaper.exe (0 AuraShell ticks -> 0 lag!)
             WallpaperKind::Video => self.video_html_fallback_active && (self.web_hwnd.is_none() || self.web_recheck_frames > 0),
-            WallpaperKind::Preset => !self.waves_worker_active && !self.performance_mode && self.active_path != "matte_grid" && !self.is_frozen_waves(),
+            WallpaperKind::Preset => self.gpu_worker_kind == GpuWorkerKind::None && !self.performance_mode && self.active_path != "matte_grid" && !self.is_frozen_waves(),
             WallpaperKind::Web => self.web_hwnd.is_none() || self.web_recheck_frames > 0,
             _ => false,
         }
@@ -539,9 +578,10 @@ impl WallpaperEngine {
     }
 
     pub fn set_wallpaper(&mut self, gpu: &mut GpuEngine, id: &str) {
-        // Fast path: smoothly crossfade between GradientWaves presets inside existing isolated GPU worker!
+        // Fast path: smoothly crossfade / hot-swap presets within the same isolated GPU worker kind!
         if let Some(preset) = id.strip_prefix("preset:") {
-            if crate::gradient_waves::is_waves_key(preset) && self.waves_worker_active {
+            let target_kind = gpu_worker_kind_for_preset(preset);
+            if target_kind != GpuWorkerKind::None && target_kind == self.gpu_worker_kind {
                 let alive = self
                     .video_child
                     .as_mut()
@@ -572,8 +612,9 @@ impl WallpaperEngine {
         if let Some(preset) = id.strip_prefix("preset:") {
             self.active_kind = WallpaperKind::Preset;
             self.active_path = preset.to_string();
-            // Run GradientWaves 100% isolated on hardware D3D11 GPU in AuraWallpaper.exe (ZERO AuraShell lag!)
-            if crate::gradient_waves::is_waves_key(preset) && self.spawn_waves_worker(preset) {
+            // Run GradientWaves, HoloMosaic & all 16 React Bits shaders 100% isolated on hardware D3D11 GPU in AuraWallpaper.exe!
+            let kind = gpu_worker_kind_for_preset(preset);
+            if kind != GpuWorkerKind::None && self.spawn_gpu_shader_worker(kind, preset) {
                 self.hide_and_trim_host(gpu);
                 return;
             }
@@ -619,17 +660,23 @@ impl WallpaperEngine {
         find_video_worker_ipc_hwnd()
     }
 
-    fn spawn_waves_worker(&mut self, preset_key: &str) -> bool {
-        self.waves_worker_active = false;
+    fn spawn_gpu_shader_worker(&mut self, kind: GpuWorkerKind, preset_key: &str) -> bool {
+        self.gpu_worker_kind = GpuWorkerKind::None;
         self.video_html_fallback_active = false;
         self.video_paused_synced = false;
+        let flag = match kind {
+            GpuWorkerKind::Waves => "--waves",
+            GpuWorkerKind::Holo => "--holo",
+            GpuWorkerKind::ReactBits => "--rb",
+            GpuWorkerKind::None => return false,
+        };
         let Some(worker_exe) = resolve_wallpaper_worker_exe() else {
             return false;
         };
         let parent_pid = std::process::id();
         match Command::new(worker_exe)
             .args([
-                "--waves",
+                flag,
                 preset_key,
                 "--perf",
                 if self.performance_mode { "1" } else { "0" },
@@ -643,7 +690,7 @@ impl WallpaperEngine {
         {
             Ok(child) => {
                 self.video_child = Some(child);
-                self.waves_worker_active = true;
+                self.gpu_worker_kind = kind;
                 self.video_paused_synced = self.paused;
                 true
             }
@@ -744,7 +791,7 @@ impl WallpaperEngine {
         }
         self.video_html_fallback_active = false;
         self.video_paused_synced = false;
-        self.waves_worker_active = false;
+        self.gpu_worker_kind = GpuWorkerKind::None;
     }
 
     fn start_web(&mut self, html_path: &str) {
@@ -929,7 +976,7 @@ impl WallpaperEngine {
             return;
         }
         self.paused = paused;
-        if (self.active_kind == WallpaperKind::Video && !self.video_html_fallback_active) || self.waves_worker_active {
+        if (self.active_kind == WallpaperKind::Video && !self.video_html_fallback_active) || self.gpu_worker_kind != GpuWorkerKind::None {
             if let Some(hw) = Self::find_video_worker_hwnd() {
                 let msg = if paused { WM_AURA_WP_PAUSE } else { WM_AURA_WP_RESUME };
                 unsafe {
@@ -946,7 +993,7 @@ impl WallpaperEngine {
             self.enforce_web_embedded();
             return;
         }
-        if self.active_kind == WallpaperKind::Video || self.waves_worker_active {
+        if self.active_kind == WallpaperKind::Video || self.gpu_worker_kind != GpuWorkerKind::None {
             // Deliver deferred pause/resume if AuraWallpaperWorker finished initializing just after set_paused
             if self.video_paused_synced != self.paused {
                 if let Some(hw) = Self::find_video_worker_hwnd() {
@@ -960,9 +1007,9 @@ impl WallpaperEngine {
             if let Some(child) = &mut self.video_child {
                 if let Ok(Some(_)) = child.try_wait() {
                     self.video_child = None;
-                    if self.waves_worker_active {
+                    if self.gpu_worker_kind != GpuWorkerKind::None {
                         // Graceful fallback to CPU host if isolated GPU worker ever exited unexpectedly
-                        self.waves_worker_active = false;
+                        self.gpu_worker_kind = GpuWorkerKind::None;
                         if let Some(surf) = &mut self.surf_host {
                             surf.ensure_size(gpu, self.screen_w as u32, self.screen_h as u32);
                         }
@@ -1026,6 +1073,12 @@ impl WallpaperEngine {
 /// Transform-safe preset thumbnail preview inside any target rectangle
 pub fn draw_wallpaper_preview_in_rect(ctx: &mut DrawCtx<'_>, preset: &str, r: Rect) {
     if crate::gradient_waves::draw_waves(ctx, preset, r, 4.2) {
+        return;
+    }
+    if crate::holo_mosaic::draw_holo_preview(ctx, preset, r, 2.4) {
+        return;
+    }
+    if crate::reactbits_shaders::draw_rb_preview(ctx, preset, r, 2.4) {
         return;
     }
     match preset {
@@ -1112,6 +1165,12 @@ pub fn draw_wallpaper_frame(ctx: &mut DrawCtx<'_>, kind: WallpaperKind, key_or_p
     }
 
     if crate::gradient_waves::draw_waves_ex(ctx, key_or_path, full, t, true) {
+        return;
+    }
+    if crate::holo_mosaic::draw_holo_preview(ctx, key_or_path, full, t) {
+        return;
+    }
+    if crate::reactbits_shaders::draw_rb_preview(ctx, key_or_path, full, t) {
         return;
     }
 
