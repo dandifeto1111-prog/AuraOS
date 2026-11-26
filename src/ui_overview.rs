@@ -140,14 +140,14 @@ pub fn render_overview(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32, 
     ctx.fill_card(
         set_r,
         12.0,
-        if state.overview_settings_view { theme::VIOLET } else { theme::SURFACE },
+        if state.overview_settings_view { theme::accent() } else { theme::SURFACE },
         theme::BORDER,
     );
     ctx.draw_vector_icon(VectorIcon::Settings, set_r.x + 17.0, set_r.y + 17.0, 14.0, theme::TEXT_PRIMARY);
     hits.push(HitRegion { id: "ov_set".into(), rect: set_r, action: Action::OpenSettings, right_action: None, tooltip: None, slider: None });
 
     let af_r = Rect::new(rx - 200.0, top_y + 2.0, 102.0, 34.0);
-    ctx.fill_rrect(af_r, 12.0, theme::VIOLET);
+    ctx.fill_rrect(af_r, 12.0, theme::accent());
     ctx.draw_vector_icon(VectorIcon::Folder, af_r.x + 18.0, af_r.y + 17.0, 13.0, theme::TEXT_PRIMARY);
     ctx.draw_text("AuraFiles", Rect::new(af_r.x + 31.0, af_r.y, 66.0, 34.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
     hits.push(HitRegion { id: "ov_files".into(), rect: af_r, action: Action::LaunchAuraFiles(None), right_action: None, tooltip: None, slider: None });
@@ -223,7 +223,7 @@ fn render_pc_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits: &m
     ctx.draw_text("Apps", Rect::new(sys_card.x + 16.0, sys_card.y + 92.0, 60.0, 16.0), TextStyle::Small10Med, theme::CORAL);
 
     ctx.draw_text(&state.games.len().to_string(), Rect::new(sys_card.x + 88.0, sys_card.y + 56.0, 68.0, 30.0), TextStyle::Title22Bold, theme::TEXT_PRIMARY);
-    ctx.draw_text("Juegos", Rect::new(sys_card.x + 88.0, sys_card.y + 92.0, 60.0, 16.0), TextStyle::Small10Med, theme::VIOLET_LIGHT);
+    ctx.draw_text("Juegos", Rect::new(sys_card.x + 88.0, sys_card.y + 92.0, 60.0, 16.0), TextStyle::Small10Med, theme::accent_light());
 
     // Card 1B: AuraFiles shortcut
     let af_card = Rect::new(x0 + half_w + 12.0, y0, half_w, 128.0);
@@ -232,7 +232,7 @@ fn render_pc_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits: &m
     ctx.draw_text("AuraFiles", Rect::new(af_card.x + 16.0, af_card.y + 14.0, 110.0, 20.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
     ctx.draw_vector_icon(VectorIcon::External, af_card.x + af_card.w - 22.0, af_card.y + 24.0, 12.0, theme::TEXT_SECONDARY);
     let drv_txt = format!("{} discos listos", state.drives.len());
-    ctx.draw_text(&drv_txt, Rect::new(af_card.x + 16.0, af_card.y + 62.0, af_card.w - 28.0, 24.0), TextStyle::Title14Semi, theme::VIOLET_LIGHT);
+    ctx.draw_text(&drv_txt, Rect::new(af_card.x + 16.0, af_card.y + 62.0, af_card.w - 28.0, 24.0), TextStyle::Title14Semi, theme::accent_light());
     ctx.draw_text("Instantáneo · Pestañas · IA", Rect::new(af_card.x + 16.0, af_card.y + 92.0, af_card.w - 28.0, 16.0), TextStyle::Small10Med, theme::TEXT_TERTIARY);
     hits.push(HitRegion { id: "pc_af_card".into(), rect: af_card, action: Action::LaunchAuraFiles(None), right_action: None, tooltip: None, slider: None });
 
@@ -242,10 +242,10 @@ fn render_pc_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits: &m
     let tr = Rect::new(op_card.x + 18.0, op_card.y + 18.0, op_card.w - 36.0, 24.0);
     ctx.fill_hatched_track(tr, 12.0);
     let op_frac = ((state.settings.glass_opacity - 0.50) / 0.46).clamp(0.0, 1.0);
-    ctx.fill_rrect(Rect::new(tr.x, tr.y, (op_frac * tr.w).max(24.0), 24.0), 12.0, theme::VIOLET);
+    ctx.fill_rrect(Rect::new(tr.x, tr.y, (op_frac * tr.w).max(24.0), 24.0), 12.0, theme::accent());
     let kx = (tr.x + op_frac * (tr.w - 24.0) + 12.0).clamp(tr.x + 12.0, tr.x + tr.w - 12.0);
     ctx.fill_circle(kx, tr.y + 12.0, 11.0, theme::CRISP_WHITE);
-    ctx.stroke_circle(kx, tr.y + 12.0, 11.0, theme::VIOLET, 2.0);
+    ctx.stroke_circle(kx, tr.y + 12.0, 11.0, theme::accent(), 2.0);
     ctx.draw_text("Transparencia", Rect::new(op_card.x + 18.0, op_card.y + 52.0, 100.0, 18.0), TextStyle::Small10Med, theme::TEXT_TERTIARY);
     ctx.draw_text_right("Sólido", Rect::new(op_card.x + op_card.w - 80.0, op_card.y + 52.0, 62.0, 18.0), TextStyle::Small10Med, theme::TEXT_TERTIARY);
     hits.push(HitRegion {
@@ -261,7 +261,7 @@ fn render_pc_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits: &m
     let st_card = Rect::new(x0, y0 + 242.0, col_w, 250.0);
     ctx.fill_card(st_card, 22.0, theme::CARD_BG, theme::BORDER);
     let ic_s = Rect::new(st_card.x + 16.0, st_card.y + 16.0, 28.0, 28.0);
-    ctx.fill_rrect(ic_s, 9.0, theme::VIOLET);
+    ctx.fill_rrect(ic_s, 9.0, theme::accent());
     ctx.draw_vector_icon(VectorIcon::Folder, ic_s.x + 14.0, ic_s.y + 14.0, 13.0, theme::TEXT_PRIMARY);
     ctx.draw_text("Almacenamiento local", Rect::new(st_card.x + 54.0, st_card.y + 14.0, 180.0, 18.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
     ctx.draw_text("Clic en cualquier disco para abrir", Rect::new(st_card.x + 54.0, st_card.y + 32.0, 200.0, 14.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
@@ -283,7 +283,7 @@ fn render_pc_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits: &m
         ctx.fill_rrect(br, 10.0, if is_high { theme::CRISP_WHITE } else { theme::rgb(72, 76, 98) });
         if is_high {
             let pct_r = Rect::new(bx + 4.0, base_y - bh * 0.5 - 9.0, 28.0, 18.0);
-            ctx.fill_rrect(pct_r, 6.0, theme::VIOLET);
+            ctx.fill_rrect(pct_r, 6.0, theme::accent());
             ctx.draw_text_center(&format!("{:.0}%", d.used_pct), pct_r, TextStyle::Small9Reg, theme::TEXT_PRIMARY);
         }
         ctx.draw_text_center(&d.letter, Rect::new(bx - 12.0, base_y + 8.0, 60.0, 16.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
@@ -308,9 +308,9 @@ fn render_pc_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits: &m
         let rr = Rect::new(mid_card.x + 14.0, ry, col_w - 28.0, 44.0);
         let id = format!("pc_win_{}", idx);
         let hov = state.hovered_id.as_deref() == Some(&id);
-        let bg = if idx == 0 { theme::VIOLET } else if hov { theme::ELEVATED_HOVER } else { theme::ELEVATED };
+        let bg = if idx == 0 { theme::accent() } else if hov { theme::ELEVATED_HOVER } else { theme::ELEVATED };
         ctx.fill_rrect(rr, 15.0, bg);
-        ctx.fill_circle(rr.x + 16.0, rr.y + 22.0, 4.0, if idx == 0 { theme::CRISP_WHITE } else { theme::VIOLET_LIGHT });
+        ctx.fill_circle(rr.x + 16.0, rr.y + 22.0, 4.0, if idx == 0 { theme::CRISP_WHITE } else { theme::accent_light() });
         ctx.draw_text(&win.title, Rect::new(rr.x + 28.0, rr.y, rr.w - 110.0, 44.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
         let tag = Rect::new(rr.x + rr.w - 76.0, rr.y + 11.0, 64.0, 22.0);
         ctx.fill_rrect(tag, 9.0, theme::rgba(0, 0, 0, 0.22));
@@ -322,7 +322,7 @@ fn render_pc_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits: &m
     // Quick folders/tools below open windows
     let user_prof = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".to_string());
     let shortcuts = [
-        ("pc_sc_dl", "AuraFiles · Descargas", Action::LaunchAuraFiles(Some(format!("{}\\Downloads", user_prof))), theme::VIOLET),
+        ("pc_sc_dl", "AuraFiles · Descargas", Action::LaunchAuraFiles(Some(format!("{}\\Downloads", user_prof))), theme::accent()),
         ("pc_sc_doc", "AuraFiles · Documentos", Action::LaunchAuraFiles(Some(format!("{}\\Documents", user_prof))), theme::BLUE),
         ("pc_sc_term", "Terminal de Windows", Action::LaunchTarget("wt.exe".into()), theme::EMERALD),
         ("pc_sc_tm", "Administrador de Tareas", Action::LaunchTarget("taskmgr.exe".into()), theme::AMBER),
@@ -346,7 +346,7 @@ fn render_pc_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits: &m
     // --- RIGHT COLUMN ---
     // Card R1: Electric Violet Weather Card (Vector sun/cloud + Feels/Humidity/Wind)
     let w_card = Rect::new(x2, y0, col_w, 148.0);
-    ctx.fill_gradient_rrect(w_card, 22.0, theme::VIOLET_LIGHT, theme::VIOLET_DEEP);
+    ctx.fill_gradient_rrect(w_card, 22.0, theme::accent_light(), theme::accent_deep());
     let w_ic = Rect::new(w_card.x + 18.0, w_card.y + 20.0, 42.0, 42.0);
     ctx.fill_rrect(w_ic, 14.0, theme::rgba(255, 255, 255, 0.22));
     ctx.draw_vector_icon(
@@ -382,10 +382,10 @@ fn render_pc_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits: &m
     ctx.draw_area_graph(
         Rect::new(c_card.x + 18.0, c_card.y + 56.0, c_card.w - 36.0, 56.0),
         &state.cpu_history,
-        theme::VIOLET,
+        theme::accent(),
     );
     ctx.draw_text("Intel Core i3-10100F", Rect::new(c_card.x + 18.0, c_card.y + 120.0, 160.0, 16.0), TextStyle::Small10Med, theme::DARK_MUTED);
-    ctx.draw_text_right("3.60 GHz · 4 núcleos", Rect::new(c_card.x + c_card.w - 150.0, c_card.y + 120.0, 132.0, 16.0), TextStyle::Small10Med, theme::VIOLET);
+    ctx.draw_text_right("3.60 GHz · 4 núcleos", Rect::new(c_card.x + c_card.w - 150.0, c_card.y + 120.0, 132.0, 16.0), TextStyle::Small10Med, theme::accent());
 
     // Card R3: RAM Arc Gauge Card
     let r_card = Rect::new(x2, y0 + 328.0, col_w, 164.0);
@@ -399,7 +399,7 @@ fn render_pc_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits: &m
     ctx.draw_text("Memoria RAM", Rect::new(r_card.x + 18.0, r_card.y + 114.0, 120.0, 16.0), TextStyle::Small10Med, theme::TEXT_TERTIARY);
     ctx.draw_text(&format!("{:.1} / {:.1} GB", state.ram_used_gb, state.ram_total_gb), Rect::new(r_card.x + 18.0, r_card.y + 132.0, 160.0, 20.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
     let st_pill = Rect::new(r_card.x + r_card.w - 72.0, r_card.y + 128.0, 54.0, 22.0);
-    ctx.fill_rrect(st_pill, 10.0, if state.ram_pct > 80 { theme::CORAL } else { theme::VIOLET });
+    ctx.fill_rrect(st_pill, 10.0, if state.ram_pct > 80 { theme::CORAL } else { theme::accent() });
     ctx.draw_text_center(if state.ram_pct > 80 { "Alta" } else { "Ideal" }, st_pill, TextStyle::Small9Reg, theme::TEXT_PRIMARY);
 }
 
@@ -689,26 +689,26 @@ fn render_gamer_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits:
     ctx.fill_card(
         strip,
         20.0,
-        if state.game_boost_active { theme::VIOLET_TINT } else { theme::CARD_BG },
-        if state.game_boost_active { theme::VIOLET } else { theme::BORDER },
+        if state.game_boost_active { theme::accent_tint() } else { theme::CARD_BG },
+        if state.game_boost_active { theme::accent() } else { theme::BORDER },
     );
 
     let g_ic = Rect::new(strip.x + 16.0, strip.y + 15.0, 38.0, 38.0);
-    ctx.fill_rrect(g_ic, 12.0, theme::VIOLET);
+    ctx.fill_rrect(g_ic, 12.0, theme::accent());
     ctx.draw_vector_icon(VectorIcon::Gamepad, g_ic.x + 19.0, g_ic.y + 19.0, 18.0, theme::TEXT_PRIMARY);
     ctx.draw_text(&format!("Biblioteca Gamer ({} juegos)", state.games.len()), Rect::new(strip.x + 66.0, strip.y + 14.0, 360.0, 20.0), TextStyle::Title14Semi, theme::TEXT_PRIMARY);
     ctx.draw_text(&state.game_boost_status, Rect::new(strip.x + 66.0, strip.y + 36.0, 460.0, 16.0), TextStyle::Body11Reg, theme::TEXT_SECONDARY);
 
     // "+ Agregar juego" button
     let add_g = Rect::new(strip.x + strip.w - 306.0, strip.y + 17.0, 138.0, 34.0);
-    ctx.fill_card(add_g, 12.0, theme::ELEVATED, theme::VIOLET_BORDER);
-    ctx.draw_vector_icon(VectorIcon::Plus, add_g.x + 16.0, add_g.y + 17.0, 11.5, theme::VIOLET_LIGHT);
+    ctx.fill_card(add_g, 12.0, theme::ELEVATED, theme::accent_border());
+    ctx.draw_vector_icon(VectorIcon::Plus, add_g.x + 16.0, add_g.y + 17.0, 11.5, theme::accent_light());
     ctx.draw_text("Agregar juego", Rect::new(add_g.x + 29.0, add_g.y, 102.0, 34.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
     hits.push(HitRegion { id: "gamer_add".into(), rect: add_g, action: Action::AddCustomGameFile, right_action: None, tooltip: Some("Elegir ejecutable .exe o acceso directo .lnk".into()), slider: None });
 
     // Game Boost Toggle Button
     let boost_r = Rect::new(strip.x + strip.w - 156.0, strip.y + 17.0, 140.0, 34.0);
-    ctx.fill_rrect(boost_r, 12.0, if state.game_boost_active { theme::EMERALD } else { theme::VIOLET });
+    ctx.fill_rrect(boost_r, 12.0, if state.game_boost_active { theme::EMERALD } else { theme::accent() });
     ctx.draw_text_center(
         if state.game_boost_active { "Game Boost: ON" } else { "Activar Boost" },
         boost_r,
@@ -734,7 +734,7 @@ fn render_gamer_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits:
         }
         let id = format!("game_card_{}", idx);
         let hov = state.hovered_id.as_deref() == Some(&id);
-        ctx.fill_card(cr, 18.0, if hov { theme::ELEVATED_HOVER } else { theme::CARD_BG }, if hov { theme::VIOLET } else { theme::BORDER });
+        ctx.fill_card(cr, 18.0, if hov { theme::ELEVATED_HOVER } else { theme::CARD_BG }, if hov { theme::accent() } else { theme::BORDER });
 
         // Top art / icon area
         let art_r = Rect::new(cr.x + 8.0, cr.y + 8.0, cr.w - 16.0, 114.0);
@@ -748,7 +748,7 @@ fn render_gamer_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits:
         if !drew_art {
             let ic_r = Rect::new(art_r.x + (art_r.w - 48.0) * 0.5, art_r.y + 33.0, 48.0, 48.0);
             if g.icon_path.is_empty() || !ctx.draw_app_icon(&g.icon_path, ic_r) {
-                ctx.draw_vector_icon(VectorIcon::Gamepad, art_r.x + art_r.w * 0.5, art_r.y + 57.0, 28.0, theme::VIOLET_LIGHT);
+                ctx.draw_vector_icon(VectorIcon::Gamepad, art_r.x + art_r.w * 0.5, art_r.y + 57.0, 28.0, theme::accent_light());
             }
         }
 
@@ -759,7 +759,7 @@ fn render_gamer_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits:
 
         // Title + Play hint
         ctx.draw_text(&g.name, Rect::new(cr.x + 12.0, cr.y + 130.0, cr.w - 24.0, 20.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
-        ctx.draw_text("Clic para jugar", Rect::new(cr.x + 12.0, cr.y + 154.0, cr.w - 24.0, 16.0), TextStyle::Small9Reg, if hov { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY });
+        ctx.draw_text("Clic para jugar", Rect::new(cr.x + 12.0, cr.y + 154.0, cr.w - 24.0, 16.0), TextStyle::Small9Reg, if hov { theme::accent_light() } else { theme::TEXT_TERTIARY });
 
         hits.push(HitRegion {
             id,
@@ -901,7 +901,7 @@ fn render_creative_studio_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: R
     );
 
     let chips = [
-        ("Piano Roll & Mixer", theme::VIOLET_LIGHT),
+        ("Piano Roll & Mixer", theme::accent_light()),
         ("28 Plugins DSP nativos", theme::EMERALD),
         ("Puente VST3 / VST2 / CLAP", theme::BLUE),
         ("Proyectos .flp y .lsp", theme::AMBER),
@@ -1082,11 +1082,11 @@ fn render_studio_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits
     // --- LEFT PANEL: MODULAR DRAGGABLE DESKTOP WIDGETS ---
     let wg_card = Rect::new(area.x, y0, left_w, panel_h);
     ctx.fill_card(wg_card, 22.0, theme::CARD_BG, theme::BORDER);
-    ctx.draw_text("WIDGETS DEL ESCRITORIO", Rect::new(wg_card.x + 18.0, wg_card.y + 16.0, left_w - 36.0, 16.0), TextStyle::Small10Bold, theme::VIOLET_LIGHT);
+    ctx.draw_text("WIDGETS DEL ESCRITORIO", Rect::new(wg_card.x + 18.0, wg_card.y + 16.0, left_w - 36.0, 16.0), TextStyle::Small10Bold, theme::accent_light());
     ctx.draw_text("Arrastra cualquiera en tu escritorio · Ajusta tamaño", Rect::new(wg_card.x + 18.0, wg_card.y + 34.0, left_w - 36.0, 14.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
 
     let specs = [
-        (WidgetKind::Music, "Reproductor Musical", "Onda animada 60 FPS + SMTC", VectorIcon::MusicNote, theme::VIOLET),
+        (WidgetKind::Music, "Reproductor Musical", "Onda animada 60 FPS + SMTC", VectorIcon::MusicNote, theme::accent()),
         (WidgetKind::Clock, "Reloj y Fecha", "Tipografía ligera + Clima", VectorIcon::Sun, theme::BLUE),
         (WidgetKind::Weather, "Clima en Vivo", "Tarjeta violeta con humedad", VectorIcon::Cloud, theme::AMBER),
         (WidgetKind::Monitor, "Monitor PC", "Gráfica CPU + Barra RAM", VectorIcon::Code, theme::EMERALD),
@@ -1103,7 +1103,7 @@ fn render_studio_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits
             rr,
             15.0,
             if enabled { theme::ELEVATED } else { theme::SURFACE },
-            if enabled { theme::VIOLET_BORDER } else { theme::BORDER },
+            if enabled { theme::accent_border() } else { theme::BORDER },
         );
 
         let ib = Rect::new(rr.x + 12.0, rr.y + 14.0, 32.0, 32.0);
@@ -1115,7 +1115,7 @@ fn render_studio_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits
 
         // Toggle switch pill
         let sw = Rect::new(rr.x + rr.w - 50.0, rr.y + 19.0, 38.0, 22.0);
-        ctx.fill_rrect(sw, 11.0, if enabled { theme::VIOLET } else { theme::CARD_BG });
+        ctx.fill_rrect(sw, 11.0, if enabled { theme::accent() } else { theme::CARD_BG });
         ctx.fill_circle(if enabled { sw.x + 27.0 } else { sw.x + 11.0 }, sw.y + 11.0, 7.5, theme::CRISP_WHITE);
         hits.push(HitRegion {
             id: format!("st_wg_tog_{}", idx),
@@ -1134,7 +1134,7 @@ fn render_studio_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits
             for (ti, (tlbl, tv)) in tiers.into_iter().enumerate() {
                 let tr = Rect::new(rr.x + 70.0 + ti as f32 * (tw + 4.0), rr.y + 57.0, tw, 23.0);
                 let sel = tier == tv;
-                ctx.fill_rrect(tr, 8.0, if sel { theme::VIOLET } else { theme::CARD_BG });
+                ctx.fill_rrect(tr, 8.0, if sel { theme::accent() } else { theme::CARD_BG });
                 ctx.draw_text_center(tlbl, tr, TextStyle::Small9Reg, if sel { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY });
                 let delta = tv as i8 - tier as i8;
                 if delta != 0 {
@@ -1152,11 +1152,13 @@ fn render_studio_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits
         wy += row_h + 10.0;
     }
 
+    let pal = theme::pal();
+
     // Smart Grid Arrange + Reset positions buttons at bottom of Widgets column
     let grid_r = Rect::new(wg_card.x + 14.0, wg_card.y + wg_card.h - 84.0, left_w - 28.0, 32.0);
     let grid_hov = state.hovered_id.as_deref() == Some("st_wg_grid");
-    ctx.fill_card(grid_r, 11.0, if grid_hov { theme::VIOLET_LIGHT } else { theme::VIOLET }, theme::VIOLET_BORDER);
-    ctx.draw_text_center("Ordenar widgets en cuadrícula", grid_r, TextStyle::Body11Med, theme::TEXT_PRIMARY);
+    ctx.fill_card(grid_r, 11.0, if grid_hov { pal.accent_light } else { pal.accent }, pal.accent_border);
+    ctx.draw_text_center("Ordenar widgets en cuadrícula", grid_r, TextStyle::Body11Med, pal.text_primary);
     hits.push(HitRegion {
         id: "st_wg_grid".into(),
         rect: grid_r,
@@ -1168,8 +1170,8 @@ fn render_studio_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits
 
     let rst_r = Rect::new(wg_card.x + 14.0, wg_card.y + wg_card.h - 46.0, left_w - 28.0, 32.0);
     let rst_hov = state.hovered_id.as_deref() == Some("st_wg_reset");
-    ctx.fill_rrect(rst_r, 11.0, if rst_hov { theme::ELEVATED_HOVER } else { theme::ELEVATED });
-    ctx.draw_text_center("Restablecer posiciones por defecto", rst_r, TextStyle::Body11Med, theme::TEXT_SECONDARY);
+    ctx.fill_rrect(rst_r, 11.0, if rst_hov { pal.elevated_hover } else { pal.elevated });
+    ctx.draw_text_center("Restablecer posiciones por defecto", rst_r, TextStyle::Body11Med, pal.text_secondary);
     hits.push(HitRegion {
         id: "st_wg_reset".into(),
         rect: rst_r,
@@ -1179,20 +1181,21 @@ fn render_studio_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits
         slider: None,
     });
 
-    // --- RIGHT PANEL: INTEGRATED WALLPAPER ENGINE (PRESETS + WORKSHOP VIDEO & WEB + LOCAL) ---
+    // --- RIGHT PANEL: INTEGRATED WALLPAPER ENGINE (GRADIENT WAVES + PRESETS + WORKSHOP) ---
     let wp_card = Rect::new(area.x + left_w + gap, y0, right_w, panel_h);
-    ctx.fill_card(wp_card, 22.0, theme::CARD_BG, theme::BORDER);
+    ctx.fill_card(wp_card, 22.0, pal.card_bg, pal.border);
 
     let vid_cnt = state.wallpapers.iter().filter(|w| w.kind == WallpaperKind::Video).count();
     let web_cnt = state.wallpapers.iter().filter(|w| w.kind == WallpaperKind::Web).count();
-    let hdr_sub = format!("4 predefinidos AuraOS · {} video + {} web de Steam Workshop · Auto-pausa 0% GPU", vid_cnt, web_cnt);
-    ctx.draw_text("MOTOR DE FONDOS AURAOS (COMPATIBLE WALLPAPER ENGINE)", Rect::new(wp_card.x + 18.0, wp_card.y + 15.0, right_w - 220.0, 16.0), TextStyle::Small10Bold, theme::VIOLET_LIGHT);
-    ctx.draw_text(&hdr_sub, Rect::new(wp_card.x + 18.0, wp_card.y + 33.0, right_w - 220.0, 14.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
+    let preset_cnt = state.wallpapers.iter().filter(|w| w.kind == WallpaperKind::Preset).count();
+    let hdr_sub = format!("{} predefinidos AuraOS (incl. Gradient Waves) · {} video + {} web Workshop · Auto-pausa 0% GPU", preset_cnt, vid_cnt, web_cnt);
+    ctx.draw_text("MOTOR DE FONDOS AURAOS (GRADIENT WAVES + WALLPAPER ENGINE)", Rect::new(wp_card.x + 18.0, wp_card.y + 15.0, right_w - 220.0, 16.0), TextStyle::Small10Bold, pal.accent_light);
+    ctx.draw_text(&hdr_sub, Rect::new(wp_card.x + 18.0, wp_card.y + 33.0, right_w - 220.0, 14.0), TextStyle::Small9Reg, pal.text_tertiary);
 
     // Top-right action pills: [+ Video / Imagen] + optional [Cerrar Wallpaper Engine]
     let add_wp_r = Rect::new(wp_card.x + right_w - 156.0, wp_card.y + 16.0, 140.0, 30.0);
-    ctx.fill_rrect(add_wp_r, 11.0, theme::VIOLET);
-    ctx.draw_text_center("+ Video / Imagen", add_wp_r, TextStyle::Body11Med, theme::TEXT_PRIMARY);
+    ctx.fill_rrect(add_wp_r, 11.0, pal.accent);
+    ctx.draw_text_center("+ Video / Imagen", add_wp_r, TextStyle::Body11Med, pal.text_primary);
     hits.push(HitRegion {
         id: "st_wp_add".into(),
         rect: add_wp_r,
@@ -1217,8 +1220,56 @@ fn render_studio_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits
         });
     }
 
+    // 1-click Adaptive Gradient Waves Color Bar (changes BOTH the live waves & entire AuraOS palette!)
+    let cbar_r = Rect::new(wp_card.x + 14.0, wp_card.y + 54.0, right_w - 28.0, 38.0);
+    ctx.fill_card(cbar_r, 12.0, pal.surface, pal.border);
+    ctx.draw_text(
+        "COLOR GRADIENT WAVES (ADAPTA TODO AURAOS)",
+        Rect::new(cbar_r.x + 12.0, cbar_r.y + 11.0, 275.0, 16.0),
+        TextStyle::Small9Reg,
+        pal.text_secondary,
+    );
+    let sw_start_x = cbar_r.x + 286.0;
+    let sw_avail = (cbar_r.w - 296.0).max(160.0);
+    let sw_n = crate::gradient_waves::COLOR_SWATCHES.len() as f32;
+    let sw_gap = 6.0;
+    let sw_w = ((sw_avail - sw_gap * (sw_n - 1.0)) / sw_n).clamp(24.0, 76.0);
+    let active_custom = state.settings.waves_custom_color.trim().to_ascii_uppercase();
+    for (si, (name, hex, (sr, sg, sb))) in crate::gradient_waves::COLOR_SWATCHES.iter().enumerate() {
+        let sr_rect = Rect::new(sw_start_x + si as f32 * (sw_w + sw_gap), cbar_r.y + 6.0, sw_w, 26.0);
+        let sid = format!("st_gw_col_{}", si);
+        let hov_s = state.hovered_id.as_deref() == Some(&sid);
+        let is_sel = active_custom == *hex
+            || (active_custom.is_empty()
+                && state
+                    .settings
+                    .wallpaper_id
+                    .strip_prefix("preset:")
+                    .and_then(crate::gradient_waves::preset_by_key)
+                    .map(|p| p.wave_color == (*sr, *sg, *sb))
+                    .unwrap_or(false));
+        ctx.fill_card(
+            sr_rect,
+            8.0,
+            if is_sel { pal.accent_tint } else if hov_s { pal.elevated_hover } else { pal.elevated },
+            if is_sel { pal.accent_light } else { pal.border },
+        );
+        ctx.fill_circle(sr_rect.x + 11.0, sr_rect.y + 13.0, 5.0, theme::rgb(*sr, *sg, *sb));
+        if sw_w >= 54.0 {
+            ctx.draw_text(name, Rect::new(sr_rect.x + 20.0, sr_rect.y + 6.0, sw_w - 23.0, 14.0), TextStyle::Small9Reg, pal.text_primary);
+        }
+        hits.push(HitRegion {
+            id: sid,
+            rect: sr_rect,
+            action: Action::SetWavesCustomColor((*hex).to_string()),
+            right_action: None,
+            tooltip: Some(format!("Aplicar color {} ({}) a Gradient Waves y adaptar toda la paleta de AuraOS", name, hex)),
+            slider: None,
+        });
+    }
+
     // Scrollable 3-column Wallpaper Visual Gallery
-    let grid_r = Rect::new(wp_card.x + 14.0, wp_card.y + 58.0, right_w - 28.0, panel_h - 72.0);
+    let grid_r = Rect::new(wp_card.x + 14.0, wp_card.y + 100.0, right_w - 28.0, panel_h - 114.0);
     ctx.push_clip(grid_r);
 
     let cols = 3usize;
@@ -1245,8 +1296,8 @@ fn render_studio_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits
         ctx.fill_card(
             cr,
             15.0,
-            if active { theme::VIOLET_TINT } else if hov { theme::ELEVATED_HOVER } else { theme::ELEVATED },
-            if active { theme::VIOLET } else if hov { theme::VIOLET_BORDER } else { theme::BORDER },
+            if active { pal.accent_tint } else if hov { pal.elevated_hover } else { pal.elevated },
+            if active { pal.accent } else if hov { pal.accent_border } else { pal.border },
         );
 
         // Preview Art Area
@@ -1261,13 +1312,13 @@ fn render_studio_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits
                 crate::wallpaper::draw_wallpaper_preview_in_rect(ctx, &wp.file_path, art);
             } else {
                 let (ar, ag, ab) = wp.accent_rgb;
-                ctx.fill_gradient_rrect(art, 10.0, theme::rgb(ar / 2, ag / 2, ab / 2), theme::CARD_BG);
+                ctx.fill_gradient_rrect(art, 10.0, theme::rgb(ar / 2, ag / 2, ab / 2), pal.card_bg);
                 ctx.draw_vector_icon(
                     if wp.kind == WallpaperKind::External { VectorIcon::Refresh } else { VectorIcon::Sparkle },
                     art.x + art.w * 0.5,
                     art.y + art.h * 0.5,
                     22.0,
-                    theme::TEXT_SECONDARY,
+                    pal.text_secondary,
                 );
             }
         }
@@ -1285,12 +1336,12 @@ fn render_studio_bento(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hits
         };
         let badge = Rect::new(art.x + 6.0, art.y + 6.0, 52.0, 18.0);
         ctx.fill_rrect(badge, 6.0, theme::rgba(10, 10, 16, 0.78));
-        ctx.draw_text_center(kind_lbl, badge, TextStyle::Small9Reg, theme::TEXT_PRIMARY);
+        ctx.draw_text_center(kind_lbl, badge, TextStyle::Small9Reg, pal.text_primary);
 
         if active {
             let act_b = Rect::new(art.x + art.w - 52.0, art.y + 6.0, 46.0, 18.0);
-            ctx.fill_rrect(act_b, 6.0, theme::VIOLET);
-            ctx.draw_text_center("Activo", act_b, TextStyle::Small9Reg, theme::TEXT_PRIMARY);
+            ctx.fill_rrect(act_b, 6.0, pal.accent);
+            ctx.draw_text_center("Activo", act_b, TextStyle::Small9Reg, pal.text_primary);
         }
 
         ctx.draw_text(&wp.title, Rect::new(cr.x + 10.0, cr.y + 104.0, cr.w - 20.0, 18.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
@@ -1377,7 +1428,7 @@ fn render_search_results(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hi
     for (i, (title, sub, ic_path, act)) in matches.into_iter().take(8).enumerate() {
         let rr = Rect::new(card.x + 12.0, y, card.w - 24.0, 46.0);
         let sel = i == state.search_selected || state.hovered_id.as_deref() == Some(&format!("srch_{}", i));
-        ctx.fill_rrect(rr, 12.0, if sel { theme::VIOLET } else { theme::rgba(0, 0, 0, 0.0) });
+        ctx.fill_rrect(rr, 12.0, if sel { theme::accent() } else { theme::rgba(0, 0, 0, 0.0) });
 
         let ir = Rect::new(rr.x + 12.0, rr.y + 11.0, 24.0, 24.0);
         if ic_path.is_empty() || !ctx.draw_app_icon(&ic_path, ir) {
@@ -1420,7 +1471,7 @@ fn render_settings_view(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hit
         ctx.fill_rrect(rr, 12.0, theme::ELEVATED);
         ctx.draw_text(lbl, Rect::new(rr.x + 14.0, rr.y, rr.w - 78.0, 44.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
         let sw = Rect::new(rr.x + rr.w - 54.0, rr.y + 11.0, 40.0, 22.0);
-        ctx.fill_rrect(sw, 11.0, if on { theme::VIOLET } else { theme::CARD_BG });
+        ctx.fill_rrect(sw, 11.0, if on { theme::accent() } else { theme::CARD_BG });
         ctx.fill_circle(if on { sw.x + 29.0 } else { sw.x + 11.0 }, sw.y + 11.0, 8.0, theme::CRISP_WHITE);
         hits.push(HitRegion { id: format!("set_{}", key), rect: rr, action: Action::ToggleSetting(key), right_action: None, tooltip: None, slider: None });
         y += 51.0;
@@ -1432,7 +1483,7 @@ fn render_settings_view(ctx: &mut DrawCtx<'_>, state: &AppState, area: Rect, hit
     hits.push(HitRegion { id: "set_restore".into(), rect: btn_res, action: Action::RestoreWindowsAndExit, right_action: None, tooltip: None, slider: None });
 
     let btn_upd = Rect::new(card.x + card.w - 170.0, y + 10.0, 150.0, 36.0);
-    ctx.fill_rrect(btn_upd, 12.0, theme::VIOLET);
+    ctx.fill_rrect(btn_upd, 12.0, theme::accent());
     ctx.draw_text_center("Actualizar versión", btn_upd, TextStyle::Body11Med, theme::TEXT_PRIMARY);
     hits.push(HitRegion { id: "set_upd".into(), rect: btn_upd, action: Action::LaunchUpdater, right_action: None, tooltip: None, slider: None });
 }
@@ -1444,7 +1495,7 @@ fn render_add_dev_modal(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32,
     let mw = 440.0;
     let mh = 278.0;
     let mr = Rect::new((w - mw) * 0.5, (h - mh) * 0.5, mw, mh);
-    ctx.fill_card(mr, 22.0, theme::SURFACE, theme::VIOLET_BORDER);
+    ctx.fill_card(mr, 22.0, theme::SURFACE, theme::accent_border());
 
     // Unified macOS Traffic Lights in Modal top-left
     let ml = [
@@ -1470,7 +1521,7 @@ fn render_add_dev_modal(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32,
     // Field 0: Name
     ctx.draw_text("NOMBRE (ej. DeepSeek, v0, Cursor)", Rect::new(mr.x + 22.0, mr.y + 68.0, 320.0, 15.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
     let f0 = Rect::new(mr.x + 22.0, mr.y + 86.0, mw - 44.0, 36.0);
-    ctx.fill_card(f0, 11.0, theme::CARD_BG, if state.add_modal.active_field == 0 { theme::VIOLET } else { theme::BORDER });
+    ctx.fill_card(f0, 11.0, theme::CARD_BG, if state.add_modal.active_field == 0 { theme::accent() } else { theme::BORDER });
     let n_txt = if state.add_modal.name.is_empty() { "Escribe el nombre..." } else { state.add_modal.name.as_str() };
     ctx.draw_text(n_txt, Rect::new(f0.x + 12.0, f0.y, f0.w - 24.0, 36.0), TextStyle::Body12Med, if state.add_modal.name.is_empty() { theme::TEXT_TERTIARY } else { theme::TEXT_PRIMARY });
     hits.push(HitRegion { id: "mod_f0".into(), rect: f0, action: Action::FocusModalField(0), right_action: None, tooltip: None, slider: None });
@@ -1478,7 +1529,7 @@ fn render_add_dev_modal(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32,
     // Field 1: URL
     ctx.draw_text("URL WEB (ej. https://chat.deepseek.com)", Rect::new(mr.x + 22.0, mr.y + 132.0, 320.0, 15.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
     let f1 = Rect::new(mr.x + 22.0, mr.y + 150.0, mw - 44.0, 36.0);
-    ctx.fill_card(f1, 11.0, theme::CARD_BG, if state.add_modal.active_field == 1 { theme::VIOLET } else { theme::BORDER });
+    ctx.fill_card(f1, 11.0, theme::CARD_BG, if state.add_modal.active_field == 1 { theme::accent() } else { theme::BORDER });
     let u_txt = if state.add_modal.url.is_empty() { "https://..." } else { state.add_modal.url.as_str() };
     ctx.draw_text(u_txt, Rect::new(f1.x + 12.0, f1.y, f1.w - 24.0, 36.0), TextStyle::Body12Med, if state.add_modal.url.is_empty() { theme::TEXT_TERTIARY } else { theme::TEXT_PRIMARY });
     hits.push(HitRegion { id: "mod_f1".into(), rect: f1, action: Action::FocusModalField(1), right_action: None, tooltip: None, slider: None });
@@ -1493,7 +1544,7 @@ fn render_add_dev_modal(ctx: &mut DrawCtx<'_>, state: &AppState, w: f32, h: f32,
     hits.push(HitRegion { id: "mod_cancel".into(), rect: b_cancel, action: Action::CancelModal, right_action: None, tooltip: None, slider: None });
 
     let b_save = Rect::new(mr.x + mw - 142.0, mr.y + mh - 52.0, 120.0, 34.0);
-    ctx.fill_rrect(b_save, 11.0, theme::VIOLET);
+    ctx.fill_rrect(b_save, 11.0, theme::accent());
     ctx.draw_text_center("Guardar IA", b_save, TextStyle::Body11Med, theme::TEXT_PRIMARY);
     hits.push(HitRegion { id: "mod_save".into(), rect: b_save, action: Action::SubmitAddDevWebModal, right_action: None, tooltip: None, slider: None });
 }

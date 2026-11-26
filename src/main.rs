@@ -7,6 +7,7 @@ mod aura_window;
 mod dev_hub;
 mod dock_preview;
 mod genie;
+mod gradient_waves;
 mod hotkey_hook;
 mod math_eval;
 mod models;
@@ -331,6 +332,8 @@ fn run_shell() -> windows::core::Result<()> {
     // Initialize integrated lightweight Wallpaper Engine (behind desktop icons!)
     let mut wp_engine = wallpaper::WallpaperEngine::new(&gpu, sw, sh);
     wp_engine.set_performance_mode(state.settings.performance_mode);
+    gradient_waves::set_tuning(state.settings.waves_speed, state.settings.waves_relief);
+    gradient_waves::set_custom_color(&state.settings.waves_custom_color);
     let init_wp = state.settings.wallpaper_id.clone();
     wp_engine.set_wallpaper(&mut gpu, &init_wp);
 
@@ -868,7 +871,12 @@ impl ShellRuntime {
     fn sync_material_you_palette(&mut self) {
         let wp_id = self.state.settings.wallpaper_id.clone();
         let mut seed = (124u8, 92u8, 255u8);
-        if let Some(item) = self.state.wallpapers.iter().find(|w| w.id == wp_id) {
+        if let Some(wave_rgb) = wp_id
+            .strip_prefix("preset:")
+            .and_then(gradient_waves::effective_color)
+        {
+            seed = wave_rgb;
+        } else if let Some(item) = self.state.wallpapers.iter().find(|w| w.id == wp_id) {
             seed = item.accent_rgb;
             if let Some(prev) = &item.preview_path {
                 if let Some(rgb) = theme::extract_seed_rgb_from_image(prev) {
@@ -891,6 +899,7 @@ impl ShellRuntime {
             }
         }
         theme::apply_theme_scheme(&self.state.settings.theme_scheme, seed);
+        win32_shell::notify_palette_changed();
         window_styler::invalidate_styled_cache();
         if self.state.settings.style_windows_apps {
             window_styler::apply_aura_style_to_windows(&self.state.open_windows);
@@ -2230,6 +2239,10 @@ impl ShellRuntime {
             }
             Action::SelectWallpaper(id) => {
                 self.state.settings.wallpaper_id = id.clone();
+                if id.starts_with("preset:waves_") {
+                    self.state.settings.waves_custom_color.clear();
+                    gradient_waves::set_custom_color("");
+                }
                 save_settings(&self.state.settings);
                 self.wallpaper.set_wallpaper(&mut self.gpu, &id);
                 self.sync_material_you_palette();
@@ -2237,6 +2250,34 @@ impl ShellRuntime {
                 self.redraw_dock();
                 self.redraw_all_widgets();
                 if self.state.overview_open { self.redraw_overview(); }
+                if self.state.cc_open { self.redraw_cc(); }
+                self.wake_anim_timer();
+            }
+            Action::SetWavesCustomColor(hex) => {
+                let on_waves = self
+                    .state
+                    .settings
+                    .wallpaper_id
+                    .strip_prefix("preset:")
+                    .map(gradient_waves::is_waves_key)
+                    .unwrap_or(false);
+                if !on_waves {
+                    self.state.settings.wallpaper_id = gradient_waves::DEFAULT_PRESET_ID.to_string();
+                    let next_id = self.state.settings.wallpaper_id.clone();
+                    self.wallpaper.set_wallpaper(&mut self.gpu, &next_id);
+                }
+                self.state.settings.waves_custom_color = hex.clone();
+                self.state.settings.theme_scheme = "Auto".to_string();
+                gradient_waves::set_custom_color(&hex);
+                save_settings(&self.state.settings);
+                self.wallpaper.mark_dirty();
+                self.sync_material_you_palette();
+                self.redraw_topbar();
+                self.redraw_dock();
+                self.redraw_all_widgets();
+                if self.state.overview_open { self.redraw_overview(); }
+                if self.state.cc_open { self.redraw_cc(); }
+                self.wake_anim_timer();
             }
             Action::AddCustomWallpaperFile => {
                 self.spawn_file_picker(
@@ -3317,6 +3358,13 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             rt.state.wallpapers = wallpaper::scan_wallpapers(&rt.state.custom_items);
             rt.state.widgets = load_widgets(rt.screen_w, rt.screen_h);
             rt.wallpaper.set_performance_mode(rt.state.settings.performance_mode);
+            let prev_tuning = gradient_waves::tuning();
+            let prev_color = gradient_waves::custom_color_rgb();
+            gradient_waves::set_tuning(rt.state.settings.waves_speed, rt.state.settings.waves_relief);
+            gradient_waves::set_custom_color(&rt.state.settings.waves_custom_color);
+            if gradient_waves::tuning() != prev_tuning || gradient_waves::custom_color_rgb() != prev_color {
+                rt.wallpaper.mark_dirty();
+            }
             hotkey_hook::set_enabled(rt.state.settings.intercept_win_hotkeys);
             if rt.state.settings.hide_windows_taskbar != prev_hide {
                 win32_shell::set_taskbar_visibility(!rt.state.settings.hide_windows_taskbar);
@@ -3337,6 +3385,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             rt.redraw_topbar();
             rt.redraw_dock();
             rt.redraw_all_widgets();
+            if rt.state.overview_open { rt.redraw_overview(); }
+            if rt.state.cc_open { rt.redraw_cc(); }
             rt.wake_anim_timer();
             return true;
         }
@@ -3867,7 +3917,12 @@ fn run_visual_capture(out_dir: &PathBuf) {
     state.music_energy = 1.0;
     state.music_wave_phase = 2.4;
 
-    // 1. Capture Fondos & Widgets Studio (Wallpapers + Workshop + Draggable Widgets!)
+    // 1. Capture Fondos & Widgets Studio (Gradient Waves Ocean + Adaptive Ocean Material You!)
+    gradient_waves::set_tuning(1.0, 1.0);
+    gradient_waves::set_custom_color("");
+    theme::apply_theme_scheme("Auto", (56, 189, 248));
+    state.settings.wallpaper_id = "preset:waves_ocean".into();
+    state.settings.waves_custom_color.clear();
     state.mode = ShellMode::Studio;
     state.overview_open = true;
     state.overview_anim.snap(1.0);
@@ -3877,7 +3932,7 @@ fn run_visual_capture(out_dir: &PathBuf) {
         let mut h1 = Vec::new();
         let mut h2 = Vec::new();
         let mut h3 = Vec::new();
-        wallpaper::draw_wallpaper_frame(ctx, WallpaperKind::Preset, "aura_obsidian_flow", 1600.0, 900.0, 2.0);
+        wallpaper::draw_wallpaper_frame(ctx, WallpaperKind::Preset, "waves_ocean", 1600.0, 900.0, 2.0);
         ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 0.0, TOPBAR_HEIGHT);
         ui_overview::render_overview(ctx, &state, 1600.0, 900.0 - TOPBAR_HEIGHT, &mut h1);
         ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 0.0, TOPBAR_HEIGHT);
@@ -3885,6 +3940,45 @@ fn run_visual_capture(out_dir: &PathBuf) {
         ctx.reset_transform();
         ui_topbar::render_topbar(ctx, &state, 1600.0, &mut h3);
     });
+
+    // 1b. Capture Desktop with Gradient Waves Ocean (default AuraOS) + Adaptive Ocean Palette
+    state.overview_open = false;
+    let _ = gpu.render_to_png(1600, 900, &out_dir.join("v54_waves_ocean.png"), |ctx| {
+        let mut h1 = Vec::new();
+        let mut h2 = Vec::new();
+        let mut h3 = Vec::new();
+        let mut h4 = Vec::new();
+        wallpaper::draw_wallpaper_frame(ctx, WallpaperKind::Preset, "waves_ocean", 1600.0, 900.0, 3.2);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 590.0, 180.0);
+        ui_widgets::render_desktop_widget(ctx, &state, WidgetKind::Clock, 1, false, false, &mut h1);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 602.0, 390.0);
+        ui_widgets::render_desktop_widget(ctx, &state, WidgetKind::Music, 1, true, false, &mut h2);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 0.0, TOPBAR_HEIGHT);
+        ui_dock::render_dock(ctx, &state, DOCK_THICKNESS, 900.0 - TOPBAR_HEIGHT, true, &mut h3);
+        ctx.reset_transform();
+        ui_topbar::render_topbar(ctx, &state, 1600.0, &mut h4);
+    });
+
+    // 1c. Capture Desktop with Gradient Waves Aurora + Adaptive Emerald Palette
+    theme::apply_theme_scheme("Auto", (52, 211, 153));
+    state.settings.wallpaper_id = "preset:waves_aurora".into();
+    let _ = gpu.render_to_png(1600, 900, &out_dir.join("v54_waves_aurora.png"), |ctx| {
+        let mut h1 = Vec::new();
+        let mut h2 = Vec::new();
+        let mut h3 = Vec::new();
+        let mut h4 = Vec::new();
+        wallpaper::draw_wallpaper_frame(ctx, WallpaperKind::Preset, "waves_aurora", 1600.0, 900.0, 4.1);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 590.0, 180.0);
+        ui_widgets::render_desktop_widget(ctx, &state, WidgetKind::Clock, 1, false, false, &mut h1);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 602.0, 390.0);
+        ui_widgets::render_desktop_widget(ctx, &state, WidgetKind::Music, 1, true, false, &mut h2);
+        ctx.set_transform_scale_origin(1.0, 0.0, 0.0, 0.0, TOPBAR_HEIGHT);
+        ui_dock::render_dock(ctx, &state, DOCK_THICKNESS, 900.0 - TOPBAR_HEIGHT, true, &mut h3);
+        ctx.reset_transform();
+        ui_topbar::render_topbar(ctx, &state, 1600.0, &mut h4);
+    });
+    theme::apply_theme_scheme("Auto", (56, 189, 248));
+    state.settings.wallpaper_id = "preset:waves_ocean".into();
 
     // 2. Capture Desktop with Aura Obsidian Flow Wallpaper + Animated Music Widget + Clock Widget + TopBar!
     state.overview_open = false;

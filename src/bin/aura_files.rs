@@ -337,6 +337,8 @@ thread_local! {
     static PDF_QL_CACHE: RefCell<Option<(String, Option<RenderedPdfPage>)>> = const { RefCell::new(None) };
 }
 
+static WM_PALETTE_CHANGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 fn get_cached_pdf_preview(path: &str) -> Option<RenderedPdfPage> {
     PDF_QL_CACHE.with(|c| {
         let mut guard = c.borrow_mut();
@@ -355,6 +357,8 @@ fn main() {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
+    let _ = theme::load_active_palette();
+    WM_PALETTE_CHANGED.store(win32_shell::register_palette_changed_msg(), Ordering::Relaxed);
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 3 && args[1].eq_ignore_ascii_case("--capture") {
@@ -1800,7 +1804,7 @@ fn tag_color(id: u8) -> D2D1_COLOR_F {
         2 => theme::AMBER,
         3 => theme::EMERALD,
         4 => theme::BLUE,
-        5 => theme::VIOLET,
+        5 => theme::accent(),
         _ => theme::TEXT_TERTIARY,
     }
 }
@@ -1847,7 +1851,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
             tr,
             10.0,
             if active { theme::ELEVATED } else { theme::CARD_BG },
-            if active { theme::VIOLET_BORDER } else { theme::BORDER },
+            if active { theme::accent_border() } else { theme::BORDER },
         );
         ctx.draw_text(&tab.title(), Rect::new(tr.x + 10.0, tr.y, tr.w - 30.0, 28.0), if active { TextStyle::Body11Med } else { TextStyle::Body11Reg }, if active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY });
         hits.push(Hit { id: format!("tab_{}", i), rect: tr, action: FileAction::SelectTab(i), dbl_action: None });
@@ -1890,8 +1894,8 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
         let active = cur_p == &path;
         let id = format!("sb_fav_{}", idx);
         let hov = s.hovered == Some(id.as_str());
-        ctx.fill_rrect(r, 10.0, if active { theme::VIOLET } else if hov { theme::ELEVATED } else { theme::rgba(0, 0, 0, 0.0) });
-        ctx.draw_vector_icon(VectorIcon::Folder, r.x + 16.0, r.y + 16.0, 12.0, if active { theme::TEXT_PRIMARY } else { theme::VIOLET_LIGHT });
+        ctx.fill_rrect(r, 10.0, if active { theme::accent() } else if hov { theme::ELEVATED } else { theme::rgba(0, 0, 0, 0.0) });
+        ctx.draw_vector_icon(VectorIcon::Folder, r.x + 16.0, r.y + 16.0, 12.0, if active { theme::TEXT_PRIMARY } else { theme::accent_light() });
         ctx.draw_text(lbl, Rect::new(r.x + 30.0, r.y, r.w - 36.0, 32.0), TextStyle::Body11Med, if active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY });
         hits.push(Hit { id, rect: r, action: FileAction::Navigate(path), dbl_action: None });
         sy += 33.0;
@@ -1908,7 +1912,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
             let active = cur_p == &p;
             let id = format!("sb_pin_{}", idx);
             let hov = s.hovered == Some(id.as_str());
-            ctx.fill_rrect(r, 9.0, if active { theme::VIOLET } else if hov { theme::ELEVATED } else { theme::rgba(0, 0, 0, 0.0) });
+            ctx.fill_rrect(r, 9.0, if active { theme::accent() } else if hov { theme::ELEVATED } else { theme::rgba(0, 0, 0, 0.0) });
             ctx.draw_vector_icon(VectorIcon::Sparkle, r.x + 14.0, r.y + 14.0, 10.5, if active { theme::CRISP_WHITE } else { theme::AMBER });
             ctx.draw_text(lbl, Rect::new(r.x + 28.0, r.y, r.w - 34.0, 28.0), TextStyle::Body11Med, if active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY });
             hits.push(Hit { id, rect: r, action: FileAction::Navigate(p), dbl_action: None });
@@ -1927,19 +1931,19 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
         let r = Rect::new(10.0, sy, sb_w - 20.0, 48.0);
         let id = format!("sb_drv_{}", idx);
         let active = cur_p == &p;
-        ctx.fill_card(r, 11.0, if active { theme::VIOLET_TINT } else { theme::CARD_BG }, if active { theme::VIOLET_BORDER } else { theme::BORDER });
+        ctx.fill_card(r, 11.0, if active { theme::accent_tint() } else { theme::CARD_BG }, if active { theme::accent_border() } else { theme::BORDER });
         ctx.draw_text(&format!("Disco {}", d.letter), Rect::new(r.x + 10.0, r.y + 5.0, 86.0, 16.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
         // Quick 1-click "Mapa" disk analyzer pill per drive!
         let map_id = format!("sb_map_{}", idx);
         let map_r = Rect::new(r.x + r.w - 48.0, r.y + 4.0, 40.0, 18.0);
         let map_hov = s.hovered == Some(map_id.as_str());
-        ctx.fill_rrect(map_r, 6.0, if map_hov { theme::VIOLET } else { theme::ELEVATED });
-        ctx.draw_text_center("Mapa", map_r, TextStyle::Small9Reg, if map_hov { theme::TEXT_PRIMARY } else { theme::VIOLET_LIGHT });
+        ctx.fill_rrect(map_r, 6.0, if map_hov { theme::accent() } else { theme::ELEVATED });
+        ctx.draw_text_center("Mapa", map_r, TextStyle::Small9Reg, if map_hov { theme::TEXT_PRIMARY } else { theme::accent_light() });
         ctx.draw_text(&format!("{:.0} GB libres", d.free_gb), Rect::new(r.x + 10.0, r.y + 21.0, 100.0, 13.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
         // mini usage bar
         let br = Rect::new(r.x + 10.0, r.y + 37.0, r.w - 20.0, 5.0);
         ctx.fill_rrect(br, 2.5, theme::ELEVATED);
-        ctx.fill_rrect(Rect::new(br.x, br.y, (d.used_pct / 100.0) * br.w, 5.0), 2.5, if d.used_pct > 80.0 { theme::CORAL } else { theme::VIOLET });
+        ctx.fill_rrect(Rect::new(br.x, br.y, (d.used_pct / 100.0) * br.w, 5.0), 2.5, if d.used_pct > 80.0 { theme::CORAL } else { theme::accent() });
         hits.push(Hit { id, rect: r, action: FileAction::Navigate(p.clone()), dbl_action: None });
         hits.push(Hit { id: map_id, rect: map_r, action: FileAction::AnalyzePath(p), dbl_action: None });
         sy += 54.0;
@@ -1970,7 +1974,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
             br,
             9.0,
             if hov { theme::ELEVATED_HOVER } else { theme::CARD_BG },
-            if hov { theme::VIOLET_LIGHT } else { theme::BORDER },
+            if hov { theme::accent_light() } else { theme::BORDER },
         );
         ctx.draw_text_center(
             lbl,
@@ -1996,7 +2000,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
         path_r,
         9.0,
         if s.path_editing { theme::ELEVATED } else if path_hov { theme::ELEVATED_HOVER } else { theme::CARD_BG },
-        if s.path_editing { theme::VIOLET_LIGHT } else if path_hov { theme::VIOLET_BORDER } else { theme::BORDER },
+        if s.path_editing { theme::accent_light() } else if path_hov { theme::accent_border() } else { theme::BORDER },
     );
 
     // Clicking anywhere on the empty path bar enters Edit Mode (`Ctrl+L`)!
@@ -2010,7 +2014,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
     if s.path_editing {
         if s.path_select_all && !s.path_buf.is_empty() {
             let sel_w = ((s.path_buf.len() as f32 * 6.8) + 8.0).min((path_r.w - 42.0).max(20.0));
-            ctx.fill_rrect(Rect::new(path_r.x + 8.0, path_r.y + 4.0, sel_w, 20.0), 4.0, theme::VIOLET_TINT);
+            ctx.fill_rrect(Rect::new(path_r.x + 8.0, path_r.y + 4.0, sel_w, 20.0), 4.0, theme::accent_tint());
         }
         let disp_path = format!("{}|", s.path_buf);
         ctx.draw_text(
@@ -2058,7 +2062,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
     // 1-Click Copy Path Button at right end of Address Bar!
     let cp_r = Rect::new(path_r.x + path_r.w - 28.0, path_r.y + 3.0, 24.0, 22.0);
     let cp_hov = s.hovered == Some("tb_copy_path");
-    ctx.fill_rrect(cp_r, 6.0, if cp_hov { theme::VIOLET } else { theme::ELEVATED });
+    ctx.fill_rrect(cp_r, 6.0, if cp_hov { theme::accent() } else { theme::ELEVATED });
     ctx.draw_text_center("⧉", cp_r, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
     hits.push(Hit { id: "tb_copy_path".into(), rect: cp_r, action: FileAction::CopyCurrentPath, dbl_action: None });
 
@@ -2069,14 +2073,14 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
         srch_r,
         9.0,
         if srch_active { theme::ELEVATED } else { theme::CARD_BG },
-        if srch_active { theme::VIOLET_LIGHT } else { theme::BORDER },
+        if srch_active { theme::accent_light() } else { theme::BORDER },
     );
     ctx.draw_vector_icon(
         VectorIcon::Search,
         srch_r.x + 13.0,
         srch_r.y + 14.0,
         10.5,
-        if srch_active { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY },
+        if srch_active { theme::accent_light() } else { theme::TEXT_TERTIARY },
     );
     let disp_q = if s.search.is_empty() {
         if s.search_focused { "|".to_string() } else { "Buscar aquí...".to_string() }
@@ -2105,8 +2109,8 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
     ctx.fill_card(
         an_r,
         9.0,
-        if s.analyzer.open { theme::VIOLET } else if an_hov { theme::ELEVATED_HOVER } else { theme::ELEVATED },
-        if s.analyzer.open { theme::VIOLET_LIGHT } else { theme::VIOLET_BORDER },
+        if s.analyzer.open { theme::accent() } else if an_hov { theme::ELEVATED_HOVER } else { theme::ELEVATED },
+        if s.analyzer.open { theme::accent_light() } else { theme::accent_border() },
     );
     ctx.draw_vector_icon(VectorIcon::AppGrid, an_r.x + 14.0, an_r.y + 14.0, 11.0, theme::TEXT_PRIMARY);
     ctx.draw_text(
@@ -2119,7 +2123,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
 
     // + Nueva carpeta
     let nf_r = Rect::new(main_x + list_w - 38.0, tb_y, 28.0, 28.0);
-    ctx.fill_rrect(nf_r, 9.0, theme::VIOLET);
+    ctx.fill_rrect(nf_r, 9.0, theme::accent());
     ctx.draw_vector_icon(VectorIcon::Plus, nf_r.x + 14.0, nf_r.y + 14.0, 11.0, theme::TEXT_PRIMARY);
     hits.push(Hit { id: "tb_newdir".into(), rect: nf_r, action: FileAction::NewFolder, dbl_action: None });
 
@@ -2136,10 +2140,10 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
     let col_size_r = Rect::new(main_x + list_w - 196.0, hdr_y, 84.0, 22.0);
     let col_date_r = Rect::new(main_x + list_w - 106.0, hdr_y, 90.0, 22.0);
     let arrow = if s.sort_asc { " ▲" } else { " ▼" };
-    ctx.draw_text(&format!("NOMBRE{}", if s.sort_by == SortBy::Name { arrow } else { "" }), col_name_r, TextStyle::Small10Bold, if s.sort_by == SortBy::Name { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY });
-    ctx.draw_text_right(&format!("TIPO{}", if s.sort_by == SortBy::Type { arrow } else { "" }), col_type_r, TextStyle::Small10Bold, if s.sort_by == SortBy::Type { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY });
-    ctx.draw_text_right(&format!("TAMAÑO{}", if s.sort_by == SortBy::Size { arrow } else { "" }), col_size_r, TextStyle::Small10Bold, if s.sort_by == SortBy::Size { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY });
-    ctx.draw_text_right(&format!("FECHA{}", if s.sort_by == SortBy::Date { arrow } else { "" }), col_date_r, TextStyle::Small10Bold, if s.sort_by == SortBy::Date { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY });
+    ctx.draw_text(&format!("NOMBRE{}", if s.sort_by == SortBy::Name { arrow } else { "" }), col_name_r, TextStyle::Small10Bold, if s.sort_by == SortBy::Name { theme::accent_light() } else { theme::TEXT_TERTIARY });
+    ctx.draw_text_right(&format!("TIPO{}", if s.sort_by == SortBy::Type { arrow } else { "" }), col_type_r, TextStyle::Small10Bold, if s.sort_by == SortBy::Type { theme::accent_light() } else { theme::TEXT_TERTIARY });
+    ctx.draw_text_right(&format!("TAMAÑO{}", if s.sort_by == SortBy::Size { arrow } else { "" }), col_size_r, TextStyle::Small10Bold, if s.sort_by == SortBy::Size { theme::accent_light() } else { theme::TEXT_TERTIARY });
+    ctx.draw_text_right(&format!("FECHA{}", if s.sort_by == SortBy::Date { arrow } else { "" }), col_date_r, TextStyle::Small10Bold, if s.sort_by == SortBy::Date { theme::accent_light() } else { theme::TEXT_TERTIARY });
     hits.push(Hit { id: "sort_name".into(), rect: col_name_r, action: FileAction::SetSort(SortBy::Name), dbl_action: None });
     hits.push(Hit { id: "sort_type".into(), rect: col_type_r, action: FileAction::SetSort(SortBy::Type), dbl_action: None });
     hits.push(Hit { id: "sort_size".into(), rect: col_size_r, action: FileAction::SetSort(SortBy::Size), dbl_action: None });
@@ -2170,7 +2174,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
         let hov = s.hovered == Some(id.as_str()) || s.hovered == Some(chk_id.as_str());
 
         if sel {
-            ctx.fill_card(rr, 9.0, theme::VIOLET_TINT, theme::VIOLET_BORDER);
+            ctx.fill_card(rr, 9.0, theme::accent_tint(), theme::accent_border());
         } else if hov {
             ctx.fill_rrect(rr, 9.0, theme::ELEVATED);
         }
@@ -2181,8 +2185,8 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
             ctx.fill_card(
                 chk_r,
                 5.0,
-                if sel { theme::VIOLET } else { theme::SURFACE },
-                if sel { theme::VIOLET_LIGHT } else { theme::BORDER_STRONG },
+                if sel { theme::accent() } else { theme::SURFACE },
+                if sel { theme::accent_light() } else { theme::BORDER_STRONG },
             );
             if sel {
                 ctx.draw_vector_icon(VectorIcon::Check, chk_r.x + 8.0, chk_r.y + 8.0, 9.5, theme::CRISP_WHITE);
@@ -2197,7 +2201,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
                 ir.x + 10.0,
                 ir.y + 10.0,
                 13.0,
-                if entry.is_dir { theme::VIOLET_LIGHT } else { theme::TEXT_SECONDARY },
+                if entry.is_dir { theme::accent_light() } else { theme::TEXT_SECONDARY },
             );
         }
 
@@ -2223,7 +2227,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
             Some(b) => format_size(b),
             None => "...".to_string(),
         };
-        ctx.draw_text_right(&sz_str, Rect::new(rr.x + rr.w - 190.0, rr.y, 88.0, 32.0), TextStyle::Mono11Med, if entry.is_dir { theme::VIOLET_LIGHT } else { theme::TEXT_SECONDARY });
+        ctx.draw_text_right(&sz_str, Rect::new(rr.x + rr.w - 190.0, rr.y, 88.0, 32.0), TextStyle::Mono11Med, if entry.is_dir { theme::accent_light() } else { theme::TEXT_SECONDARY });
         ctx.draw_text_right(&entry.modified_str, Rect::new(rr.x + rr.w - 96.0, rr.y, 88.0, 32.0), TextStyle::Small10Med, theme::TEXT_TERTIARY);
 
         hits.push(Hit {
@@ -2243,7 +2247,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
     // Translucent Violet Rubber-Band Marquee Selection Rectangle!
     if let Some(mr) = s.marquee_rect {
         ctx.fill_rrect(mr, 6.0, theme::rgba(124, 92, 255, 0.18));
-        ctx.stroke_rrect(mr, 6.0, theme::VIOLET_LIGHT, 1.4);
+        ctx.stroke_rrect(mr, 6.0, theme::accent_light(), 1.4);
     }
     ctx.pop_clip();
 
@@ -2263,7 +2267,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
     } else {
         format!("{} elementos · Arrastra hacia otra app · Ctrl/Shift o cuadro para selección múltiple", total_rows)
     };
-    ctx.draw_text(&status_txt, Rect::new(main_x + 14.0, h - 24.0, list_w - 28.0, 18.0), TextStyle::Small9Reg, if sel_cnt > 1 { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY });
+    ctx.draw_text(&status_txt, Rect::new(main_x + 14.0, h - 24.0, list_w - 28.0, 18.0), TextStyle::Small9Reg, if sel_cnt > 1 { theme::accent_light() } else { theme::TEXT_TERTIARY });
     } // end normal explorer mode
 
     // 6. RIGHT INSPECTOR / QUICK LOOK / macOS QUICK ACTIONS PANEL
@@ -2290,8 +2294,8 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
         let ilx = ix + 14.0;
 
         let pv = Rect::new(ilx, iy, iw, 132.0);
-        ctx.fill_card(pv, 18.0, theme::VIOLET_TINT, theme::VIOLET_BORDER);
-        ctx.fill_circle(pv.x + pv.w * 0.5, pv.y + 44.0, 24.0, theme::VIOLET);
+        ctx.fill_card(pv, 18.0, theme::accent_tint(), theme::accent_border());
+        ctx.fill_circle(pv.x + pv.w * 0.5, pv.y + 44.0, 24.0, theme::accent());
         ctx.draw_text_center(&sel_count.to_string(), Rect::new(pv.x, pv.y + 26.0, pv.w, 36.0), TextStyle::Title22Bold, theme::CRISP_WHITE);
         ctx.draw_text_center("elementos seleccionados", Rect::new(pv.x + 8.0, pv.y + 78.0, pv.w - 16.0, 20.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
         let sub_m = if dir_cnt > 0 {
@@ -2299,7 +2303,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
         } else {
             format!("Tamaño total: {}", format_size(total_sel_bytes))
         };
-        ctx.draw_text_center(&sub_m, Rect::new(pv.x + 8.0, pv.y + 100.0, pv.w - 16.0, 18.0), TextStyle::Small10Med, theme::VIOLET_LIGHT);
+        ctx.draw_text_center(&sub_m, Rect::new(pv.x + 8.0, pv.y + 100.0, pv.w - 16.0, 18.0), TextStyle::Small10Med, theme::accent_light());
         iy += 146.0;
 
         let tip_r = Rect::new(ilx, iy, iw, 46.0);
@@ -2320,7 +2324,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
         for (id, lbl, act, primary, is_del) in batch {
             let br = Rect::new(ilx, iy, iw, 34.0);
             let bg = if primary {
-                theme::VIOLET
+                theme::accent()
             } else if is_del {
                 theme::CORAL_BG
             } else if s.hovered == Some(id) {
@@ -2376,7 +2380,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
                         pv.x + pv.w * 0.5,
                         pv.y + 78.0,
                         36.0,
-                        if is_pdf { theme::CORAL } else { theme::VIOLET_LIGHT },
+                        if is_pdf { theme::CORAL } else { theme::accent_light() },
                     );
                 }
             }
@@ -2404,7 +2408,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
                     e.size_bytes.map(format_size).unwrap_or_else(|| "Calculando...".into())
                 )
             };
-            ctx.draw_text(&meta_s, Rect::new(ilx, iy, iw, 18.0), TextStyle::Small10Med, theme::VIOLET_LIGHT);
+            ctx.draw_text(&meta_s, Rect::new(ilx, iy, iw, 18.0), TextStyle::Small10Med, theme::accent_light());
             iy += 26.0;
 
             // macOS Color Tags picker
@@ -2461,7 +2465,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
                 let br = Rect::new(ilx, iy, iw, 32.0);
                 let is_del = id == "qa_del";
                 let bg = if primary {
-                    theme::VIOLET
+                    theme::accent()
                 } else if is_del {
                     theme::CORAL_BG
                 } else if s.hovered == Some(id) {
@@ -2493,7 +2497,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
                 let mw = (w * 0.72).clamp(520.0, 960.0);
                 let mh = (h * 0.78).clamp(400.0, 720.0);
                 let modal = Rect::new((w - mw) * 0.5, (h - mh) * 0.5, mw, mh);
-                ctx.fill_card(modal, 20.0, theme::SURFACE, theme::VIOLET_LIGHT);
+                ctx.fill_card(modal, 20.0, theme::SURFACE, theme::accent_light());
 
                 ctx.draw_text(
                     &format!("Vista Rápida · {}", e.name),
@@ -2543,10 +2547,10 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
     if let Some(buf) = s.renaming_buf {
         let mr = Rect::new((w - 420.0) * 0.5, (h - 118.0) * 0.5, 420.0, 118.0);
         ctx.fill_rrect(win_r, corner_r, theme::rgba(8, 8, 14, 0.54));
-        ctx.fill_card(mr, 16.0, theme::SURFACE, theme::VIOLET_LIGHT);
+        ctx.fill_card(mr, 16.0, theme::SURFACE, theme::accent_light());
         ctx.draw_text("Renombrar archivo o carpeta (F2)", Rect::new(mr.x + 16.0, mr.y + 12.0, mr.w - 32.0, 20.0), TextStyle::Title14Semi, theme::CRISP_WHITE);
         let inp = Rect::new(mr.x + 16.0, mr.y + 42.0, mr.w - 32.0, 34.0);
-        ctx.fill_card(inp, 10.0, theme::ELEVATED, theme::VIOLET);
+        ctx.fill_card(inp, 10.0, theme::ELEVATED, theme::accent());
         ctx.draw_text(&format!("{}|", buf), Rect::new(inp.x + 10.0, inp.y, inp.w - 20.0, 34.0), TextStyle::Body12Med, theme::CRISP_WHITE);
         ctx.draw_text("Enter = Guardar nombre   ·   Esc = Cancelar", Rect::new(mr.x + 16.0, mr.y + 86.0, mr.w - 32.0, 18.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
     }
@@ -2645,7 +2649,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
         let mh = 12.0 + items.len() as f32 * 27.0 + sep_count * 7.0;
         let mx = cm.x.clamp(8.0, (w - mw - 8.0).max(8.0));
         let my = cm.y.clamp(48.0, (h - mh - 8.0).max(48.0));
-        ctx.fill_card(Rect::new(mx, my, mw, mh), 13.0, theme::rgba(15, 15, 24, 0.98), theme::VIOLET_BORDER);
+        ctx.fill_card(Rect::new(mx, my, mw, mh), 13.0, theme::rgba(15, 15, 24, 0.98), theme::accent_border());
         let mut cy_m = my + 6.0;
         for (id, lbl, kbd, act, danger, sep_before) in items {
             if sep_before {
@@ -2657,7 +2661,7 @@ fn render_files_ui(ctx: &mut DrawCtx<'_>, s: &RenderSnap<'_>, w: f32, h: f32, hi
             let bg = if danger {
                 if hov { theme::CORAL } else { theme::rgba(0, 0, 0, 0.0) }
             } else if hov {
-                theme::VIOLET_TINT
+                theme::accent_tint()
             } else {
                 theme::rgba(0, 0, 0, 0.0)
             };
@@ -2700,7 +2704,7 @@ fn render_analyzer_main(
     // 1. Live Scanning Progress View
     if s.analyzer.scanning {
         let card = Rect::new(area.x + (area.w - 460.0) * 0.5, area.y + (area.h - 170.0) * 0.42, 460.0, 168.0);
-        ctx.fill_card(card, 20.0, theme::SURFACE, theme::VIOLET_BORDER);
+        ctx.fill_card(card, 20.0, theme::SURFACE, theme::accent_border());
         ctx.draw_text("Analizando almacenamiento en paralelo...", Rect::new(card.x + 22.0, card.y + 20.0, card.w - 44.0, 22.0), TextStyle::Title14Semi, theme::TEXT_PRIMARY);
         let stats = format!(
             "{} archivos · {} carpetas · {}",
@@ -2708,14 +2712,14 @@ fn render_analyzer_main(
             s.analyzer.prog_dirs,
             format_size(s.analyzer.prog_bytes)
         );
-        ctx.draw_text(&stats, Rect::new(card.x + 22.0, card.y + 46.0, card.w - 44.0, 20.0), TextStyle::Mono12Bold, theme::VIOLET_LIGHT);
+        ctx.draw_text(&stats, Rect::new(card.x + 22.0, card.y + 46.0, card.w - 44.0, 20.0), TextStyle::Mono12Bold, theme::accent_light());
         ctx.draw_text(&s.analyzer.prog_path, Rect::new(card.x + 22.0, card.y + 72.0, card.w - 44.0, 18.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
 
         // Animated progress shimmer track
         let pb = Rect::new(card.x + 22.0, card.y + 98.0, card.w - 44.0, 8.0);
         ctx.fill_hatched_track(pb, 4.0);
         let pulse = ((s.analyzer.prog_dirs % 60) as f32 / 60.0).clamp(0.08, 0.92);
-        ctx.fill_rrect(Rect::new(pb.x + pulse * (pb.w * 0.65), pb.y, pb.w * 0.35, 8.0), 4.0, theme::VIOLET);
+        ctx.fill_rrect(Rect::new(pb.x + pulse * (pb.w * 0.65), pb.y, pb.w * 0.35, 8.0), 4.0, theme::accent());
 
         let cancel_r = Rect::new(card.x + card.w - 118.0, card.y + 122.0, 96.0, 30.0);
         ctx.fill_rrect(cancel_r, 10.0, theme::CORAL_BG);
@@ -2738,7 +2742,7 @@ fn render_analyzer_main(
     let mut hx = hdr_r.x + 10.0;
     if zoom_node.parent.is_some() {
         let up_r = Rect::new(hx, hdr_r.y + 5.0, 94.0, 24.0);
-        ctx.fill_rrect(up_r, 8.0, theme::VIOLET);
+        ctx.fill_rrect(up_r, 8.0, theme::accent());
         ctx.draw_text_center("← Subir nivel", up_r, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
         hits.push(Hit { id: "an_zoom_up".into(), rect: up_r, action: FileAction::AnalyzerZoomUp, dbl_action: None });
         hx += 102.0;
@@ -2796,14 +2800,14 @@ fn render_analyzer_main(
         let hov = s.hovered == Some(id.as_str()) || s.analyzer.hovered_node_id == Some(cid);
 
         if sel {
-            ctx.fill_card(rr, 8.0, theme::VIOLET_TINT, theme::VIOLET_BORDER);
+            ctx.fill_card(rr, 8.0, theme::accent_tint(), theme::accent_border());
         } else if hov {
             ctx.fill_rrect(rr, 8.0, theme::ELEVATED);
         }
 
         // Icon or Extension Swatch
         if child.is_dir {
-            ctx.draw_vector_icon(VectorIcon::Folder, rr.x + 13.0, rr.y + 13.0, 12.0, theme::VIOLET_LIGHT);
+            ctx.draw_vector_icon(VectorIcon::Folder, rr.x + 13.0, rr.y + 13.0, 12.0, theme::accent_light());
         } else {
             let (cr, cg, cb) = tree.color_for_ext(&child.ext);
             ctx.fill_circle(rr.x + 13.0, rr.y + 13.0, 4.8, theme::rgb(cr, cg, cb));
@@ -2820,7 +2824,7 @@ fn render_analyzer_main(
         ctx.fill_rrect(
             Rect::new(bar_r.x, bar_r.y, ((pct / 100.0) * bar_r.w).max(3.0), 8.0),
             4.0,
-            if pct > 40.0 { theme::CORAL } else if pct > 15.0 { theme::AMBER } else { theme::VIOLET },
+            if pct > 40.0 { theme::CORAL } else if pct > 15.0 { theme::AMBER } else { theme::accent() },
         );
         ctx.draw_text_right(&format!("{:.1}%", pct), Rect::new(bar_x + 58.0, rr.y, 40.0, rr.h), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
         ctx.draw_text_right(&format_size(child.size), Rect::new(rr.x + rr.w - 66.0, rr.y, 62.0, rr.h), TextStyle::Mono11Med, theme::TEXT_PRIMARY);
@@ -2857,7 +2861,7 @@ fn render_analyzer_main(
         let filtered = s.analyzer.highlight_ext.as_deref() == Some(st.ext.as_str());
         let hov = s.hovered == Some(id.as_str());
         if filtered {
-            ctx.fill_card(er, 7.0, theme::VIOLET_TINT, theme::VIOLET);
+            ctx.fill_card(er, 7.0, theme::accent_tint(), theme::accent());
         } else if hov {
             ctx.fill_rrect(er, 7.0, theme::ELEVATED);
         }
@@ -2950,7 +2954,7 @@ fn render_analyzer_main(
             }
             if let Some(hn) = tree.nodes.get(hov_id) {
                 let tip_r = Rect::new(tm_inner.x + 10.0, tm_inner.y + tm_inner.h - 32.0, tm_inner.w - 20.0, 24.0);
-                ctx.fill_card(tip_r, 8.0, theme::rgba(13, 13, 20, 0.92), theme::VIOLET_BORDER);
+                ctx.fill_card(tip_r, 8.0, theme::rgba(13, 13, 20, 0.92), theme::accent_border());
                 let pct = hn.size as f64 / parent_sz * 100.0;
                 let tip_txt = format!("{}  ·  {} ({:.1}%)", hn.full_path, format_size(hn.size), pct);
                 ctx.draw_text(&tip_txt, Rect::new(tip_r.x + 10.0, tip_r.y, tip_r.w - 20.0, 24.0), TextStyle::Small10Med, theme::TEXT_PRIMARY);
@@ -3016,7 +3020,7 @@ fn render_analyzer_inspector(
         &format!("{}  ·  {:.1}% del contenedor", format_size(node.size), pct),
         Rect::new(ilx, iy, iw, 18.0),
         TextStyle::Small10Bold,
-        theme::VIOLET_LIGHT,
+        theme::accent_light(),
     );
     iy += 20.0;
 
@@ -3050,7 +3054,7 @@ fn render_analyzer_inspector(
         }
         let br = Rect::new(ilx, iy, iw, 32.0);
         let bg = if primary {
-            theme::VIOLET
+            theme::accent()
         } else if danger {
             theme::CORAL_BG
         } else if s.hovered == Some(id) {
@@ -3246,6 +3250,12 @@ unsafe extern "system" fn files_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
         // Re-entrant safe borrow so nested Win32 WM_SIZE / HTCAPTION messages NEVER panic!
         let Ok(mut g) = cell.try_borrow_mut() else { return false };
         let Some(rt) = g.as_mut() else { return false };
+        let pal_msg = WM_PALETTE_CHANGED.load(Ordering::Relaxed);
+        if pal_msg != 0 && msg == pal_msg {
+            let _ = theme::load_active_palette();
+            rt.redraw();
+            return true;
+        }
         match msg {
             WM_TIMER => {
                 if wparam.0 == TIMER_POLL {

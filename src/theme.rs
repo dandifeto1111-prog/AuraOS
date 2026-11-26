@@ -131,8 +131,9 @@ impl ThemePalette {
     /// Surfaces keep subtle tonal chroma (~8–15%) while accents stay vivid and AA-accessible.
     pub fn from_seed_hsl(seed: (u8, u8, u8), surface_sat: f32, monochrome: bool) -> Self {
         let (h, s_raw, _) = rgb_to_hsl(seed.0, seed.1, seed.2);
-        let accent_sat = if monochrome { 0.04 } else { s_raw.clamp(0.46, 0.78) };
-        let surf_sat = if monochrome { 0.02 } else { (s_raw * 0.24).clamp(0.06, surface_sat) };
+        let is_mono = monochrome || s_raw < 0.14;
+        let accent_sat = if is_mono { 0.05 } else { s_raw.clamp(0.46, 0.78) };
+        let surf_sat = if is_mono { 0.025 } else { (s_raw * 0.24).clamp(0.06, surface_sat) };
 
         let canvas = hsl_to_color(h, surf_sat, 0.065, 1.0);
         let topbar_bg = hsl_to_color(h, surf_sat, 0.072, 0.95);
@@ -144,20 +145,28 @@ impl ThemePalette {
         let border = hsl_to_color(h, surf_sat * 1.35, 0.210, 1.0);
         let border_strong = hsl_to_color(h, surf_sat * 1.45, 0.295, 1.0);
 
-        let accent = if monochrome {
-            rgb(196, 200, 212)
+        // Keep white button text AA-crisp on bright cyan/emerald/amber hues while preserving vivid chroma
+        let accent_l = if (45.0..=210.0).contains(&h) {
+            0.50
+        } else if h < 45.0 {
+            0.55
         } else {
-            hsl_to_color(h, accent_sat, 0.62, 1.0)
+            0.60
         };
-        let accent_light = if monochrome {
-            rgb(228, 232, 240)
+        let accent = if is_mono {
+            rgb(122, 128, 144)
         } else {
-            hsl_to_color(h, (accent_sat * 1.04).min(0.86), 0.72, 1.0)
+            hsl_to_color(h, accent_sat, accent_l, 1.0)
         };
-        let accent_deep = if monochrome {
-            rgb(112, 118, 132)
+        let accent_light = if is_mono {
+            rgb(226, 230, 240)
         } else {
-            hsl_to_color(h, (accent_sat * 0.92).min(0.80), 0.46, 1.0)
+            hsl_to_color(h, (accent_sat * 1.04).min(0.86), (accent_l + 0.14).min(0.74), 1.0)
+        };
+        let accent_deep = if is_mono {
+            rgb(88, 94, 108)
+        } else {
+            hsl_to_color(h, (accent_sat * 0.92).min(0.80), (accent_l - 0.14).max(0.36), 1.0)
         };
         let accent_tint = hsl_to_color(h, (accent_sat * 0.62).min(0.45), 0.19, 1.0);
         let accent_border = hsl_to_color(h, (accent_sat * 0.75).min(0.60), 0.50, 1.0);
@@ -194,6 +203,31 @@ static ACTIVE_PALETTE: RwLock<ThemePalette> = RwLock::new(ThemePalette::default_
 #[inline]
 pub fn pal() -> ThemePalette {
     *ACTIVE_PALETTE.read().unwrap_or_else(|e| e.into_inner())
+}
+
+#[inline]
+pub fn accent() -> D2D1_COLOR_F {
+    pal().accent
+}
+
+#[inline]
+pub fn accent_light() -> D2D1_COLOR_F {
+    pal().accent_light
+}
+
+#[inline]
+pub fn accent_deep() -> D2D1_COLOR_F {
+    pal().accent_deep
+}
+
+#[inline]
+pub fn accent_tint() -> D2D1_COLOR_F {
+    pal().accent_tint
+}
+
+#[inline]
+pub fn accent_border() -> D2D1_COLOR_F {
+    pal().accent_border
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -7,6 +7,7 @@ pub mod dev_hub;
 pub mod disk_analyzer;
 pub mod dock_preview;
 pub mod genie;
+pub mod gradient_waves;
 pub mod hotkey_hook;
 pub mod math_eval;
 pub mod models;

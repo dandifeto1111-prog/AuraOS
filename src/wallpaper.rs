@@ -174,6 +174,21 @@ pub fn scan_wallpapers(custom: &CustomItemsStore) -> Vec<WallpaperItem> {
         },
     ];
 
+    // React Bits-style Gradient Waves presets (Ocean is the AuraOS default) — right after "external"
+    let waves: Vec<WallpaperItem> = crate::gradient_waves::PRESETS
+        .iter()
+        .map(|p| WallpaperItem {
+            id: format!("preset:{}", p.key),
+            title: format!("Gradient Waves · {}", p.title),
+            subtitle: format!("Predefinido AuraOS · Ondas GPU (amplitud {:.1} · swell {:.0})", p.amplitude, p.swell),
+            kind: WallpaperKind::Preset,
+            file_path: p.key.to_string(),
+            preview_path: None,
+            accent_rgb: p.wave_color,
+        })
+        .collect();
+    items.splice(1..1, waves);
+
     for cw in &custom.custom_wallpapers {
         let low = cw.target.to_lowercase();
         let is_vid = is_video_ext(&low);
@@ -427,7 +442,15 @@ impl WallpaperEngine {
     }
 
     pub fn set_performance_mode(&mut self, low: bool) {
+        if self.performance_mode != low {
+            self.dirty_static = true;
+        }
         self.performance_mode = low;
+    }
+
+    /// Forces a repaint on the next tick (e.g. after live Gradient Waves tuning/color changes)
+    pub fn mark_dirty(&mut self) {
+        self.dirty_static = true;
     }
 
     pub fn needs_fast_tick(&self) -> bool {
@@ -437,10 +460,15 @@ impl WallpaperEngine {
         match self.active_kind {
             // Video runs at 60 FPS completely isolated inside AuraWallpaper.exe (0 AuraShell ticks!)
             WallpaperKind::Video => self.video_html_fallback_active && (self.web_hwnd.is_none() || self.web_recheck_frames > 0),
-            WallpaperKind::Preset => !self.performance_mode && self.active_path != "matte_grid",
+            WallpaperKind::Preset => !self.performance_mode && self.active_path != "matte_grid" && !self.is_frozen_waves(),
             WallpaperKind::Web => self.web_hwnd.is_none() || self.web_recheck_frames > 0,
             _ => false,
         }
+    }
+
+    /// Gradient Waves with speed x0 -> render once as a still frame (0% continuous CPU)
+    fn is_frozen_waves(&self) -> bool {
+        crate::gradient_waves::is_waves_key(&self.active_path) && crate::gradient_waves::tuning().0 <= 0.001
     }
 
     fn init_host_window(&mut self, gpu: &GpuEngine) -> windows::core::Result<()> {
@@ -878,17 +906,18 @@ impl WallpaperEngine {
         if self.paused || self.active_kind == WallpaperKind::External {
             return;
         }
-        if self.active_kind == WallpaperKind::Image || self.active_path == "matte_grid" || self.performance_mode {
+        if self.active_kind == WallpaperKind::Image || self.active_path == "matte_grid" || self.performance_mode || self.is_frozen_waves() {
             if self.dirty_static {
                 self.render_preset_or_image(gpu);
                 self.dirty_static = false;
             }
             return;
         }
-        // Throttle procedural GPU gradients to ~20 FPS (visually silky-smooth, -67% iGPU usage on modest PCs!)
+        // Throttle procedural GPU gradients (~20 FPS glows, ~30 FPS Gradient Waves for silky folds)
         self.anim_time += dt_sec;
         self.preset_accum_dt += dt_sec;
-        if self.dirty_static || self.preset_accum_dt >= 0.048 {
+        let frame_dt = if crate::gradient_waves::is_waves_key(&self.active_path) { 0.033 } else { 0.048 };
+        if self.dirty_static || self.preset_accum_dt >= frame_dt {
             self.preset_accum_dt = 0.0;
             self.dirty_static = false;
             self.render_preset_or_image(gpu);
@@ -923,6 +952,9 @@ impl WallpaperEngine {
 
 /// Transform-safe preset thumbnail preview inside any target rectangle
 pub fn draw_wallpaper_preview_in_rect(ctx: &mut DrawCtx<'_>, preset: &str, r: Rect) {
+    if crate::gradient_waves::draw_waves(ctx, preset, r, 4.2) {
+        return;
+    }
     match preset {
         "midnight_aurora" => {
             ctx.fill_gradient_rrect(r, 10.0, theme::rgb(7, 11, 18), theme::rgb(11, 14, 24));
@@ -1003,6 +1035,10 @@ pub fn draw_wallpaper_frame(ctx: &mut DrawCtx<'_>, kind: WallpaperKind, key_or_p
                 }
             }
         }
+        return;
+    }
+
+    if crate::gradient_waves::draw_waves_ex(ctx, key_or_path, full, t, true) {
         return;
     }
 

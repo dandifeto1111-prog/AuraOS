@@ -15,6 +15,7 @@
 //! - Unified macOS Traffic Lights (× − +), Re-entrant safe fullscreen (`deferred_max`), Clean `WM_CLOSE`!
 
 use aura_os::audio;
+use aura_os::gradient_waves;
 use aura_os::aura_window::{self, SnapZone};
 use aura_os::models::{
     app_data_dir, hash_lock_pin, load_custom_items, load_settings, load_widgets, save_custom_items,
@@ -190,6 +191,7 @@ enum SetAct {
     // Wallpapers & AuraLock
     SetDesktopWallpaper(String),
     SetLockWallpaper(String),
+    SetWavesCustomColor(String),
     PickLocalLockWallpaper,
     PickLocalDesktopWallpaper,
     PickLockAvatar,
@@ -216,6 +218,8 @@ enum SliderKind {
     MasterVol { x: f32, w: f32 },
     AppVol { x: f32, w: f32, pids: Vec<u32> },
     GlassOpacity { x: f32, w: f32 },
+    WavesSpeed { x: f32, w: f32 },
+    WavesRelief { x: f32, w: f32 },
 }
 
 #[derive(Clone)]
@@ -587,6 +591,7 @@ struct SettingsRuntime {
     hostname: String,
     username: String,
     cpu_cores: usize,
+    wm_palette_changed: u32,
 }
 
 thread_local! {
@@ -794,6 +799,20 @@ impl SettingsRuntime {
                 let frac = ((px - x) / w.max(1.0)).clamp(0.0, 1.0);
                 self.settings.glass_opacity = 0.50 + frac * 0.46;
                 self.save_and_broadcast();
+                self.redraw();
+            }
+            SliderKind::WavesSpeed { x, w } => {
+                let frac = ((px - x) / w.max(1.0)).clamp(0.0, 1.0);
+                let v = gradient_waves::SPEED_MIN + frac * (gradient_waves::SPEED_MAX - gradient_waves::SPEED_MIN);
+                self.settings.waves_speed = (v * 20.0).round() / 20.0;
+                gradient_waves::set_tuning(self.settings.waves_speed, self.settings.waves_relief);
+                self.redraw();
+            }
+            SliderKind::WavesRelief { x, w } => {
+                let frac = ((px - x) / w.max(1.0)).clamp(0.0, 1.0);
+                let v = gradient_waves::RELIEF_MIN + frac * (gradient_waves::RELIEF_MAX - gradient_waves::RELIEF_MIN);
+                self.settings.waves_relief = (v * 20.0).round() / 20.0;
+                gradient_waves::set_tuning(self.settings.waves_speed, self.settings.waves_relief);
                 self.redraw();
             }
         }
@@ -1283,9 +1302,42 @@ impl SettingsRuntime {
                 self.redraw();
             }
             SetAct::SetDesktopWallpaper(id) => {
-                self.settings.wallpaper_id = id;
+                self.settings.wallpaper_id = id.clone();
+                if id.starts_with("preset:waves_") {
+                    self.settings.waves_custom_color.clear();
+                    gradient_waves::set_custom_color("");
+                    if let Some(rgb) = id.strip_prefix("preset:").and_then(gradient_waves::effective_color) {
+                        theme::apply_theme_scheme(&self.settings.theme_scheme, rgb);
+                    }
+                } else if let Some(wp) = self.wallpapers.iter().find(|w| w.id == id) {
+                    theme::apply_theme_scheme(&self.settings.theme_scheme, wp.accent_rgb);
+                }
                 self.save_and_broadcast();
-                self.show_toast("Fondo del escritorio actualizado en vivo", true);
+                self.show_toast("Fondo del escritorio y colores adaptados en vivo", true);
+            }
+            SetAct::SetWavesCustomColor(hex) => {
+                let on_waves = self
+                    .settings
+                    .wallpaper_id
+                    .strip_prefix("preset:")
+                    .map(gradient_waves::is_waves_key)
+                    .unwrap_or(false);
+                if !on_waves {
+                    self.settings.wallpaper_id = gradient_waves::DEFAULT_PRESET_ID.to_string();
+                }
+                self.settings.waves_custom_color = hex.clone();
+                self.settings.theme_scheme = "Auto".to_string();
+                gradient_waves::set_custom_color(&hex);
+                if let Some(rgb) = self
+                    .settings
+                    .wallpaper_id
+                    .strip_prefix("preset:")
+                    .and_then(gradient_waves::effective_color)
+                {
+                    theme::apply_theme_scheme("Auto", rgb);
+                }
+                self.save_and_broadcast();
+                self.show_toast("Color de Gradient Waves y tema de todo AuraOS actualizados", true);
             }
             SetAct::SetLockWallpaper(id) => {
                 self.settings.lock_wallpaper_id = id;
@@ -1576,12 +1628,12 @@ fn draw_toggle_row(
         r,
         13.0,
         if hov { theme::ELEVATED_HOVER } else { theme::CARD_BG },
-        if hov { theme::VIOLET_BORDER } else { theme::BORDER },
+        if hov { theme::accent_border() } else { theme::BORDER },
     );
     ctx.draw_text(title, Rect::new(r.x + 14.0, r.y + 8.0, r.w - 86.0, 18.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
     ctx.draw_text(sub, Rect::new(r.x + 14.0, r.y + 27.0, r.w - 86.0, 15.0), TextStyle::Small10Med, theme::TEXT_TERTIARY);
     let sw = Rect::new(r.x + r.w - 56.0, r.y + (r.h - 22.0) * 0.5, 42.0, 22.0);
-    ctx.fill_rrect(sw, 11.0, if on { theme::VIOLET } else { theme::ELEVATED });
+    ctx.fill_rrect(sw, 11.0, if on { theme::accent() } else { theme::ELEVATED });
     ctx.fill_circle(if on { sw.x + 31.0 } else { sw.x + 11.0 }, sw.y + 11.0, 8.0, theme::CRISP_WHITE);
     hits.push(Hit { id: id.into(), rect: r, act, slider: None });
 }
@@ -1642,12 +1694,12 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
         if _l.is_some() { ctx.pop_layer(); }
     }
     if !drew_av {
-        ctx.fill_circle(prof_r.x + 24.0, prof_r.y + 26.0, 15.0, theme::VIOLET);
+        ctx.fill_circle(prof_r.x + 24.0, prof_r.y + 26.0, 15.0, theme::accent());
         let init = s.username.chars().next().unwrap_or('A').to_uppercase().to_string();
         ctx.draw_text_center(&init, av_r, TextStyle::Body12Semi, theme::TEXT_PRIMARY);
     }
     ctx.draw_text(s.username, Rect::new(prof_r.x + 48.0, prof_r.y + 9.0, prof_r.w - 56.0, 18.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
-    ctx.draw_text("AuraOS sobre Windows 11", Rect::new(prof_r.x + 48.0, prof_r.y + 27.0, prof_r.w - 56.0, 15.0), TextStyle::Small9Reg, theme::VIOLET_LIGHT);
+    ctx.draw_text("AuraOS sobre Windows 11", Rect::new(prof_r.x + 48.0, prof_r.y + 27.0, prof_r.w - 56.0, 15.0), TextStyle::Small9Reg, theme::accent_light());
 
     let mut sy = prof_r.y + prof_r.h + 16.0;
     for tab in Tab::ALL {
@@ -1658,14 +1710,14 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
         ctx.fill_rrect(
             tr,
             11.0,
-            if active { theme::VIOLET } else if hov { theme::ELEVATED } else { theme::rgba(0, 0, 0, 0.0) },
+            if active { theme::accent() } else if hov { theme::ELEVATED } else { theme::rgba(0, 0, 0, 0.0) },
         );
         ctx.draw_vector_icon(
             tab.icon(),
             tr.x + 18.0,
             tr.y + 18.0,
             13.0,
-            if active { theme::TEXT_PRIMARY } else { theme::VIOLET_LIGHT },
+            if active { theme::TEXT_PRIMARY } else { theme::accent_light() },
         );
         ctx.draw_text(
             tab.label(),
@@ -1679,8 +1731,8 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
 
     // Bottom quick button: Test AuraLock
     let lk_btn = Rect::new(12.0, h - 50.0, SB_W - 24.0, 36.0);
-    ctx.fill_card(lk_btn, 12.0, theme::VIOLET_TINT, theme::VIOLET_BORDER);
-    ctx.draw_vector_icon(VectorIcon::Lock, lk_btn.x + 18.0, lk_btn.y + 18.0, 12.5, theme::VIOLET_LIGHT);
+    ctx.fill_card(lk_btn, 12.0, theme::accent_tint(), theme::accent_border());
+    ctx.draw_vector_icon(VectorIcon::Lock, lk_btn.x + 18.0, lk_btn.y + 18.0, 12.5, theme::accent_light());
     ctx.draw_text("Bloquear (AuraLock)", Rect::new(lk_btn.x + 34.0, lk_btn.y, lk_btn.w - 40.0, 36.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
     hits.push(Hit { id: "sb_auralock".into(), rect: lk_btn, act: SetAct::TestAuraLock, slider: None });
 
@@ -1698,7 +1750,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
         Tab::System => {
             // Hardware Hero Bento
             let hc = Rect::new(cx, y, cw, 92.0);
-            ctx.fill_card(hc, 16.0, theme::SURFACE, theme::VIOLET_BORDER);
+            ctx.fill_card(hc, 16.0, theme::SURFACE, theme::accent_border());
             let col_w = hc.w / 3.0;
             let specs = [
                 ("PROCESADOR", format!("{} hilos lógicos", s.cpu_cores), "Arquitectura x64".to_string()),
@@ -1709,7 +1761,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 let bx = hc.x + 18.0 + i as f32 * col_w;
                 ctx.draw_text(k, Rect::new(bx, hc.y + 14.0, col_w - 24.0, 14.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
                 ctx.draw_text(&v, Rect::new(bx, hc.y + 32.0, col_w - 24.0, 22.0), TextStyle::Title16Semi, theme::TEXT_PRIMARY);
-                ctx.draw_text(&sub, Rect::new(bx, hc.y + 58.0, col_w - 24.0, 16.0), TextStyle::Small10Med, theme::VIOLET_LIGHT);
+                ctx.draw_text(&sub, Rect::new(bx, hc.y + 58.0, col_w - 24.0, 16.0), TextStyle::Small10Med, theme::accent_light());
             }
             y += 108.0;
 
@@ -1725,9 +1777,9 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             for (i, (id, title, sub, key)) in plans.into_iter().enumerate() {
                 let pr = Rect::new(cx + i as f32 * (pw + 10.0), y, pw, 64.0);
                 let active = s.power_plan == key;
-                ctx.fill_card(pr, 13.0, if active { theme::VIOLET_TINT } else { theme::CARD_BG }, if active { theme::VIOLET_LIGHT } else { theme::BORDER });
+                ctx.fill_card(pr, 13.0, if active { theme::accent_tint() } else { theme::CARD_BG }, if active { theme::accent_light() } else { theme::BORDER });
                 ctx.draw_text(title, Rect::new(pr.x + 12.0, pr.y + 12.0, pr.w - 24.0, 18.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
-                ctx.draw_text(sub, Rect::new(pr.x + 12.0, pr.y + 34.0, pr.w - 24.0, 15.0), TextStyle::Small9Reg, if active { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY });
+                ctx.draw_text(sub, Rect::new(pr.x + 12.0, pr.y + 34.0, pr.w - 24.0, 15.0), TextStyle::Small9Reg, if active { theme::accent_light() } else { theme::TEXT_TERTIARY });
                 hits.push(Hit { id: id.into(), rect: pr, act: SetAct::SetPowerPlan(key), slider: None });
             }
             y += 80.0;
@@ -1752,27 +1804,27 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 let dr = Rect::new(cx, y, cw, 46.0);
                 ctx.fill_card(dr, 12.0, theme::CARD_BG, theme::BORDER);
                 ctx.draw_text(&format!("Disco {}  ·  {:.0} GB libres de {:.0} GB", d.letter, d.free_gb, d.total_gb), Rect::new(dr.x + 14.0, dr.y + 7.0, dr.w - 140.0, 18.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
-                ctx.draw_text_right(&format!("{:.0}% usado", d.used_pct), Rect::new(dr.x + dr.w - 110.0, dr.y + 7.0, 96.0, 18.0), TextStyle::Mono11Med, if d.used_pct > 80.0 { theme::CORAL } else { theme::VIOLET_LIGHT });
+                ctx.draw_text_right(&format!("{:.0}% usado", d.used_pct), Rect::new(dr.x + dr.w - 110.0, dr.y + 7.0, 96.0, 18.0), TextStyle::Mono11Med, if d.used_pct > 80.0 { theme::CORAL } else { theme::accent_light() });
                 let br = Rect::new(dr.x + 14.0, dr.y + 31.0, dr.w - 28.0, 6.0);
                 ctx.fill_rrect(br, 3.0, theme::ELEVATED);
-                ctx.fill_rrect(Rect::new(br.x, br.y, (d.used_pct / 100.0).clamp(0.03, 1.0) * br.w, 6.0), 3.0, if d.used_pct > 80.0 { theme::CORAL } else { theme::VIOLET });
+                ctx.fill_rrect(Rect::new(br.x, br.y, (d.used_pct / 100.0).clamp(0.03, 1.0) * br.w, 6.0), 3.0, if d.used_pct > 80.0 { theme::CORAL } else { theme::accent() });
                 y += 54.0;
             }
             let b_tmp = Rect::new(cx, y + 4.0, 250.0, 36.0);
-            ctx.fill_rrect(b_tmp, 11.0, theme::VIOLET);
+            ctx.fill_rrect(b_tmp, 11.0, theme::accent());
             ctx.draw_text_center(&format!("Limpiar %TEMP% ({})", format_bytes(s.temp_bytes)), b_tmp, TextStyle::Body11Med, theme::TEXT_PRIMARY);
             hits.push(Hit { id: "sys_clean_tmp".into(), rect: b_tmp, act: SetAct::CleanTempFiles, slider: None });
 
             let b_an = Rect::new(cx + 262.0, y + 4.0, 220.0, 36.0);
-            ctx.fill_card(b_an, 11.0, theme::ELEVATED, theme::VIOLET_BORDER);
+            ctx.fill_card(b_an, 11.0, theme::ELEVATED, theme::accent_border());
             ctx.draw_text_center("Abrir Mapa de Espacio (AuraFiles)", b_an, TextStyle::Body11Med, theme::TEXT_PRIMARY);
             hits.push(Hit { id: "sys_analyzer".into(), rect: b_an, act: SetAct::OpenDiskAnalyzer, slider: None });
         }
         Tab::Display => {
             let dc = Rect::new(cx, y, cw, 74.0);
-            ctx.fill_card(dc, 16.0, theme::SURFACE, theme::VIOLET_BORDER);
+            ctx.fill_card(dc, 16.0, theme::SURFACE, theme::accent_border());
             ctx.draw_text(&format!("Monitor Principal  ·  {} × {}", s.disp_w, s.disp_h), Rect::new(dc.x + 16.0, dc.y + 14.0, dc.w - 180.0, 22.0), TextStyle::Title16Semi, theme::TEXT_PRIMARY);
-            ctx.draw_text(&format!("Frecuencia activa: {} Hz · DirectComposition Hardware", s.disp_hz), Rect::new(dc.x + 16.0, dc.y + 40.0, dc.w - 180.0, 18.0), TextStyle::Body11Med, theme::VIOLET_LIGHT);
+            ctx.draw_text(&format!("Frecuencia activa: {} Hz · DirectComposition Hardware", s.disp_hz), Rect::new(dc.x + 16.0, dc.y + 40.0, dc.w - 180.0, 18.0), TextStyle::Body11Med, theme::accent_light());
             y += 90.0;
 
             ctx.draw_text("TASA DE REFRESCO DEL MONITOR (CAMBIO REAL EN VIVO)", Rect::new(cx, y, cw, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
@@ -1781,7 +1833,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             for &hz in s.disp_rates {
                 let br = Rect::new(rx, y, 86.0, 36.0);
                 let active = hz == s.disp_hz;
-                ctx.fill_card(br, 11.0, if active { theme::VIOLET } else { theme::CARD_BG }, if active { theme::VIOLET_LIGHT } else { theme::BORDER });
+                ctx.fill_card(br, 11.0, if active { theme::accent() } else { theme::CARD_BG }, if active { theme::accent_light() } else { theme::BORDER });
                 ctx.draw_text_center(&format!("{} Hz", hz), br, TextStyle::Mono12Bold, theme::TEXT_PRIMARY);
                 hits.push(Hit { id: format!("hz_{}", hz), rect: br, act: SetAct::SetRefreshHz(hz), slider: None });
                 rx += 96.0;
@@ -1804,7 +1856,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             let tr = Rect::new(gc.x + 14.0, gc.y + 38.0, gc.w - 28.0, 12.0);
             ctx.fill_hatched_track(tr, 6.0);
             let frac = ((s.settings.glass_opacity - 0.50) / 0.46).clamp(0.0, 1.0);
-            ctx.fill_rrect(Rect::new(tr.x, tr.y, (frac * tr.w).max(12.0), 12.0), 6.0, theme::VIOLET);
+            ctx.fill_rrect(Rect::new(tr.x, tr.y, (frac * tr.w).max(12.0), 12.0), 6.0, theme::accent());
             hits.push(Hit {
                 id: "sl_glass".into(),
                 rect: Rect::new(tr.x, tr.y - 6.0, tr.w, 24.0),
@@ -1815,17 +1867,17 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
         Tab::Sound => {
             // Master volume hero card
             let mc = Rect::new(cx, y, cw, 74.0);
-            ctx.fill_card(mc, 16.0, theme::SURFACE, theme::VIOLET_BORDER);
+            ctx.fill_card(mc, 16.0, theme::SURFACE, theme::accent_border());
             let mute_r = Rect::new(mc.x + 14.0, mc.y + 19.0, 36.0, 36.0);
-            ctx.fill_rrect(mute_r, 10.0, if s.master_muted { theme::CORAL_BG } else { theme::VIOLET_TINT });
-            ctx.draw_vector_icon(if s.master_muted { VectorIcon::VolumeMute } else { VectorIcon::Volume }, mute_r.x + 18.0, mute_r.y + 18.0, 15.0, if s.master_muted { theme::CORAL } else { theme::VIOLET_LIGHT });
+            ctx.fill_rrect(mute_r, 10.0, if s.master_muted { theme::CORAL_BG } else { theme::accent_tint() });
+            ctx.draw_vector_icon(if s.master_muted { VectorIcon::VolumeMute } else { VectorIcon::Volume }, mute_r.x + 18.0, mute_r.y + 18.0, 15.0, if s.master_muted { theme::CORAL } else { theme::accent_light() });
             hits.push(Hit { id: "snd_mute".into(), rect: mute_r, act: SetAct::ToggleMasterMute, slider: None });
 
             ctx.draw_text("Volumen Maestro del Sistema", Rect::new(mc.x + 62.0, mc.y + 12.0, 260.0, 18.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
-            ctx.draw_text_right(&format!("{}%", s.master_vol), Rect::new(mc.x + mc.w - 86.0, mc.y + 12.0, 70.0, 18.0), TextStyle::Mono12Bold, theme::VIOLET_LIGHT);
+            ctx.draw_text_right(&format!("{}%", s.master_vol), Rect::new(mc.x + mc.w - 86.0, mc.y + 12.0, 70.0, 18.0), TextStyle::Mono12Bold, theme::accent_light());
             let sl_r = Rect::new(mc.x + 62.0, mc.y + 40.0, mc.w - 78.0, 12.0);
             ctx.fill_hatched_track(sl_r, 6.0);
-            ctx.fill_rrect(Rect::new(sl_r.x, sl_r.y, (s.master_vol as f32 / 100.0 * sl_r.w).max(8.0), 12.0), 6.0, if s.master_muted { theme::CORAL } else { theme::VIOLET });
+            ctx.fill_rrect(Rect::new(sl_r.x, sl_r.y, (s.master_vol as f32 / 100.0 * sl_r.w).max(8.0), 12.0), 6.0, if s.master_muted { theme::CORAL } else { theme::accent() });
             hits.push(Hit {
                 id: "sl_master".into(),
                 rect: Rect::new(sl_r.x, sl_r.y - 6.0, sl_r.w, 24.0),
@@ -1844,13 +1896,13 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             for i in 0..max_dev {
                 if let Some(d) = s.outputs.get(i) {
                     let dr = Rect::new(cx, y + i as f32 * 44.0, col_w, 38.0);
-                    ctx.fill_card(dr, 11.0, if d.is_default { theme::VIOLET_TINT } else { theme::CARD_BG }, if d.is_default { theme::VIOLET_LIGHT } else { theme::BORDER });
+                    ctx.fill_card(dr, 11.0, if d.is_default { theme::accent_tint() } else { theme::CARD_BG }, if d.is_default { theme::accent_light() } else { theme::BORDER });
                     ctx.draw_text(&d.short_name, Rect::new(dr.x + 12.0, dr.y, dr.w - 24.0, 38.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
                     hits.push(Hit { id: format!("out_{}", i), rect: dr, act: SetAct::SelectOutput(d.id.clone()), slider: None });
                 }
                 if let Some(m) = s.mics.get(i) {
                     let mr = Rect::new(cx + col_w + 14.0, y + i as f32 * 44.0, col_w, 38.0);
-                    ctx.fill_card(mr, 11.0, if m.is_default { theme::VIOLET_TINT } else { theme::CARD_BG }, if m.is_default { theme::VIOLET_LIGHT } else { theme::BORDER });
+                    ctx.fill_card(mr, 11.0, if m.is_default { theme::accent_tint() } else { theme::CARD_BG }, if m.is_default { theme::accent_light() } else { theme::BORDER });
                     ctx.draw_text(&m.short_name, Rect::new(mr.x + 12.0, mr.y, mr.w - 24.0, 38.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
                     hits.push(Hit { id: format!("mic_{}", i), rect: mr, act: SetAct::SelectMic(m.id.clone()), slider: None });
                 }
@@ -1861,7 +1913,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             ctx.draw_text("MEZCLADOR DE VOLUMEN POR APLICACIÓN", Rect::new(cx, y, cw - 120.0, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
             let ref_r = Rect::new(cx + cw - 96.0, y - 4.0, 96.0, 24.0);
             ctx.fill_card(ref_r, 8.0, theme::ELEVATED, theme::BORDER);
-            ctx.draw_text_center("Actualizar", ref_r, TextStyle::Small10Med, theme::VIOLET_LIGHT);
+            ctx.draw_text_center("Actualizar", ref_r, TextStyle::Small10Med, theme::accent_light());
             hits.push(Hit { id: "snd_ref".into(), rect: ref_r, act: SetAct::RefreshAudio, slider: None });
             y += 26.0;
 
@@ -1879,7 +1931,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                     ctx.draw_text(&app.display_name, Rect::new(ar.x + 48.0, ar.y, 178.0, 46.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
                     let tr = Rect::new(ar.x + 234.0, ar.y + 18.0, (ar.w - 306.0).max(120.0), 10.0);
                     ctx.fill_hatched_track(tr, 5.0);
-                    ctx.fill_rrect(Rect::new(tr.x, tr.y, (app.volume_percent as f32 / 100.0 * tr.w).max(6.0), 10.0), 5.0, if app.is_muted { theme::CORAL } else { theme::VIOLET });
+                    ctx.fill_rrect(Rect::new(tr.x, tr.y, (app.volume_percent as f32 / 100.0 * tr.w).max(6.0), 10.0), 5.0, if app.is_muted { theme::CORAL } else { theme::accent() });
                     hits.push(Hit {
                         id: format!("asl_{}", i),
                         rect: Rect::new(tr.x, tr.y - 8.0, tr.w, 26.0),
@@ -1894,7 +1946,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
         Tab::Network => {
             // 1. HERO CONNECTION STATUS & LIVE ADAPTER TELEMETRY (IPv4, Gateway, DNS, MAC, Link Speed, Ping!)
             let nc = Rect::new(cx, y, cw, 114.0);
-            ctx.fill_card(nc, 16.0, theme::SURFACE, theme::VIOLET_BORDER);
+            ctx.fill_card(nc, 16.0, theme::SURFACE, theme::accent_border());
             let net_icon = match s.radios.net_kind {
                 radios::NetKind::Ethernet => VectorIcon::Ethernet,
                 radios::NetKind::Wifi => VectorIcon::Wifi,
@@ -1902,7 +1954,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             };
             let net_col = match s.radios.net_kind {
                 radios::NetKind::Ethernet => theme::EMERALD,
-                radios::NetKind::Wifi => theme::VIOLET_LIGHT,
+                radios::NetKind::Wifi => theme::accent_light(),
                 radios::NetKind::Offline => theme::CORAL,
             };
             ctx.draw_vector_icon(net_icon, nc.x + 32.0, nc.y + 34.0, 22.0, net_col);
@@ -1947,13 +1999,13 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 None => "Test Latencia".to_string(),
             };
             let p_btn = Rect::new(nc.x + nc.w - 134.0, nc.y + 14.0, 120.0, 30.0);
-            ctx.fill_card(p_btn, 10.0, if s.hovered == Some("net_ping") { theme::VIOLET } else { theme::ELEVATED }, theme::VIOLET_BORDER);
+            ctx.fill_card(p_btn, 10.0, if s.hovered == Some("net_ping") { theme::accent() } else { theme::ELEVATED }, theme::accent_border());
             ctx.draw_text_center(&ping_lbl, p_btn, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
             hits.push(Hit { id: "net_ping".into(), rect: p_btn, act: SetAct::TestPing, slider: None });
 
             let ref_net = Rect::new(nc.x + nc.w - 134.0, nc.y + 78.0, 120.0, 26.0);
             ctx.fill_card(ref_net, 9.0, theme::CARD_BG, theme::BORDER);
-            ctx.draw_text_center(if s.wifi_scanning { "Escaneando..." } else { "Actualizar Red" }, ref_net, TextStyle::Small9Reg, theme::VIOLET_LIGHT);
+            ctx.draw_text_center(if s.wifi_scanning { "Escaneando..." } else { "Actualizar Red" }, ref_net, TextStyle::Small9Reg, theme::accent_light());
             hits.push(Hit { id: "net_rescan_top".into(), rect: ref_net, act: SetAct::ScanWifiNetworks, slider: None });
             y += 128.0;
 
@@ -1983,7 +2035,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 ctx.draw_text("CONTRASEÑA (MÍN. 8 CARACTERES)", Rect::new(hs_card.x + 266.0, hs_card.y + 66.0, 260.0, 14.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
 
                 let ssid_r = Rect::new(hs_card.x + 14.0, hs_card.y + 84.0, 240.0, 36.0);
-                ctx.fill_card(ssid_r, 10.0, theme::SURFACE, if s.hs_ssid_focused { theme::VIOLET_LIGHT } else { theme::BORDER });
+                ctx.fill_card(ssid_r, 10.0, theme::SURFACE, if s.hs_ssid_focused { theme::accent_light() } else { theme::BORDER });
                 let ssid_disp = format!("{}{}", s.hs_ssid_draft, if s.hs_ssid_focused { "|" } else { "" });
                 ctx.draw_text(
                     if ssid_disp.is_empty() { "Nombre de red..." } else { &ssid_disp },
@@ -1994,7 +2046,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 hits.push(Hit { id: "hs_ssid_in".into(), rect: ssid_r, act: SetAct::FocusHotspotSsid, slider: None });
 
                 let pass_r = Rect::new(hs_card.x + 266.0, hs_card.y + 84.0, (cw - 422.0).max(160.0), 36.0);
-                ctx.fill_card(pass_r, 10.0, theme::SURFACE, if s.hs_pass_focused { theme::VIOLET_LIGHT } else { theme::BORDER });
+                ctx.fill_card(pass_r, 10.0, theme::SURFACE, if s.hs_pass_focused { theme::accent_light() } else { theme::BORDER });
                 let pass_disp = format!("{}{}", s.hs_pass_draft, if s.hs_pass_focused { "|" } else { "" });
                 ctx.draw_text(
                     if pass_disp.is_empty() { "Contraseña Wi-Fi..." } else { &pass_disp },
@@ -2005,7 +2057,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 hits.push(Hit { id: "hs_pass_in".into(), rect: pass_r, act: SetAct::FocusHotspotPass, slider: None });
 
                 let save_hs = Rect::new(hs_card.x + hs_card.w - 142.0, hs_card.y + 84.0, 128.0, 36.0);
-                ctx.fill_rrect(save_hs, 10.0, if s.hovered == Some("hs_save") { theme::VIOLET_LIGHT } else { theme::VIOLET });
+                ctx.fill_rrect(save_hs, 10.0, if s.hovered == Some("hs_save") { theme::accent_light() } else { theme::accent() });
                 ctx.draw_text_center("Guardar Hotspot", save_hs, TextStyle::Small10Bold, theme::CRISP_WHITE);
                 hits.push(Hit { id: "hs_save".into(), rect: save_hs, act: SetAct::SaveHotspotConfig, slider: None });
             }
@@ -2024,23 +2076,23 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             // 4. REDES WI-FI CERCANAS (ESCANEAR, CONECTAR CON CONTRASEÑA, DESCONECTAR, OLVIDAR)
             ctx.draw_text("REDES WI-FI DISPONIBLES", Rect::new(cx, y, cw - 220.0, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
             let scan_b = Rect::new(cx + cw - 118.0, y - 5.0, 118.0, 26.0);
-            ctx.fill_card(scan_b, 9.0, theme::ELEVATED, theme::VIOLET_BORDER);
+            ctx.fill_card(scan_b, 9.0, theme::ELEVATED, theme::accent_border());
             ctx.draw_text_center(if s.wifi_scanning { "Buscando..." } else { "Escanear Wi-Fi" }, scan_b, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
             hits.push(Hit { id: "wifi_scan_btn".into(), rect: scan_b, act: SetAct::ScanWifiNetworks, slider: None });
             y += 26.0;
 
             if let Some(target_ssid) = s.wifi_pwd_target {
                 let pr = Rect::new(cx, y, cw, 78.0);
-                ctx.fill_card(pr, 13.0, theme::SURFACE, theme::VIOLET_LIGHT);
+                ctx.fill_card(pr, 13.0, theme::SURFACE, theme::accent_light());
                 ctx.draw_text(&format!("Contraseña para conectar a '{}'", target_ssid), Rect::new(pr.x + 14.0, pr.y + 8.0, cw - 28.0, 18.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
                 let in_r = Rect::new(pr.x + 14.0, pr.y + 32.0, cw - 230.0, 34.0);
-                ctx.fill_card(in_r, 9.0, theme::CARD_BG, if s.wifi_pwd_focused { theme::VIOLET_LIGHT } else { theme::BORDER });
+                ctx.fill_card(in_r, 9.0, theme::CARD_BG, if s.wifi_pwd_focused { theme::accent_light() } else { theme::BORDER });
                 let masked = format!("{}{}", "•".repeat(s.wifi_pwd_draft.chars().count()), if s.wifi_pwd_focused { "|" } else { "" });
                 ctx.draw_text(if masked.is_empty() { "Escribe la clave Wi-Fi..." } else { &masked }, Rect::new(in_r.x + 10.0, in_r.y, in_r.w - 20.0, 34.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
                 hits.push(Hit { id: "wifi_pwd_in".into(), rect: in_r, act: SetAct::FocusWifiPassInput, slider: None });
 
                 let ok_r = Rect::new(in_r.x + in_r.w + 8.0, pr.y + 32.0, 96.0, 34.0);
-                ctx.fill_rrect(ok_r, 9.0, theme::VIOLET);
+                ctx.fill_rrect(ok_r, 9.0, theme::accent());
                 ctx.draw_text_center("Conectar", ok_r, TextStyle::Small10Bold, theme::CRISP_WHITE);
                 hits.push(Hit { id: "wifi_pwd_ok".into(), rect: ok_r, act: SetAct::SubmitWifiPassword, slider: None });
 
@@ -2066,8 +2118,8 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             } else {
                 for (i, net) in s.wifi_networks.iter().take(8).enumerate() {
                     let wr = Rect::new(cx, y, cw, 44.0);
-                    ctx.fill_card(wr, 12.0, if net.connected { theme::VIOLET_TINT } else { theme::CARD_BG }, if net.connected { theme::VIOLET_LIGHT } else { theme::BORDER });
-                    ctx.draw_wifi_signal(wr.x + 20.0, wr.y + 22.0, 14.0, net.bars.max(1), if net.connected { theme::EMERALD } else { theme::VIOLET_LIGHT }, theme::rgba(255, 255, 255, 0.16));
+                    ctx.fill_card(wr, 12.0, if net.connected { theme::accent_tint() } else { theme::CARD_BG }, if net.connected { theme::accent_light() } else { theme::BORDER });
+                    ctx.draw_wifi_signal(wr.x + 20.0, wr.y + 22.0, 14.0, net.bars.max(1), if net.connected { theme::EMERALD } else { theme::accent_light() }, theme::rgba(255, 255, 255, 0.16));
                     ctx.draw_text(&net.ssid, Rect::new(wr.x + 42.0, wr.y + 5.0, cw - 260.0, 18.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
                     let meta = format!("{}% señal  ·  {}{}", net.signal_pct, net.auth, if net.saved { "  ·  Guardada" } else { "" });
                     ctx.draw_text(&meta, Rect::new(wr.x + 42.0, wr.y + 23.0, cw - 260.0, 14.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
@@ -2079,7 +2131,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                         hits.push(Hit { id: format!("wf_fg_{}", i), rect: fg_r, act: SetAct::ForgetWifi(net.ssid.clone()), slider: None });
                     }
                     let act_r = Rect::new(wr.x + wr.w - 114.0, wr.y + 8.0, 102.0, 28.0);
-                    ctx.fill_rrect(act_r, 8.0, if net.connected { theme::CORAL_BG } else { theme::VIOLET });
+                    ctx.fill_rrect(act_r, 8.0, if net.connected { theme::CORAL_BG } else { theme::accent() });
                     ctx.draw_text_center(if net.connected { "Desconectar" } else { "Conectar" }, act_r, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
                     let act = if net.connected {
                         SetAct::DisconnectWifi
@@ -2100,10 +2152,10 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 y += 22.0;
                 for (i, vpn) in s.vpn_profiles.iter().take(6).enumerate() {
                     let vr = Rect::new(cx, y, cw, 44.0);
-                    ctx.fill_card(vr, 12.0, if vpn.connected { theme::VIOLET_TINT } else { theme::CARD_BG }, if vpn.connected { theme::EMERALD } else { theme::BORDER });
+                    ctx.fill_card(vr, 12.0, if vpn.connected { theme::accent_tint() } else { theme::CARD_BG }, if vpn.connected { theme::EMERALD } else { theme::BORDER });
                     ctx.draw_text(&vpn.name, Rect::new(vr.x + 14.0, vr.y, cw - 150.0, 44.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
                     let vb = Rect::new(vr.x + vr.w - 118.0, vr.y + 8.0, 104.0, 28.0);
-                    ctx.fill_rrect(vb, 8.0, if vpn.connected { theme::CORAL_BG } else { theme::VIOLET });
+                    ctx.fill_rrect(vb, 8.0, if vpn.connected { theme::CORAL_BG } else { theme::accent() });
                     ctx.draw_text_center(if vpn.connected { "Desconectar" } else { "Conectar" }, vb, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
                     hits.push(Hit { id: format!("vpn_b_{}", i), rect: vb, act: SetAct::ToggleVpn(vpn.name.clone(), vpn.connected), slider: None });
                     y += 50.0;
@@ -2124,7 +2176,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             for (i, (id, lbl, act)) in dns_btns.into_iter().enumerate() {
                 let br = Rect::new(cx + i as f32 * (bw + 10.0), y, bw, 38.0);
                 let hov = s.hovered == Some(id);
-                ctx.fill_card(br, 11.0, if hov { theme::VIOLET } else { theme::CARD_BG }, theme::VIOLET_BORDER);
+                ctx.fill_card(br, 11.0, if hov { theme::accent() } else { theme::CARD_BG }, theme::accent_border());
                 ctx.draw_text_center(lbl, br, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
                 hits.push(Hit { id: id.into(), rect: br, act, slider: None });
             }
@@ -2149,7 +2201,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             ctx.draw_text("TEMA MATERIAL YOU 3 (ADAPTATIVO AL FONDO DE PANTALLA)", Rect::new(cx, y, cw, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
             y += 22.0;
             let schemes = [
-                ("th_auto", "Auto (Fondo)", "Auto", theme::VIOLET_LIGHT),
+                ("th_auto", "Auto (Fondo)", "Auto", theme::accent_light()),
                 ("th_violet", "Obsidian Violet", "Violet", theme::VIOLET),
                 ("th_sage", "Sage Forest", "Sage", theme::rgb(148, 194, 120)),
                 ("th_apricot", "Warm Apricot", "Apricot", theme::rgb(244, 162, 108)),
@@ -2159,7 +2211,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             for (i, (id, lbl, key, dot)) in schemes.into_iter().enumerate() {
                 let r = Rect::new(cx + i as f32 * (sbw + 8.0), y, sbw, 38.0);
                 let active = s.settings.theme_scheme.eq_ignore_ascii_case(key);
-                ctx.fill_card(r, 11.0, if active { theme::VIOLET_TINT } else { theme::CARD_BG }, if active { theme::VIOLET_LIGHT } else { theme::BORDER });
+                ctx.fill_card(r, 11.0, if active { theme::accent_tint() } else { theme::CARD_BG }, if active { theme::accent_light() } else { theme::BORDER });
                 ctx.fill_circle(r.x + 14.0, r.y + 19.0, 5.5, dot);
                 ctx.draw_text(lbl, Rect::new(r.x + 25.0, r.y, r.w - 30.0, 38.0), TextStyle::Small10Bold, theme::TEXT_PRIMARY);
                 hits.push(Hit { id: id.into(), rect: r, act: SetAct::SetThemeScheme(key), slider: None });
@@ -2176,7 +2228,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             for (i, (id, lbl, key)) in bar_opts.into_iter().enumerate() {
                 let r = Rect::new(cx + i as f32 * (b3w + 6.0), y, b3w, 32.0);
                 let act = s.settings.bar_style.eq_ignore_ascii_case(key);
-                ctx.fill_card(r, 10.0, if act { theme::VIOLET } else { theme::CARD_BG }, if act { theme::VIOLET_LIGHT } else { theme::BORDER });
+                ctx.fill_card(r, 10.0, if act { theme::accent() } else { theme::CARD_BG }, if act { theme::accent_light() } else { theme::BORDER });
                 ctx.draw_text_center(lbl, r, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
                 hits.push(Hit { id: id.into(), rect: r, act: SetAct::SetBarStyle(key), slider: None });
             }
@@ -2184,7 +2236,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             for (i, (id, lbl, key)) in clk_opts.into_iter().enumerate() {
                 let r = Rect::new(cx + half_w + 14.0 + i as f32 * (b3w + 6.0), y, b3w, 32.0);
                 let act = s.settings.clock_widget_style.eq_ignore_ascii_case(key);
-                ctx.fill_card(r, 10.0, if act { theme::VIOLET } else { theme::CARD_BG }, if act { theme::VIOLET_LIGHT } else { theme::BORDER });
+                ctx.fill_card(r, 10.0, if act { theme::accent() } else { theme::CARD_BG }, if act { theme::accent_light() } else { theme::BORDER });
                 ctx.draw_text_center(lbl, r, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
                 hits.push(Hit { id: id.into(), rect: r, act: SetAct::SetClockStyle(key), slider: None });
             }
@@ -2216,10 +2268,10 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 format!("Ciudad fijada manualmente: {}", s.settings.weather_city)
             };
             ctx.draw_text("UBICACIÓN DEL CLIMA Y RELOJ", Rect::new(wc.x + 14.0, wc.y + 10.0, 260.0, 14.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
-            ctx.draw_text(&city_mode, Rect::new(wc.x + 220.0, wc.y + 10.0, wc.w - 236.0, 14.0), TextStyle::Small10Med, theme::VIOLET_LIGHT);
+            ctx.draw_text(&city_mode, Rect::new(wc.x + 220.0, wc.y + 10.0, wc.w - 236.0, 14.0), TextStyle::Small10Med, theme::accent_light());
 
             let ci_r = Rect::new(wc.x + 14.0, wc.y + 34.0, 260.0, 34.0);
-            ctx.fill_card(ci_r, 10.0, theme::CARD_BG, if s.city_focused { theme::VIOLET_LIGHT } else { theme::BORDER });
+            ctx.fill_card(ci_r, 10.0, theme::CARD_BG, if s.city_focused { theme::accent_light() } else { theme::BORDER });
             let ci_txt = if s.city_draft.is_empty() {
                 if s.city_focused { "|".to_string() } else { "Automático (o escribe: Bogotá, Madrid...)".to_string() }
             } else {
@@ -2229,7 +2281,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             hits.push(Hit { id: "city_in".into(), rect: ci_r, act: SetAct::FocusCityInput, slider: None });
 
             let c_save = Rect::new(ci_r.x + ci_r.w + 10.0, wc.y + 34.0, 118.0, 34.0);
-            ctx.fill_rrect(c_save, 10.0, theme::VIOLET);
+            ctx.fill_rrect(c_save, 10.0, theme::accent());
             ctx.draw_text_center("Guardar ciudad", c_save, TextStyle::Body11Med, theme::TEXT_PRIMARY);
             hits.push(Hit { id: "city_save".into(), rect: c_save, act: SetAct::SaveWeatherCity, slider: None });
 
@@ -2251,15 +2303,109 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             for (i, (id, lbl, wk)) in wgs.into_iter().enumerate() {
                 let on = s.widgets.get(wk).map(|w| w.enabled).unwrap_or(false);
                 let wr = Rect::new(cx + i as f32 * (ww + 10.0), y, ww, 42.0);
-                ctx.fill_card(wr, 12.0, if on { theme::VIOLET_TINT } else { theme::CARD_BG }, if on { theme::VIOLET_LIGHT } else { theme::BORDER });
+                ctx.fill_card(wr, 12.0, if on { theme::accent_tint() } else { theme::CARD_BG }, if on { theme::accent_light() } else { theme::BORDER });
                 ctx.draw_text_center(lbl, wr, TextStyle::Body11Med, theme::TEXT_PRIMARY);
                 hits.push(Hit { id: id.into(), rect: wr, act: SetAct::ToggleWidget(wk), slider: None });
             }
         }
         Tab::LockAndWallpapers => {
+            // ===== Gradient Waves (React Bits) — Default animated AuraOS wallpaper =====
+            gradient_waves::set_tuning(s.settings.waves_speed, s.settings.waves_relief);
+            gradient_waves::set_custom_color(&s.settings.waves_custom_color);
+            let active_wave = s
+                .settings
+                .wallpaper_id
+                .strip_prefix("preset:")
+                .and_then(gradient_waves::preset_by_key);
+            let shown = active_wave.unwrap_or(&gradient_waves::PRESETS[0]);
+            let gc = Rect::new(cx, y, cw, 258.0);
+            ctx.fill_card(gc, 16.0, theme::pal().surface, if active_wave.is_some() { theme::accent_light() } else { theme::accent_border() });
+
+            let prev_r = Rect::new(gc.x + 14.0, gc.y + 14.0, 290.0, gc.h - 28.0);
+            let _pl = ctx.push_rrect_mask_layer(prev_r, prev_r, 12.0, 1.0);
+            gradient_waves::draw_waves_ex(ctx, shown.key, prev_r, 4.2, true);
+            if _pl.is_some() {
+                ctx.pop_layer();
+            }
+            ctx.stroke_rrect(prev_r, 12.0, theme::rgba(255, 255, 255, 0.12), 1.0);
+
+            let tx = prev_r.x + prev_r.w + 18.0;
+            let tw = gc.x + gc.w - tx - 14.0;
+            ctx.draw_text("Gradient Waves · Fondo animado principal", Rect::new(tx, gc.y + 12.0, tw, 20.0), TextStyle::Title14Semi, theme::TEXT_PRIMARY);
+            let active_hex = gradient_waves::effective_color(shown.key)
+                .map(gradient_waves::format_hex_rgb)
+                .unwrap_or_else(|| "#38BDF8".into());
+            let status = if active_wave.is_some() {
+                format!("Activo: {} ({}) · Todo AuraOS adapta su paleta al color del fondo", shown.title, active_hex)
+            } else {
+                "Elige un estilo o color para activarlo · la paleta de todo AuraOS se adapta sola".to_string()
+            };
+            ctx.draw_text(&status, Rect::new(tx, gc.y + 34.0, tw, 16.0), TextStyle::Small10Med, theme::accent_light());
+
+            // 5 React Bits preset chips (Ocean · Dune · Dusk · Silk · Aurora)
+            let n = gradient_waves::PRESETS.len() as f32;
+            let chip_w = (tw - 6.0 * (n - 1.0)) / n;
+            for (i, p) in gradient_waves::PRESETS.iter().enumerate() {
+                let r = Rect::new(tx + i as f32 * (chip_w + 6.0), gc.y + 58.0, chip_w, 32.0);
+                let id = format!("gw_p_{}", i);
+                let is_on = active_wave.map(|a| a.key == p.key).unwrap_or(false) && s.settings.waves_custom_color.trim().is_empty();
+                let hov = s.hovered == Some(id.as_str());
+                ctx.fill_card(
+                    r,
+                    10.0,
+                    if is_on { theme::accent_tint() } else if hov { theme::ELEVATED_HOVER } else { theme::ELEVATED },
+                    if is_on { theme::accent_light() } else { theme::BORDER },
+                );
+                let (pr, pg, pb) = p.wave_color;
+                ctx.fill_circle(r.x + 14.0, r.y + 16.0, 5.2, theme::rgb(pr, pg, pb));
+                ctx.draw_text(p.title, Rect::new(r.x + 24.0, r.y + 8.0, r.w - 28.0, 16.0), TextStyle::Small10Bold, theme::TEXT_PRIMARY);
+                hits.push(Hit { id, rect: r, act: SetAct::SetDesktopWallpaper(format!("preset:{}", p.key)), slider: None });
+            }
+
+            // 8 Adaptive Color Swatches (change waveColor & entire OS theme in 1 click!)
+            ctx.draw_text("COLOR ADAPTATIVO (CAMBIA LAS ONDAS Y TODO AURAOS)", Rect::new(tx, gc.y + 98.0, tw, 14.0), TextStyle::Small9Reg, theme::TEXT_TERTIARY);
+            let sn = gradient_waves::COLOR_SWATCHES.len() as f32;
+            let sw_w = (tw - 5.0 * (sn - 1.0)) / sn;
+            let cur_hex_up = s.settings.waves_custom_color.trim().to_ascii_uppercase();
+            for (i, (name, hex, (cr, cg, cb))) in gradient_waves::COLOR_SWATCHES.iter().enumerate() {
+                let sr = Rect::new(tx + i as f32 * (sw_w + 5.0), gc.y + 116.0, sw_w, 28.0);
+                let id = format!("gw_c_{}", i);
+                let is_sel = cur_hex_up == *hex || (cur_hex_up.is_empty() && shown.wave_color == (*cr, *cg, *cb) && active_wave.is_some());
+                let hov = s.hovered == Some(id.as_str());
+                ctx.fill_card(
+                    sr,
+                    8.0,
+                    if is_sel { theme::accent_tint() } else if hov { theme::ELEVATED_HOVER } else { theme::ELEVATED },
+                    if is_sel { theme::accent_light() } else { theme::BORDER },
+                );
+                ctx.fill_circle(sr.x + 11.0, sr.y + 14.0, 4.8, theme::rgb(*cr, *cg, *cb));
+                if sw_w >= 48.0 {
+                    ctx.draw_text(name, Rect::new(sr.x + 19.0, sr.y + 7.0, sr.w - 21.0, 14.0), TextStyle::Small9Reg, theme::TEXT_PRIMARY);
+                }
+                hits.push(Hit { id, rect: sr, act: SetAct::SetWavesCustomColor((*hex).to_string()), slider: None });
+            }
+
+            // Live tuning sliders (speed & relief multipliers)
+            let sliders = [
+                ("sl_gw_speed", "Velocidad", s.settings.waves_speed, gradient_waves::SPEED_MIN, gradient_waves::SPEED_MAX, gc.y + 156.0),
+                ("sl_gw_relief", "Relieve", s.settings.waves_relief, gradient_waves::RELIEF_MIN, gradient_waves::RELIEF_MAX, gc.y + 202.0),
+            ];
+            for (id, lbl, val, mn, mx, sy) in sliders {
+                let label = if id == "sl_gw_speed" && val <= 0.001 { format!("{} (Pausado)", lbl) } else { format!("{} (x{:.2})", lbl, val) };
+                ctx.draw_text(&label, Rect::new(tx, sy, tw - 40.0, 16.0), TextStyle::Small10Bold, theme::TEXT_SECONDARY);
+                let tr = Rect::new(tx, sy + 22.0, tw, 10.0);
+                ctx.fill_hatched_track(tr, 5.0);
+                let frac = ((val - mn) / (mx - mn)).clamp(0.0, 1.0);
+                ctx.fill_rrect(Rect::new(tr.x, tr.y, (frac * tr.w).max(10.0), 10.0), 5.0, theme::accent());
+                ctx.fill_circle(tr.x + (frac * tr.w).clamp(5.0, tr.w - 5.0), tr.y + 5.0, 7.0, theme::TEXT_PRIMARY);
+                let slider = if id == "sl_gw_speed" { SliderKind::WavesSpeed { x: tr.x, w: tr.w } } else { SliderKind::WavesRelief { x: tr.x, w: tr.w } };
+                hits.push(Hit { id: id.into(), rect: Rect::new(tr.x - 6.0, tr.y - 9.0, tr.w + 12.0, 28.0), act: SetAct::SetGlassOpacity(s.settings.glass_opacity), slider: Some(slider) });
+            }
+            y += gc.h + 16.0;
+
             // AuraLock Profile Photo + Security Password Card
             let lc = Rect::new(cx, y, cw, 184.0);
-            ctx.fill_card(lc, 16.0, theme::SURFACE, theme::VIOLET_BORDER);
+            ctx.fill_card(lc, 16.0, theme::SURFACE, theme::accent_border());
 
             // Live Circular Profile Avatar Preview (left side of card)
             let av_r = Rect::new(lc.x + 18.0, lc.y + 18.0, 62.0, 62.0);
@@ -2270,7 +2416,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 if _l.is_some() { ctx.pop_layer(); }
             }
             if !drew_av {
-                ctx.fill_circle(av_r.x + 31.0, av_r.y + 31.0, 31.0, theme::VIOLET);
+                ctx.fill_circle(av_r.x + 31.0, av_r.y + 31.0, 31.0, theme::accent());
                 let init = s.username.chars().next().unwrap_or('A').to_uppercase().to_string();
                 ctx.draw_text_center(&init, av_r, TextStyle::Title22Bold, theme::TEXT_PRIMARY);
             }
@@ -2284,11 +2430,11 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 "Desbloqueo rápido sin contraseña (puedes agregar una abajo)"
             };
             ctx.draw_text("Perfil y Seguridad de AuraLock (Ctrl + Alt + L)", Rect::new(lc.x + 94.0, lc.y + 16.0, 380.0, 20.0), TextStyle::Title14Semi, theme::TEXT_PRIMARY);
-            ctx.draw_text(pin_status, Rect::new(lc.x + 94.0, lc.y + 38.0, cw - 290.0, 16.0), TextStyle::Small10Med, theme::VIOLET_LIGHT);
+            ctx.draw_text(pin_status, Rect::new(lc.x + 94.0, lc.y + 38.0, cw - 290.0, 16.0), TextStyle::Small10Med, theme::accent_light());
 
             // Profile photo buttons
             let av_pick = Rect::new(lc.x + 94.0, lc.y + 60.0, 152.0, 28.0);
-            ctx.fill_card(av_pick, 9.0, theme::ELEVATED, theme::VIOLET_BORDER);
+            ctx.fill_card(av_pick, 9.0, theme::ELEVATED, theme::accent_border());
             ctx.draw_text_center("+ Foto de perfil", av_pick, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
             hits.push(Hit { id: "lk_av_pick".into(), rect: av_pick, act: SetAct::PickLockAvatar, slider: None });
 
@@ -2300,7 +2446,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             }
 
             let test_r = Rect::new(lc.x + lc.w - 178.0, lc.y + 18.0, 162.0, 34.0);
-            ctx.fill_rrect(test_r, 11.0, theme::VIOLET);
+            ctx.fill_rrect(test_r, 11.0, theme::accent());
             ctx.draw_text_center("Probar AuraLock ahora", test_r, TextStyle::Body11Med, theme::TEXT_PRIMARY);
             hits.push(Hit { id: "lk_test".into(), rect: test_r, act: SetAct::TestAuraLock, slider: None });
 
@@ -2309,7 +2455,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
 
             // Password/PIN Input Box + Save / Clear buttons
             let pin_r = Rect::new(lc.x + 16.0, lc.y + 132.0, 280.0, 36.0);
-            ctx.fill_card(pin_r, 10.0, theme::CARD_BG, if s.pin_focused { theme::VIOLET_LIGHT } else { theme::BORDER });
+            ctx.fill_card(pin_r, 10.0, theme::CARD_BG, if s.pin_focused { theme::accent_light() } else { theme::BORDER });
             let pin_txt = if s.pin_draft.is_empty() {
                 if s.pin_focused { "|".to_string() } else { "Nueva contraseña o PIN (mín. 4)...".to_string() }
             } else {
@@ -2319,7 +2465,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             hits.push(Hit { id: "lk_pin_in".into(), rect: pin_r, act: SetAct::FocusPinInput, slider: None });
 
             let save_pin = Rect::new(pin_r.x + pin_r.w + 10.0, lc.y + 132.0, 146.0, 36.0);
-            ctx.fill_rrect(save_pin, 10.0, theme::VIOLET);
+            ctx.fill_rrect(save_pin, 10.0, theme::accent());
             ctx.draw_text_center("Guardar contraseña", save_pin, TextStyle::Body11Med, theme::TEXT_PRIMARY);
             hits.push(Hit { id: "lk_pin_save".into(), rect: save_pin, act: SetAct::SaveLockPin, slider: None });
 
@@ -2339,12 +2485,12 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             // Custom Wallpapers Picker Header
             ctx.draw_text("FONDOS PARA ESCRITORIO Y AURALOCK (IMAGEN, VIDEO O WORKSHOP)", Rect::new(cx, y, cw - 330.0, 18.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
             let b_lwp = Rect::new(cx + cw - 178.0, y - 5.0, 178.0, 28.0);
-            ctx.fill_rrect(b_lwp, 9.0, theme::VIOLET);
+            ctx.fill_rrect(b_lwp, 9.0, theme::accent());
             ctx.draw_text_center("+ Archivo para AuraLock", b_lwp, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
             hits.push(Hit { id: "wp_pick_lock".into(), rect: b_lwp, act: SetAct::PickLocalLockWallpaper, slider: None });
 
             let b_dwp = Rect::new(b_lwp.x - 168.0, y - 5.0, 160.0, 28.0);
-            ctx.fill_card(b_dwp, 9.0, theme::ELEVATED, theme::VIOLET_BORDER);
+            ctx.fill_card(b_dwp, 9.0, theme::ELEVATED, theme::accent_border());
             ctx.draw_text_center("+ Archivo Escritorio", b_dwp, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
             hits.push(Hit { id: "wp_pick_desk".into(), rect: b_dwp, act: SetAct::PickLocalDesktopWallpaper, slider: None });
             y += 32.0;
@@ -2352,26 +2498,32 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             let cols = 3usize;
             let gw = (cw - 20.0) / cols as f32;
             let gh = 148.0;
-            for (i, wp) in s.wallpapers.iter().filter(|w| w.id != "external").take(12).enumerate() {
+            for (i, wp) in s.wallpapers.iter().filter(|w| w.id != "external").take(18).enumerate() {
                 let col = i % cols;
                 let row = i / cols;
                 let cr = Rect::new(cx + col as f32 * (gw + 10.0), y + row as f32 * (gh + 12.0), gw, gh);
                 let is_desk = s.settings.wallpaper_id == wp.id;
                 let is_lock = s.settings.lock_wallpaper_id == wp.id;
-                ctx.fill_card(cr, 14.0, theme::CARD_BG, if is_lock || is_desk { theme::VIOLET_LIGHT } else { theme::BORDER });
+                ctx.fill_card(cr, 14.0, theme::pal().card_bg, if is_lock || is_desk { theme::accent_light() } else { theme::pal().border });
                 let prev_r = Rect::new(cr.x + 5.0, cr.y + 5.0, cr.w - 10.0, 84.0);
-                ctx.push_clip(prev_r);
+                let _pclip = ctx.push_rrect_mask_layer(prev_r, prev_r, 9.0, 1.0);
                 let drew = wp.preview_path.as_deref().map(|p| ctx.draw_image_file(p, prev_r, 1.0)).unwrap_or(false);
                 if !drew {
-                    ctx.fill_gradient_rrect(prev_r, 9.0, theme::VIOLET_DEEP, theme::SURFACE);
+                    if wp.kind == aura_os::models::WallpaperKind::Preset {
+                        wallpaper::draw_wallpaper_preview_in_rect(ctx, &wp.file_path, prev_r);
+                    } else {
+                        ctx.fill_gradient_rrect(prev_r, 9.0, theme::accent_deep(), theme::pal().surface);
+                    }
                 }
-                ctx.pop_clip();
+                if _pclip.is_some() {
+                    ctx.pop_layer();
+                }
                 ctx.draw_text(&wp.title, Rect::new(cr.x + 10.0, cr.y + 92.0, cr.w - 20.0, 16.0), TextStyle::Small10Bold, theme::TEXT_PRIMARY);
 
                 let bw = (cr.w - 22.0) * 0.5;
                 let b1 = Rect::new(cr.x + 8.0, cr.y + 114.0, bw, 24.0);
                 let b2 = Rect::new(b1.x + bw + 6.0, cr.y + 114.0, bw, 24.0);
-                ctx.fill_rrect(b1, 8.0, if is_desk { theme::VIOLET } else { theme::ELEVATED });
+                ctx.fill_rrect(b1, 8.0, if is_desk { theme::accent() } else { theme::ELEVATED });
                 ctx.draw_text_center(if is_desk { "Escritorio ✓" } else { "Escritorio" }, b1, TextStyle::Small9Reg, theme::TEXT_PRIMARY);
                 ctx.fill_rrect(b2, 8.0, if is_lock { theme::EMERALD } else { theme::ELEVATED });
                 ctx.draw_text_center(if is_lock { "AuraLock ✓" } else { "AuraLock" }, b2, TextStyle::Small9Reg, if is_lock { theme::DARK_INK } else { theme::TEXT_PRIMARY });
@@ -2399,17 +2551,17 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 let row_i = (i / cols) as f32;
                 let r = Rect::new(cx + col_i * (sw + 10.0), y + row_i * 46.0, sw, 38.0);
                 let hov = s.hovered == Some(id);
-                ctx.fill_card(r, 11.0, if hov { theme::VIOLET } else { theme::CARD_BG }, theme::VIOLET_BORDER);
+                ctx.fill_card(r, 11.0, if hov { theme::accent() } else { theme::CARD_BG }, theme::accent_border());
                 ctx.draw_text_center(lbl, r, TextStyle::Body11Med, theme::TEXT_PRIMARY);
                 hits.push(Hit { id: id.into(), rect: r, act: SetAct::LaunchSuiteExe(exe), slider: None });
             }
             y += 2.0 * 46.0 + 10.0;
 
             let apb_r = Rect::new(cx, y, cw, 46.0);
-            ctx.fill_card(apb_r, 13.0, theme::VIOLET_TINT, theme::VIOLET_LIGHT);
+            ctx.fill_card(apb_r, 13.0, theme::accent_tint(), theme::accent_light());
             ctx.draw_text("Optimizador de Windows (APBOptimizer · OptiJuegos)", Rect::new(apb_r.x + 14.0, apb_r.y + 6.0, apb_r.w - 130.0, 18.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
             ctx.draw_text("Reduce servicios innecesarios y mejora latencia en juegos", Rect::new(apb_r.x + 14.0, apb_r.y + 24.0, apb_r.w - 130.0, 15.0), TextStyle::Small9Reg, theme::TEXT_SECONDARY);
-            ctx.draw_text_right("Ejecutar →", Rect::new(apb_r.x + apb_r.w - 108.0, apb_r.y, 92.0, 46.0), TextStyle::Body11Med, theme::VIOLET_LIGHT);
+            ctx.draw_text_right("Ejecutar →", Rect::new(apb_r.x + apb_r.w - 108.0, apb_r.y, 92.0, 46.0), TextStyle::Body11Med, theme::accent_light());
             hits.push(Hit { id: "st_apb".into(), rect: apb_r, act: SetAct::LaunchApbOptimizer, slider: None });
             y += 60.0;
 
@@ -2445,7 +2597,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 ctx.fill_card(pr, 12.0, theme::CARD_BG, theme::BORDER);
                 let ic_r = Rect::new(pr.x + 10.0, pr.y + 11.0, 24.0, 24.0);
                 if prog.icon_path.is_empty() || !ctx.draw_app_icon(&prog.icon_path, ic_r) {
-                    ctx.draw_vector_icon(VectorIcon::AppGrid, ic_r.x + 12.0, ic_r.y + 12.0, 13.0, theme::VIOLET_LIGHT);
+                    ctx.draw_vector_icon(VectorIcon::AppGrid, ic_r.x + 12.0, ic_r.y + 12.0, 13.0, theme::accent_light());
                 }
                 ctx.draw_text(&prog.name, Rect::new(pr.x + 42.0, pr.y + 6.0, pr.w - 180.0, 18.0), TextStyle::Body11Med, theme::TEXT_PRIMARY);
                 let sub = format!(
@@ -2471,7 +2623,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
         }
         Tab::Updates => {
             let uc = Rect::new(cx, y, cw, 92.0);
-            ctx.fill_card(uc, 16.0, theme::SURFACE, theme::VIOLET_BORDER);
+            ctx.fill_card(uc, 16.0, theme::SURFACE, theme::accent_border());
             ctx.draw_text(
                 &format!("AuraOS v{} (Aura Studio · AuraBeats · Motor 60 FPS)", env!("CARGO_PKG_VERSION")),
                 Rect::new(uc.x + 16.0, uc.y + 14.0, 560.0, 24.0),
@@ -2479,7 +2631,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
                 theme::TEXT_PRIMARY,
             );
             ctx.draw_text("AuraShell · AuraWallpaper · AuraBeats DAW · AuraPDF · AuraPhotos · AuraShot · AuraTasks · AuraFiles", Rect::new(uc.x + 16.0, uc.y + 42.0, cw - 32.0, 18.0), TextStyle::Body11Reg, theme::TEXT_SECONDARY);
-            ctx.draw_text("Actualizaciones automáticas silenciosas compatibles con GitHub Releases y Discord", Rect::new(uc.x + 16.0, uc.y + 63.0, cw - 32.0, 16.0), TextStyle::Small10Med, theme::VIOLET_LIGHT);
+            ctx.draw_text("Actualizaciones automáticas silenciosas compatibles con GitHub Releases y Discord", Rect::new(uc.x + 16.0, uc.y + 63.0, cw - 32.0, 16.0), TextStyle::Small10Med, theme::accent_light());
             y += 108.0;
 
             draw_toggle_row(ctx, Rect::new(cx, y, cw, 52.0), "upd_auto", "Aplicar actualizaciones automáticamente en segundo plano", "Mantiene AuraOS al día sin reinstalar manualmente", s.settings.auto_apply_updates, s.hovered, SetAct::ToggleShellSetting("auto_updates"), hits);
@@ -2488,7 +2640,7 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             ctx.draw_text("MANIFIESTO GITHUB RELEASES (URL DE VERSIONES)", Rect::new(cx, y, cw, 16.0), TextStyle::Small10Bold, theme::TEXT_TERTIARY);
             y += 22.0;
             let ur = Rect::new(cx, y, cw - 128.0, 38.0);
-            ctx.fill_card(ur, 11.0, theme::CARD_BG, if s.github_focused { theme::VIOLET_LIGHT } else { theme::BORDER });
+            ctx.fill_card(ur, 11.0, theme::CARD_BG, if s.github_focused { theme::accent_light() } else { theme::BORDER });
             let g_disp = if s.github_draft.is_empty() {
                 if s.github_focused { "|".to_string() } else { "https://api.github.com/repos/TU_USUARIO/AuraOS/releases/latest".to_string() }
             } else if s.github_focused {
@@ -2500,13 +2652,13 @@ fn render_settings_ui(ctx: &mut DrawCtx<'_>, s: &SettingsSnap<'_>, hits: &mut Ve
             hits.push(Hit { id: "upd_gh_in".into(), rect: ur, act: SetAct::FocusGithubUrl, slider: None });
 
             let sg = Rect::new(ur.x + ur.w + 10.0, y, 118.0, 38.0);
-            ctx.fill_rrect(sg, 11.0, theme::VIOLET);
+            ctx.fill_rrect(sg, 11.0, theme::accent());
             ctx.draw_text_center("Guardar URL", sg, TextStyle::Body11Med, theme::TEXT_PRIMARY);
             hits.push(Hit { id: "upd_gh_save".into(), rect: sg, act: SetAct::SaveGithubUrl, slider: None });
             y += 56.0;
 
             let b1 = Rect::new(cx, y, 220.0, 38.0);
-            ctx.fill_rrect(b1, 11.0, theme::VIOLET);
+            ctx.fill_rrect(b1, 11.0, theme::accent());
             ctx.draw_text_center("Abrir Gestor / Instalador", b1, TextStyle::Body11Med, theme::TEXT_PRIMARY);
             hits.push(Hit { id: "upd_inst".into(), rect: b1, act: SetAct::LaunchInstaller, slider: None });
 
@@ -2582,6 +2734,14 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
         let Ok(mut opt) = cell.try_borrow_mut() else { return false };
         let Some(rt) = opt.as_mut() else { return false };
 
+        if rt.wm_palette_changed != 0 && msg == rt.wm_palette_changed {
+            let _ = theme::load_active_palette();
+            rt.settings = load_settings();
+            gradient_waves::set_tuning(rt.settings.waves_speed, rt.settings.waves_relief);
+            gradient_waves::set_custom_color(&rt.settings.waves_custom_color);
+            rt.redraw();
+            return true;
+        }
         match msg {
             WM_TIMER if wparam.0 == TIMER_POLL => {
                 rt.poll_bg();
@@ -2656,8 +2816,11 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 true
             }
             WM_LBUTTONUP => {
-                if rt.active_slider.take().is_some() {
+                if let Some(sl) = rt.active_slider.take() {
                     let _ = ReleaseCapture();
+                    if matches!(sl, SliderKind::WavesSpeed { .. } | SliderKind::WavesRelief { .. }) {
+                        rt.save_and_broadcast();
+                    }
                 }
                 true
             }
@@ -2774,7 +2937,10 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
 
 fn capture_settings_png(out_png: &Path, tab: Tab) {
     let Ok(mut gpu) = GpuEngine::new() else { return };
+    let _ = theme::load_active_palette();
     let settings = load_settings();
+    gradient_waves::set_tuning(settings.waves_speed, settings.waves_relief);
+    gradient_waves::set_custom_color(&settings.waves_custom_color);
     let (sw, sh) = win32_shell::screen_size();
     let widgets = load_widgets(sw, sh);
     let custom = load_custom_items();
@@ -2919,7 +3085,10 @@ fn main() {
 
     let Ok(surf) = WindowSurface::new(&gpu, hwnd, w as u32, h as u32) else { return };
 
+    let _ = theme::load_active_palette();
     let settings = load_settings();
+    gradient_waves::set_tuning(settings.waves_speed, settings.waves_relief);
+    gradient_waves::set_custom_color(&settings.waves_custom_color);
     let widgets = load_widgets(sw, sh);
     let custom = load_custom_items();
     let wallpapers = wallpaper::scan_wallpapers(&custom);
@@ -3002,6 +3171,7 @@ fn main() {
         hostname: std::env::var("COMPUTERNAME").unwrap_or_else(|_| "AuraPC".into()),
         username: std::env::var("USERNAME").unwrap_or_else(|_| "Usuario".into()),
         cpu_cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8),
+        wm_palette_changed: win32_shell::register_palette_changed_msg(),
     };
     rt.spawn_audio_refresh();
     rt.spawn_radios_refresh();

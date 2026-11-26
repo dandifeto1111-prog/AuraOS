@@ -1,6 +1,6 @@
 ﻿param(
-    [string]$Version = "5.3.0",
-    [string]$Changelog = "v5.3.0: Correccion total de bloqueos del OS y manifiesto SxS en AuraSettings/AuraPhotos/AuraLock, fix crash 0x87a en PDF/Files, soporte multi-monitor, clic derecho en Dock con Finalizar tarea, AuraTasks con elevacion automatica y modo Admin, AuraFiles paridad total con Explorador de Windows, y suite completa de Red + Compartir Internet (Hotspot movil WinRT)."
+    [string]$Version = "5.4.0",
+    [string]$Changelog = "v5.4.0: Nuevo fondo animado por defecto Gradient Waves estilo React Bits (Ocean, Dune, Dusk, Silk, Aurora) con cambio de color en 1 clic, sliders de velocidad/relieve y adaptacion de color Material You 3 en tiempo real para todo AuraOS (Shell, Settings, Files, Tasks y Lock)."
 )
 
 $ErrorActionPreference = "Stop"

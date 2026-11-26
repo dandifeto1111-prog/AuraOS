@@ -5,7 +5,7 @@
   <p>Conserva toda la compatibilidad de juegos, DirectX, drivers y anti-cheats de Windows (Riot Vanguard, Steam, Epic), mientras reemplaza la interfaz pesada por una suite ultrarrápida estilo <em>Drool Dark Mode</em>.</p>
 
   <p>
-    <a href="https://github.com/dandifeto1111-prog/AuraOS/releases/latest"><img src="https://img.shields.io/badge/Release-v5.3.0-7C5CFF?style=for-the-badge&logo=github" alt="Release v5.3.0" /></a>
+    <a href="https://github.com/dandifeto1111-prog/AuraOS/releases/latest"><img src="https://img.shields.io/badge/Release-v5.4.0-38BDF8?style=for-the-badge&logo=github" alt="Release v5.4.0" /></a>
     <img src="https://img.shields.io/badge/100%25_Rust-Direct2D_%2B_DirectComposition-F4727F?style=for-the-badge&logo=rust" alt="100% Rust" />
     <img src="https://img.shields.io/badge/OS-Windows_11_x64-34D399?style=for-the-badge&logo=windows11" alt="Windows 11" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-FBBF24?style=for-the-badge" alt="MIT License" /></a>
@@ -22,9 +22,28 @@ Cada aplicación del sistema está acelerada por hardware con **Direct2D y Direc
 
 ---
 
-## 🖼️ Galería del Sistema y Novedades (`v5.3.0`)
+## 🖼️ Galería del Sistema y Novedades (`v5.4.0`)
 
-### 🚀 Nuevo en `v5.3.0`: Cero Bloqueos + Multi-Monitor, Paridad Total en `AuraFiles`, Menú Dock «Finalizar tarea», `AuraTasks` Admin y Redes + Compartir Internet (Hotspot)
+### 🌊 Nuevo en `v5.4.0`: Fondo Animado `Gradient Waves` por Defecto + Adaptación de Color en Todo AuraOS
+- **`Gradient Waves` (estilo React Bits, 100 % Rust nativo sin conexión):** Pliegues sedosos iluminados direccionalmente a 30 FPS (~1 ms/frame) con **5 presets** (**Ocean** por defecto, **Dune**, **Dusk**, **Silk**, **Aurora**), **8 colores adaptativos en 1 clic** y controles en vivo de **Velocidad** (`0×–2×`) y **Relieve** (`0.4×–1.6×`) en `Overview → Fondos`, `AuraSettings → Fondos y AuraLock` y `AuraLock`.
+- **Paleta Dinámica en Todo el Sistema:** Cambia el preset o el color de las ondas y **toda la suite cambia de color al instante** (TopBar, Dock, Centro de Control, Widgets, Overview, ventanas de Windows, `AuraSettings`, `AuraFiles`, `AuraTasks` y `AuraLock`) mediante Material You 3 + `WM_AURAOS_PALETTE_CHANGED`.
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/v54_waves_ocean.png" alt="AuraOS v5.4.0 Gradient Waves Ocean — Fondo por defecto con paleta adaptativa Ocean" /></td>
+    <td><img src="docs/screenshots/v54_waves_aurora.png" alt="AuraOS v5.4.0 Gradient Waves Aurora — Paleta adaptativa Aurora Esmeralda" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><strong>Gradient Waves · Ocean (Default):</strong> Ondas sedosas 30 FPS con adaptación automática de barra, Dock y widgets en azul Ocean</sub></td>
+    <td align="center"><sub><strong>Gradient Waves · Aurora:</strong> Al cambiar de preset o color, todo AuraOS cambia de paleta al instante</sub></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/v54_studio_waves.png" alt="AuraOS v5.4.0 Overview Fondos — Selector de presets y 8 colores adaptativos en 1 clic" width="100%" />
+</p>
+
+### 🚀 v5.3.0: Cero Bloqueos + Multi-Monitor, Paridad Total en `AuraFiles`, Menú Dock «Finalizar tarea», `AuraTasks` Admin y Redes + Compartir Internet (Hotspot)
 - **Estabilidad Blindada (0 congelamientos):** Reparada la alineación PE `.rsrc` (`RT_MANIFEST` XML íntegro en los 11 binarios: `AuraSettings`, `AuraPhotos`, `AuraLock` ya abren siempre al instante), lanzamiento 100% asíncrono sin bloquear `AuraShell`/`WH_KEYBOARD_LL`, cierre inmediato de Launchpad al abrir apps, Watchdog de overlays, fix de multi-monitor (`MONITORINFOF_PRIMARY`) y fix del crash `0x0000087a` en `AuraPDF`/`AuraFiles` (WinRT MTA dedicado).
 - **Dock con Clic Derecho «Finalizar tarea (Forzar cierre)»:** Haz clic derecho en cualquier app abierta de la barra de tareas para enfocar, minimizar, abrir nueva instancia, abrir carpeta o **forzar el cierre del árbol de procesos** al instante.
 - **`AuraTasks` sin bloqueos de permisos:** `SeDebugPrivilege`, botón **`Modo Admin`**, elevación UAC automática al finalizar tareas o servicios protegidos y menú contextual clic derecho por proceso.

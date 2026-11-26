@@ -51,6 +51,10 @@ pub struct ShellSettings {
     pub night_light: bool,
     pub brightness_pct: i32,
     pub keep_awake: bool,
+    // v5.4: React Bits-style Gradient Waves live tuning (multipliers + optional custom hex color)
+    pub waves_speed: f32,
+    pub waves_relief: f32,
+    pub waves_custom_color: String, // "" = active preset color, or "#RRGGBB" override
 }
 
 impl Default for ShellSettings {
@@ -69,7 +73,7 @@ impl Default for ShellSettings {
             wallpaper_id: if low_spec {
                 "preset:matte_grid".to_string()
             } else {
-                "preset:aura_obsidian_flow".to_string()
+                "preset:waves_ocean".to_string()
             },
             wallpaper_auto_pause: true,
             auto_apply_updates: true,
@@ -90,6 +94,9 @@ impl Default for ShellSettings {
             night_light: false,
             brightness_pct: 100,
             keep_awake: false,
+            waves_speed: 1.0,
+            waves_relief: 1.0,
+            waves_custom_color: String::new(),
         }
     }
 }

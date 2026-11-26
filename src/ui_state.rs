@@ -113,6 +113,7 @@ pub enum Action {
 
     // Wallpapers & Desktop Widgets Studio
     SelectWallpaper(String),
+    SetWavesCustomColor(String),
     AddCustomWallpaperFile,
     ToggleWidget(WidgetKind),
     ResizeWidget(WidgetKind, i8), // -1 or +1

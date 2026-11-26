@@ -1188,6 +1188,24 @@ pub fn notify_shell_settings_changed() {
     }
 }
 
+pub fn register_palette_changed_msg() -> u32 {
+    use windows::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW;
+    unsafe {
+        let m = to_wide("WM_AURAOS_PALETTE_CHANGED");
+        RegisterWindowMessageW(PCWSTR(m.as_ptr()))
+    }
+}
+
+pub fn notify_palette_changed() {
+    use windows::Win32::UI::WindowsAndMessaging::{SendNotifyMessageW, HWND_BROADCAST};
+    let msg = register_palette_changed_msg();
+    if msg != 0 {
+        unsafe {
+            let _ = SendNotifyMessageW(HWND_BROADCAST, msg, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
 // Native Windows Power Actions
 pub fn power_lock() {
     unsafe {

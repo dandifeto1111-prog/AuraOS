@@ -1308,7 +1308,7 @@ fn render_tasks_ui(ctx: &mut DrawCtx<'_>, w: f32, h: f32, s: &RenderSnap, hits: 
         ctx.fill_card(adm_r, 10.0, theme::rgba(16, 185, 129, 0.20), theme::EMERALD);
         ctx.draw_text_center("Admin Activo", adm_r, TextStyle::Small10Bold, theme::EMERALD);
     } else {
-        ctx.fill_card(adm_r, 10.0, if adm_hov { theme::VIOLET } else { theme::VIOLET_TINT }, theme::VIOLET_LIGHT);
+        ctx.fill_card(adm_r, 10.0, if adm_hov { theme::accent() } else { theme::accent_tint() }, theme::accent_light());
         ctx.draw_text_center("Modo Admin", adm_r, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
         hits.push(Hit { id: "btn_admin".into(), rect: adm_r, act: TaskAct::RelaunchAsAdmin });
     }
@@ -1340,10 +1340,10 @@ fn render_tasks_ui(ctx: &mut DrawCtx<'_>, w: f32, h: f32, s: &RenderSnap, hits: 
         ctx.fill_card(
             tr,
             11.0,
-            if active { theme::VIOLET_TINT } else if hov { theme::ELEVATED_HOVER } else { theme::rgba(0, 0, 0, 0.0) },
-            if active { theme::VIOLET_LIGHT } else { theme::rgba(0, 0, 0, 0.0) },
+            if active { theme::accent_tint() } else if hov { theme::ELEVATED_HOVER } else { theme::rgba(0, 0, 0, 0.0) },
+            if active { theme::accent_light() } else { theme::rgba(0, 0, 0, 0.0) },
         );
-        ctx.draw_vector_icon(ic, tr.x + 18.0, tr.y + 19.0, 14.0, if active { theme::VIOLET_LIGHT } else { theme::TEXT_SECONDARY });
+        ctx.draw_vector_icon(ic, tr.x + 18.0, tr.y + 19.0, 14.0, if active { theme::accent_light() } else { theme::TEXT_SECONDARY });
         ctx.draw_text(
             lbl,
             Rect::new(tr.x + 36.0, tr.y + 10.0, tr.w - 44.0, 18.0),
@@ -1360,8 +1360,8 @@ fn render_tasks_ui(ctx: &mut DrawCtx<'_>, w: f32, h: f32, s: &RenderSnap, hits: 
     ctx.fill_card(
         opt_r,
         12.0,
-        if opt_hov { theme::VIOLET_LIGHT } else { theme::VIOLET },
-        theme::VIOLET_LIGHT,
+        if opt_hov { theme::accent_light() } else { theme::accent() },
+        theme::accent_light(),
     );
     ctx.draw_text_center("Optimizar RAM", opt_r, TextStyle::Body12Semi, theme::CRISP_WHITE);
     hits.push(Hit { id: "sb_trim_ram".into(), rect: opt_r, act: TaskAct::GlobalTrimRam });
@@ -1398,12 +1398,12 @@ fn render_tasks_ui(ctx: &mut DrawCtx<'_>, w: f32, h: f32, s: &RenderSnap, hits: 
         let mx = cm.x.clamp(8.0, (w - mw - 8.0).max(8.0));
         let my = cm.y.clamp(TOP_BAR_H + 6.0, (h - mh - 8.0).max(TOP_BAR_H + 6.0));
         let mr = Rect::new(mx, my, mw, mh);
-        ctx.fill_card(mr, 14.0, theme::rgba(16, 16, 26, 0.98), theme::VIOLET_BORDER);
+        ctx.fill_card(mr, 14.0, theme::rgba(16, 16, 26, 0.98), theme::accent_border());
         ctx.draw_text(
             &format!("{} · PID {}", cm.name, cm.pid),
             Rect::new(mx + 12.0, my + 8.0, mw - 24.0, 18.0),
             TextStyle::Small10Bold,
-            theme::VIOLET_LIGHT,
+            theme::accent_light(),
         );
         ctx.draw_line(mx + 10.0, my + 30.0, mx + mw - 10.0, my + 30.0, theme::BORDER, 1.0);
         let mut cy_m = my + 34.0;
@@ -1453,7 +1453,7 @@ fn render_search_bar(ctx: &mut DrawCtx<'_>, r: Rect, s: &RenderSnap, placeholder
         r,
         11.0,
         theme::ELEVATED,
-        if s.search_focused { theme::VIOLET_LIGHT } else { theme::BORDER },
+        if s.search_focused { theme::accent_light() } else { theme::BORDER },
     );
     ctx.draw_vector_icon(VectorIcon::Search, r.x + 16.0, r.y + r.h * 0.5, 12.0, theme::TEXT_TERTIARY);
     let txt = if s.search.is_empty() {
@@ -1498,8 +1498,8 @@ fn render_processes_tab(ctx: &mut DrawCtx<'_>, x: f32, y: f32, w: f32, h: f32, s
         ctx.fill_card(
             fr,
             10.0,
-            if active { theme::VIOLET } else { theme::ELEVATED },
-            if active { theme::VIOLET_LIGHT } else { theme::BORDER },
+            if active { theme::accent() } else { theme::ELEVATED },
+            if active { theme::accent_light() } else { theme::BORDER },
         );
         ctx.draw_text_center(lbl, fr, TextStyle::Small10Bold, if active { theme::CRISP_WHITE } else { theme::TEXT_SECONDARY });
         hits.push(Hit { id, rect: fr, act: TaskAct::SetFilter(f) });
@@ -1527,7 +1527,7 @@ fn render_processes_tab(ctx: &mut DrawCtx<'_>, x: f32, y: f32, w: f32, h: f32, s
             &format!("{}{}", title, arrow),
             Rect::new(cx, hy + 10.0, cw, 16.0),
             TextStyle::Small10Bold,
-            if s.sort_col == col { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY },
+            if s.sort_col == col { theme::accent_light() } else { theme::TEXT_TERTIARY },
         );
         hits.push(Hit { id: format!("col_{:?}", col as u8), rect: hr, act: TaskAct::SortBy(col) });
     }
@@ -1553,8 +1553,8 @@ fn render_processes_tab(ctx: &mut DrawCtx<'_>, x: f32, y: f32, w: f32, h: f32, s
             ctx.fill_card(
                 rr,
                 9.0,
-                if sel { theme::VIOLET_TINT } else { theme::ELEVATED_HOVER },
-                if sel { theme::VIOLET_LIGHT } else { theme::BORDER },
+                if sel { theme::accent_tint() } else { theme::ELEVATED_HOVER },
+                if sel { theme::accent_light() } else { theme::BORDER },
             );
         }
 
@@ -1569,7 +1569,7 @@ fn render_processes_tab(ctx: &mut DrawCtx<'_>, x: f32, y: f32, w: f32, h: f32, s
         let ram_col = if p.ram_mb >= 600.0 { theme::CORAL } else if p.ram_mb >= 200.0 { theme::AMBER } else { theme::TEXT_SECONDARY };
         ctx.draw_text(&format!("{:.0} MB", p.ram_mb), Rect::new(x + 146.0 + col_name_w, ry + 8.0, 82.0, 18.0), TextStyle::Body12Med, ram_col);
 
-        let st_col = if p.priority == "Eco" { theme::EMERALD } else if p.priority == "Alta" { theme::VIOLET_LIGHT } else { theme::TEXT_TERTIARY };
+        let st_col = if p.priority == "Eco" { theme::EMERALD } else if p.priority == "Alta" { theme::accent_light() } else { theme::TEXT_TERTIARY };
         ctx.draw_text(p.priority, Rect::new(x + 232.0 + col_name_w, ry + 8.0, 64.0, 18.0), TextStyle::Small10Bold, st_col);
 
         hits.push(Hit { id, rect: rr, act: TaskAct::SelectPid(p.pid) });
@@ -1590,7 +1590,7 @@ fn render_processes_tab(ctx: &mut DrawCtx<'_>, x: f32, y: f32, w: f32, h: f32, s
             ("act_susp", if is_susp { "Reanudar" } else { "Suspender" }, theme::ELEVATED, TaskAct::ToggleSuspendPid(pid)),
             ("act_prio", "Prioridad", theme::ELEVATED, TaskAct::CyclePriorityPid(pid)),
             ("act_trim", "Liberar RAM", theme::ELEVATED, TaskAct::TrimRamPid(pid)),
-            ("act_path", "Abrir ruta", theme::VIOLET, TaskAct::OpenPathPid(pid)),
+            ("act_path", "Abrir ruta", theme::accent(), TaskAct::OpenPathPid(pid)),
         ];
         let mut bx = x + 10.0;
         for (id, lbl, bg, act) in btns {
@@ -1617,7 +1617,7 @@ fn render_performance_tab(ctx: &mut DrawCtx<'_>, x: f32, y: f32, w: f32, h: f32,
         &format!("{:.0}%", s.cpu_pct),
         &s.cpu_brand,
         &s.cpu_hist,
-        theme::VIOLET_LIGHT,
+        theme::accent_light(),
         theme::rgba(124, 92, 255, 0.16),
     );
 
@@ -1659,7 +1659,7 @@ fn render_performance_tab(ctx: &mut DrawCtx<'_>, x: f32, y: f32, w: f32, h: f32,
             let x2 = gx + (i + 1) as f32 * step;
             let y1 = gy + gh - (s.net_tx_hist[i].clamp(0.0, 100.0) / 100.0) * (gh - 6.0) - 3.0;
             let y2 = gy + gh - (s.net_tx_hist[i + 1].clamp(0.0, 100.0) / 100.0) * (gh - 6.0) - 3.0;
-            ctx.draw_line(x1, y1, x2, y2, theme::VIOLET_LIGHT, 1.8);
+            ctx.draw_line(x1, y1, x2, y2, theme::accent_light(), 1.8);
         }
     }
 
@@ -1671,7 +1671,7 @@ fn render_performance_tab(ctx: &mut DrawCtx<'_>, x: f32, y: f32, w: f32, h: f32,
     } else {
         s.gpu_name.clone()
     };
-    ctx.draw_text(&gpu_sub, Rect::new(rcard.x + 16.0, rcard.y + 32.0, rcard.w - 32.0, 18.0), TextStyle::Body12Semi, theme::VIOLET_LIGHT);
+    ctx.draw_text(&gpu_sub, Rect::new(rcard.x + 16.0, rcard.y + 32.0, rcard.w - 32.0, 18.0), TextStyle::Body12Semi, theme::accent_light());
 
     let mut dy = rcard.y + 60.0;
     for d in &s.drives {
@@ -1684,7 +1684,7 @@ fn render_performance_tab(ctx: &mut DrawCtx<'_>, x: f32, y: f32, w: f32, h: f32,
         );
         let map_r = Rect::new(rcard.x + rcard.w - 90.0, dy - 2.0, 76.0, 22.0);
         ctx.fill_card(map_r, 7.0, theme::ELEVATED, theme::BORDER);
-        ctx.draw_text_center("Analizar", map_r, TextStyle::Small10Bold, theme::VIOLET_LIGHT);
+        ctx.draw_text_center("Analizar", map_r, TextStyle::Small10Bold, theme::accent_light());
         hits.push(Hit { id: format!("drv_{}", d.letter), rect: map_r, act: TaskAct::AnalyzeDrive(d.letter.clone()) });
 
         let bar = Rect::new(rcard.x + 16.0, dy + 20.0, rcard.w - 32.0, 6.0);
@@ -1693,7 +1693,7 @@ fn render_performance_tab(ctx: &mut DrawCtx<'_>, x: f32, y: f32, w: f32, h: f32,
         ctx.fill_rrect(
             Rect::new(bar.x, bar.y, fill_w, 6.0),
             3.0,
-            if d.used_pct > 85.0 { theme::CORAL } else { theme::VIOLET },
+            if d.used_pct > 85.0 { theme::CORAL } else { theme::accent() },
         );
         dy += 36.0;
     }
@@ -1730,7 +1730,7 @@ fn render_network_tab(ctx: &mut DrawCtx<'_>, x: f32, y: f32, w: f32, h: f32, s: 
     for (i, c) in list.iter().enumerate() {
         let ry = clip.y + i as f32 * rh - scroll;
         if ry + rh < clip.y || ry > clip.y + clip.h { continue; }
-        ctx.draw_text(&format!(":{}", c.local_port), Rect::new(x + 14.0, ry + 8.0, 74.0, 18.0), TextStyle::Body12Semi, theme::VIOLET_LIGHT);
+        ctx.draw_text(&format!(":{}", c.local_port), Rect::new(x + 14.0, ry + 8.0, 74.0, 18.0), TextStyle::Body12Semi, theme::accent_light());
         ctx.draw_text(&format!("{} ({})", c.proc_name, c.pid), Rect::new(x + 92.0, ry + 8.0, 200.0, 18.0), TextStyle::Body12Med, theme::TEXT_PRIMARY);
         let ep = if c.state == "ESCUCHANDO" {
             format!("{}:{}", c.local_addr, c.local_port)
@@ -1805,8 +1805,8 @@ fn render_services_tab(ctx: &mut DrawCtx<'_>, x: f32, y: f32, w: f32, h: f32, s:
     ctx.fill_card(
         filt_r,
         10.0,
-        if s.svc_only_running { theme::VIOLET } else { theme::ELEVATED },
-        if s.svc_only_running { theme::VIOLET_LIGHT } else { theme::BORDER },
+        if s.svc_only_running { theme::accent() } else { theme::ELEVATED },
+        if s.svc_only_running { theme::accent_light() } else { theme::BORDER },
     );
     ctx.draw_text_center(
         if s.svc_only_running { "Solo activos" } else { "Todos los servicios" },
@@ -1848,8 +1848,8 @@ fn render_services_tab(ctx: &mut DrawCtx<'_>, x: f32, y: f32, w: f32, h: f32, s:
         ctx.fill_card(
             rr,
             9.0,
-            if sel { theme::VIOLET_TINT } else { theme::ELEVATED },
-            if sel { theme::VIOLET_LIGHT } else { theme::BORDER },
+            if sel { theme::accent_tint() } else { theme::ELEVATED },
+            if sel { theme::accent_light() } else { theme::BORDER },
         );
         ctx.draw_text(&sv.display, Rect::new(rr.x + 12.0, rr.y + 4.0, rr.w - 190.0, 17.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
         let sub = if sv.pid > 0 { format!("{} · PID {}", sv.name, sv.pid) } else { sv.name.clone() };
@@ -1916,6 +1916,12 @@ unsafe extern "system" fn tasks_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
     let handled = TASKS_RT.with(|cell| {
         let Ok(mut opt) = cell.try_borrow_mut() else { return false };
         let Some(rt) = opt.as_mut() else { return false };
+        let pal_msg = WM_PALETTE_CHANGED.load(std::sync::atomic::Ordering::Relaxed);
+        if pal_msg != 0 && msg == pal_msg {
+            let _ = theme::load_active_palette();
+            rt.redraw();
+            return true;
+        }
         match msg {
             WM_TIMER if wparam.0 == TIMER_REFRESH => {
                 rt.poll_bg();
@@ -2137,12 +2143,16 @@ fn run_capture(out_path: &Path, perf_tab: bool) {
     });
 }
 
+static WM_PALETTE_CHANGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 fn main() {
     unsafe {
         let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
             windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         );
     }
+    let _ = theme::load_active_palette();
+    WM_PALETTE_CHANGED.store(win32_shell::register_palette_changed_msg(), std::sync::atomic::Ordering::Relaxed);
     let args: Vec<String> = std::env::args().collect();
     if let Some(pos) = args.iter().position(|a| a == "--capture") {
         let out = args.get(pos + 1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("auratasks.png"));

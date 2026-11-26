@@ -10,6 +10,7 @@
 
 use aura_os::audio;
 use aura_os::aura_window;
+use aura_os::gradient_waves;
 use aura_os::models::{
     hash_lock_pin, load_custom_items, load_settings, save_settings, NowPlaying, ShellSettings,
     WallpaperItem, WallpaperKind, WeatherInfo,
@@ -459,21 +460,8 @@ fn render_lock_screen(
     }
 
     if !drew_media {
-        // Rich 60 FPS GPU animated AuraOS Lock Screen canvas!
-        let (c1, c2, glow_a, glow_b) = if active_wp_id.contains("emerald") {
-            (theme::rgb(8, 16, 18), theme::rgb(14, 34, 32), theme::rgba(52, 211, 153, 0.24), theme::rgba(96, 165, 250, 0.16))
-        } else if active_wp_id.contains("midnight") {
-            (theme::rgb(9, 10, 18), theme::rgb(20, 16, 38), theme::rgba(96, 165, 250, 0.24), theme::rgba(124, 92, 255, 0.20))
-        } else {
-            (theme::rgb(10, 9, 18), theme::rgb(24, 15, 44), theme::rgba(124, 92, 255, 0.30), theme::rgba(242, 109, 125, 0.16))
-        };
-        ctx.fill_gradient_rrect(full, 0.0, c1, c2);
-        let gx1 = w * (0.28 + 0.08 * (phase * 0.28).sin());
-        let gy1 = h * (0.30 + 0.06 * (phase * 0.22).cos());
-        ctx.fill_radial_glow(gx1, gy1, w * 0.45, glow_a, theme::rgba(0, 0, 0, 0.0));
-        let gx2 = w * (0.74 + 0.07 * (phase * 0.24).cos());
-        let gy2 = h * (0.68 + 0.07 * (phase * 0.31).sin());
-        ctx.fill_radial_glow(gx2, gy2, w * 0.42, glow_b, theme::rgba(0, 0, 0, 0.0));
+        let preset_key = active_wp_id.strip_prefix("preset:").unwrap_or("waves_ocean");
+        wallpaper::draw_wallpaper_frame(ctx, aura_os::models::WallpaperKind::Preset, preset_key, w, h, phase);
     }
 
     // Cinematic dark scrim for effortless readability on bright wallpapers
@@ -499,7 +487,7 @@ fn render_lock_screen(
     // Top-right subtle brand & status pill
     let top_r = Rect::new(w - 178.0, 16.0, 160.0, 24.0);
     ctx.fill_card(top_r, 12.0, theme::rgba(14, 14, 22, 0.62), theme::rgba(255, 255, 255, 0.12));
-    ctx.draw_vector_icon(VectorIcon::Lock, top_r.x + 16.0, top_r.y + 12.0, 10.5, theme::VIOLET_LIGHT);
+    ctx.draw_vector_icon(VectorIcon::Lock, top_r.x + 16.0, top_r.y + 12.0, 10.5, theme::accent_light());
     ctx.draw_text("AuraLock · v4.5", Rect::new(top_r.x + 28.0, top_r.y, 126.0, 24.0), TextStyle::Small10Bold, theme::TEXT_PRIMARY);
 
     // 3. MACOS SONOMA HERO CLOCK & DATE AT TOP CENTER
@@ -536,9 +524,9 @@ fn render_lock_screen(
     if show_media && np.active {
         let mw = 340.0;
         let mr = Rect::new((w - mw) * 0.5, clock_y + 166.0, mw, 58.0);
-        ctx.fill_card(mr, 18.0, theme::rgba(18, 18, 28, 0.78), theme::VIOLET_BORDER);
+        ctx.fill_card(mr, 18.0, theme::rgba(18, 18, 28, 0.78), theme::accent_border());
         let ic = Rect::new(mr.x + 12.0, mr.y + 11.0, 36.0, 36.0);
-        ctx.fill_gradient_rrect(ic, 11.0, theme::VIOLET_LIGHT, theme::VIOLET_DEEP);
+        ctx.fill_gradient_rrect(ic, 11.0, theme::accent_light(), theme::accent_deep());
         ctx.draw_vector_icon(VectorIcon::MusicNote, ic.x + 18.0, ic.y + 18.0, 15.0, theme::TEXT_PRIMARY);
         ctx.draw_text(&np.title, Rect::new(mr.x + 58.0, mr.y + 10.0, 174.0, 19.0), TextStyle::Body12Semi, theme::TEXT_PRIMARY);
         ctx.draw_text(
@@ -585,7 +573,7 @@ fn render_lock_screen(
         if _l.is_some() { ctx.pop_layer(); }
     }
     if !drew_avatar {
-        ctx.fill_circle(av_cx, av_cy, av_r, theme::VIOLET);
+        ctx.fill_circle(av_cx, av_cy, av_r, theme::accent());
         let initial = username.chars().next().unwrap_or('A').to_uppercase().to_string();
         ctx.draw_text_center(&initial, Rect::new(av_cx - av_r, av_cy - 18.0, av_r * 2.0, 36.0), TextStyle::Title22Bold, theme::TEXT_PRIMARY);
     }
@@ -604,7 +592,7 @@ fn render_lock_screen(
             pin_r,
             21.0,
             theme::rgba(18, 18, 28, 0.84),
-            if shake_t > 0.0 { theme::CORAL } else { theme::VIOLET_LIGHT },
+            if shake_t > 0.0 { theme::CORAL } else { theme::accent_light() },
         );
         let display = if input_len == 0 {
             if use_win_pwd && !has_custom_pwd {
@@ -622,7 +610,7 @@ fn render_lock_screen(
             if input_len == 0 { theme::TEXT_TERTIARY } else { theme::TEXT_PRIMARY },
         );
         let go_r = Rect::new(pin_r.x + pin_r.w - 36.0, pin_r.y + 6.0, 30.0, 30.0);
-        ctx.fill_rrect(go_r, 15.0, theme::VIOLET);
+        ctx.fill_rrect(go_r, 15.0, theme::accent());
         ctx.draw_vector_icon(VectorIcon::ChevronRight, go_r.x + 15.0, go_r.y + 15.0, 12.0, theme::TEXT_PRIMARY);
         hits.push(Hit { id: "lk_go".into(), rect: go_r, act: LockAct::UnlockAttempt });
     } else {
@@ -631,7 +619,7 @@ fn render_lock_screen(
         ctx.fill_card(
             btn_r,
             20.0,
-            if hov { theme::VIOLET_LIGHT } else { theme::VIOLET },
+            if hov { theme::accent_light() } else { theme::accent() },
             theme::rgba(255, 255, 255, 0.24),
         );
         ctx.draw_text_center("Desbloquear AuraOS", btn_r, TextStyle::Body12Semi, theme::TEXT_PRIMARY);
@@ -673,7 +661,7 @@ fn render_lock_screen(
             br,
             17.0,
             if is_danger { theme::CORAL_BG } else if hov { theme::ELEVATED } else { theme::rgba(16, 16, 24, 0.72) },
-            if is_danger { theme::CORAL } else if hov { theme::VIOLET_LIGHT } else { theme::rgba(255, 255, 255, 0.14) },
+            if is_danger { theme::CORAL } else if hov { theme::accent_light() } else { theme::rgba(255, 255, 255, 0.14) },
         );
         ctx.draw_vector_icon(icon, br.x + 16.0, br.y + 17.0, 12.0, if is_danger { theme::CORAL } else { theme::TEXT_PRIMARY });
         ctx.draw_text(lbl, Rect::new(br.x + 28.0, br.y, br.w - 34.0, 34.0), TextStyle::Small10Bold, if is_danger { theme::CORAL } else { theme::TEXT_PRIMARY });
@@ -686,11 +674,11 @@ fn render_lock_screen(
         let dw = 540.0f32.min(w - 48.0);
         let dh = 264.0;
         let dr = Rect::new(w - dw - 20.0, py - dh - 12.0, dw, dh);
-        ctx.fill_card(dr, 20.0, theme::rgba(15, 15, 23, 0.94), theme::VIOLET_BORDER);
+        ctx.fill_card(dr, 20.0, theme::rgba(15, 15, 23, 0.94), theme::accent_border());
         ctx.draw_text("Fondos de AuraLock", Rect::new(dr.x + 18.0, dr.y + 14.0, 200.0, 20.0), TextStyle::Title14Semi, theme::TEXT_PRIMARY);
 
         let browse_r = Rect::new(dr.x + dr.w - 176.0, dr.y + 11.0, 160.0, 26.0);
-        ctx.fill_rrect(browse_r, 10.0, theme::VIOLET);
+        ctx.fill_rrect(browse_r, 10.0, theme::accent());
         ctx.draw_text_center("+ Elegir imagen/video", browse_r, TextStyle::Small10Bold, theme::TEXT_PRIMARY);
         hits.push(Hit { id: "lk_pick_file".into(), rect: browse_r, act: LockAct::PickLocalWallpaper });
 
@@ -703,12 +691,16 @@ fn render_lock_screen(
             let row = i / cols;
             let cr = Rect::new(dr.x + 18.0 + col as f32 * (cw + 8.0), dr.y + 48.0 + row as f32 * (ch + 10.0), cw, ch);
             let active = wp.id == active_wp_id;
-            ctx.fill_card(cr, 12.0, theme::CARD_BG, if active { theme::VIOLET_LIGHT } else { theme::BORDER });
+            ctx.fill_card(cr, 12.0, theme::CARD_BG, if active { theme::accent_light() } else { theme::BORDER });
             let img_r = Rect::new(cr.x + 4.0, cr.y + 4.0, cr.w - 8.0, cr.h - 26.0);
             ctx.push_clip(img_r);
             let drew = wp.preview_path.as_deref().map(|p| ctx.draw_image_file(p, img_r, 1.0)).unwrap_or(false);
             if !drew {
-                ctx.fill_gradient_rrect(img_r, 8.0, theme::VIOLET_DEEP, theme::CARD_BG);
+                if wp.kind == aura_os::models::WallpaperKind::Preset {
+                    wallpaper::draw_wallpaper_preview_in_rect(ctx, &wp.file_path, img_r);
+                } else {
+                    ctx.fill_gradient_rrect(img_r, 8.0, theme::accent_deep(), theme::CARD_BG);
+                }
             }
             ctx.pop_clip();
             ctx.draw_text(&wp.title, Rect::new(cr.x + 8.0, cr.y + cr.h - 20.0, cr.w - 16.0, 16.0), TextStyle::Small9Reg, theme::TEXT_PRIMARY);
@@ -858,7 +850,10 @@ unsafe extern "system" fn lock_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
 
 fn capture_lock_png(out_png: &Path) {
     let Ok(mut gpu) = GpuEngine::new() else { return };
+    let _ = theme::load_active_palette();
     let settings = load_settings();
+    gradient_waves::set_tuning(settings.waves_speed, settings.waves_relief);
+    gradient_waves::set_custom_color(&settings.waves_custom_color);
     let custom = load_custom_items();
     let wallpapers = wallpaper::scan_wallpapers(&custom);
     let active_wp = if settings.lock_wallpaper_id.trim().is_empty() {
@@ -941,7 +936,10 @@ fn main() {
     let Ok(mut gpu) = GpuEngine::new() else { return };
     gpu.enable_async_loader();
     let (sw, sh) = win32_shell::screen_size();
+    let _ = theme::load_active_palette();
     let settings = load_settings();
+    gradient_waves::set_tuning(settings.waves_speed, settings.waves_relief);
+    gradient_waves::set_custom_color(&settings.waves_custom_color);
     let custom = load_custom_items();
     let wallpapers = wallpaper::scan_wallpapers(&custom);
     gpu.prewarm_images(wallpapers.iter().filter_map(|w| w.preview_path.clone()));

@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version tag (e.g. 5.3.0)"
+        description: "Version tag (e.g. 5.4.0)"
         required: true
-        default: "5.3.0"
+        default: "5.4.0"
 
 permissions:
   contents: write
@@ -64,7 +64,7 @@ jobs:
             DownloadUrl = "https://github.com/$repo/releases/download/$tag/$zipName"
             SetupUrl = "https://github.com/$repo/releases/download/$tag/AuraShell-Setup.exe"
             Sha256 = $hash
-            Changelog = "AuraOS v$v - Cero bloqueos Launchpad/Settings, fix manifiesto SxS y PDF 0x87a, soporte multi-monitor, clic derecho Dock Finalizar tarea, AuraTasks Admin automatico, AuraFiles paridad Explorador Windows, y Redes + Compartir Internet (Hotspot movil WinRT)."
+            Changelog = "AuraOS v$v - Nuevo fondo animado por defecto Gradient Waves estilo React Bits (Ocean, Dune, Dusk, Silk, Aurora) con cambio de color en 1 clic, sliders de velocidad/relieve y adaptacion de color Material You 3 en tiempo real para toda la suite."
           }
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
           [System.IO.File]::WriteAllText((Join-Path $PWD "dist\latest.json"), ($manifest | ConvertTo-Json -Depth 4), $utf8NoBom)

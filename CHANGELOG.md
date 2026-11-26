@@ -1,5 +1,15 @@
 # Historial de Versiones — AuraOS
 
+## v5.4.0 (2026-11-26)
+- **Nuevo Fondo Animado Principal por Defecto: `Gradient Waves` estilo React Bits (`src/gradient_waves.rs`, `src/wallpaper.rs`):**
+  - Motor procedural 100 % nativo en Rust + reescalado bilineal Direct2D (~1 ms por frame, sin WebView ni Chromium, 100 % sin conexión y con auto-pausa a 0 % GPU).
+  - **5 presets oficiales estilo React Bits** con iluminación direccional y pliegues sedosos en movimiento: **Ocean** (`#38BDF8`, nuevo fondo por defecto de AuraOS), **Dune** (`#FB923C`), **Dusk** (`#8B5CF6`), **Silk** (`#D4D4DC`) y **Aurora** (`#34D399`).
+  - **Controles en vivo:** selector de presets, **8 colores adaptativos en 1 clic** (*Ocean, Aurora, Dusk, Dune, Rosa, Cian, Oro, Seda*) y sliders de **Velocidad** (`0×` pausado hasta `2×`) y **Relieve** (`0.4×–1.6×`) en **`AuraSettings → Fondos y AuraLock`** y en el panel de escritorio **`Overview → Fondos`**.
+- **Adaptación Total de Color en Tiempo Real (Material You 3 Global en toda la Suite):**
+  - Al cambiar el preset o el color de `Gradient Waves`, **todo AuraOS se adapta al instante** sin reiniciar apps: barra superior, Dock, Centro de Control, widgets del escritorio, Overview/Fondos, barras de título de ventanas de Windows, **`AuraSettings`**, **`AuraFiles`**, **`AuraTasks`** y **`AuraLock`** (mediante evento nativo `WM_AURAOS_PALETTE_CHANGED`).
+  - Paleta `ThemePalette::from_seed_hsl` afinada con contraste AA automático en tonos cian/esmeralda/ámbar y modo monocromático seda automático para `Silk`.
+- **`AuraLock` sincronizado con `Gradient Waves` (`src/bin/aura_lock.rs`):** la pantalla de bloqueo ahora renderiza las mismas ondas animadas en vivo y muestra miniaturas reales de cada preset.
+
 ## v5.3.0 (2026-11-25)
 - **Corrección Total de Bloqueos del Sistema (Launchpad → Configuración), Multi-Monitor y Crash SxS / PDF:**
   - **Fix crítico de manifiesto PE `.rsrc` (`build.rs`):** Alineación de recursos a 8/16 bytes (`IMAGE_SCN_ALIGN_8BYTES`) para que el enlazador GNU `ld` nunca trunque los últimos bytes del `RT_MANIFEST` XML en `AuraSettings.exe`, `AuraPhotos.exe` y `AuraLock.exe` (`ERROR_SXS_CANT_GEN_ACTCTX`). Los 11 binarios ahora arrancan y validan su XML SxS al 100%.
